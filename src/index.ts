@@ -2,3 +2,5 @@ export { getConfigPath, readConfig, readConfigStrict, updateConfig, writeConfig 
 export type { ReadConfigStrictResult, WriteConfigOptions } from './config.js'
 export { CliError } from './errors.js'
 export type { CliErrorOptions, ErrorType } from './errors.js'
+export { formatJson, formatNdjson } from './json.js'
+export { isCI, isStderrTTY, isStdinTTY, isStdoutTTY } from './terminal.js'

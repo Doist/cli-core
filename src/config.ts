@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { formatJson } from './json.js'
 
 /**
  * Resolve the canonical config path for a CLI, honouring `XDG_CONFIG_HOME`
@@ -96,7 +97,7 @@ export async function writeConfig<T extends object>(
     const dir = dirname(path)
     await mkdir(dir, { recursive: true, mode: 0o700 })
     await chmod(dir, 0o700)
-    await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, {
+    await writeFile(path, `${formatJson(config)}\n`, {
         encoding: 'utf-8',
         mode: 0o600,
     })
