@@ -4,7 +4,10 @@ import { CliError } from './errors.js'
 
 describe('CliError', () => {
     it('captures code, message, hints, and type', () => {
-        const error = new CliError('AUTH_FAILED', 'Token rejected', ['Run td auth login'], 'error')
+        const error = new CliError('AUTH_FAILED', 'Token rejected', {
+            hints: ['Run td auth login'],
+            type: 'error',
+        })
         expect(error.code).toBe('AUTH_FAILED')
         expect(error.message).toBe('Token rejected')
         expect(error.hints).toEqual(['Run td auth login'])
@@ -17,9 +20,16 @@ describe('CliError', () => {
         expect(error.hints).toBeUndefined()
     })
 
-    it('supports the "info" type', () => {
-        const error = new CliError('TOKEN_FROM_ENV', 'Using env token', undefined, 'info')
+    it('supports the "info" type without forcing an undefined hints arg', () => {
+        const error = new CliError('TOKEN_FROM_ENV', 'Using env token', { type: 'info' })
         expect(error.type).toBe('info')
+        expect(error.hints).toBeUndefined()
+    })
+
+    it('accepts hints alone without specifying a type', () => {
+        const error = new CliError('NOT_FOUND', 'Missing', { hints: ['Check the id'] })
+        expect(error.hints).toEqual(['Check the id'])
+        expect(error.type).toBe('error')
     })
 
     it('sets name to CliError and is an Error instance', () => {

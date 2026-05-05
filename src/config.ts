@@ -3,45 +3,47 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 /**
- * Resolve the canonical config path for a CLI: `~/.config/<appName>/config.json`.
+ * Resolve the canonical config path for a CLI, honouring `XDG_CONFIG_HOME`
+ * when set: `${XDG_CONFIG_HOME ?? ~/.config}/<appName>/config.json`.
  */
 export function getConfigPath(appName: string): string {
-    return join(homedir(), '.config', appName, 'config.json')
+    const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')
+    return join(base, appName, 'config.json')
 }
 
 /**
- * Read and parse a JSON config file leniently. Returns `{}` cast to `T` when
- * the file is missing, unreadable, invalid JSON, or not a JSON object — the
- * shape runtime code paths expect ("no config" looks the same as "empty config").
+ * Read and parse a JSON config file leniently. Returns `{}` when the file is
+ * missing, unreadable, invalid JSON, or not a JSON object — the shape runtime
+ * code paths expect ("no config" looks the same as "empty config").
  *
- * Use `readConfigStrict` instead when you need to distinguish those failure
- * modes (e.g. `doctor`-style inspection commands).
+ * The return type is `Partial<T>` because at runtime any field may be absent;
+ * the cast is the consumer's responsibility once they have validated.
+ *
+ * Use `readConfigStrict` instead when you need to distinguish failure modes
+ * (e.g. `doctor`-style inspection commands).
  */
-export async function readConfig<T extends object>(path: string): Promise<T> {
-    try {
-        const content = await readFile(path, 'utf-8')
-        const parsed = JSON.parse(content) as unknown
-        return isPlainObject(parsed) ? (parsed as T) : ({} as T)
-    } catch {
-        return {} as T
-    }
+export async function readConfig<T extends object>(path: string): Promise<Partial<T>> {
+    const result = await readConfigStrict(path)
+    return result.state === 'present' ? (result.config as Partial<T>) : {}
 }
 
-export type ReadConfigStrictResult<T extends object> =
+export type ReadConfigStrictResult =
     | { state: 'missing' }
     | { state: 'read-failed'; error: Error }
     | { state: 'invalid-json'; error: Error }
     | { state: 'invalid-shape'; actual: 'array' | 'null' | 'number' | 'string' | 'boolean' }
-    | { state: 'present'; config: T }
+    | { state: 'present'; config: Record<string, unknown> }
 
 /**
  * Read and parse a JSON config file strictly, distinguishing missing files
  * from broken ones. The library returns a discriminated result instead of
  * throwing so consumers can format errors with their own copy/codes.
+ *
+ * `present.config` is typed as `Record<string, unknown>` because cli-core does
+ * not validate shape — only that the file parsed to a plain object. Cast or
+ * decode in the consumer.
  */
-export async function readConfigStrict<T extends object>(
-    path: string,
-): Promise<ReadConfigStrictResult<T>> {
+export async function readConfigStrict(path: string): Promise<ReadConfigStrictResult> {
     let content: string
     try {
         content = await readFile(path, 'utf-8')
@@ -61,7 +63,7 @@ export async function readConfigStrict<T extends object>(
         return { state: 'invalid-shape', actual: describeNonObject(parsed) }
     }
 
-    return { state: 'present', config: parsed as T }
+    return { state: 'present', config: parsed }
 }
 
 export interface WriteConfigOptions {
@@ -74,7 +76,8 @@ export interface WriteConfigOptions {
 
 /**
  * Write a config file with restrictive permissions (parent dir 0700, file 0600)
- * and a trailing newline. Creates parent directories as needed.
+ * and a trailing newline. Creates parent directories as needed and tightens
+ * their permissions even if they already existed.
  */
 export async function writeConfig<T extends object>(
     path: string,
@@ -90,7 +93,9 @@ export async function writeConfig<T extends object>(
         return
     }
 
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+    const dir = dirname(path)
+    await mkdir(dir, { recursive: true, mode: 0o700 })
+    await chmod(dir, 0o700)
     await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, {
         encoding: 'utf-8',
         mode: 0o600,
@@ -99,16 +104,35 @@ export async function writeConfig<T extends object>(
 }
 
 /**
- * Read the existing config (leniently), shallow-merge the supplied updates,
- * and write the result.
+ * Read the existing config strictly, shallow-merge the supplied updates, and
+ * write the result. Throws if the existing file is unreadable or unparseable
+ * to avoid silently overwriting data that a user might still recover by
+ * fixing their config file.
  */
 export async function updateConfig<T extends object>(
     path: string,
     updates: Partial<T>,
     options: WriteConfigOptions = {},
 ): Promise<void> {
-    const existing = await readConfig<T>(path)
-    await writeConfig(path, { ...existing, ...updates }, options)
+    const result = await readConfigStrict(path)
+    switch (result.state) {
+        case 'missing':
+            await writeConfig(path, updates, options)
+            return
+        case 'present':
+            await writeConfig(path, { ...result.config, ...updates }, options)
+            return
+        case 'read-failed':
+            throw new Error(`Cannot update config at ${path}: ${result.error.message}`)
+        case 'invalid-json':
+            throw new Error(
+                `Cannot update config at ${path}: file is not valid JSON (${result.error.message}). Fix or remove the file before retrying.`,
+            )
+        case 'invalid-shape':
+            throw new Error(
+                `Cannot update config at ${path}: file contents are ${result.actual}, not a JSON object. Fix or remove the file before retrying.`,
+            )
+    }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
