@@ -26,6 +26,12 @@ describe('formatJson', () => {
         const result = formatJson({ outer: { inner: [1, 2] } })
         expect(result).toBe('{\n  "outer": {\n    "inner": [\n      1,\n      2\n    ]\n  }\n}')
     })
+
+    it('throws when the top-level value is not JSON-serializable', () => {
+        expect(() => formatJson(undefined)).toThrow(/not JSON-serializable/)
+        expect(() => formatJson(() => 0)).toThrow(/not JSON-serializable/)
+        expect(() => formatJson(Symbol('x'))).toThrow(/not JSON-serializable/)
+    })
 })
 
 describe('formatNdjson', () => {
@@ -55,5 +61,11 @@ describe('formatNdjson', () => {
         const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
         const lines = formatNdjson(items).split('\n')
         expect(lines.map((line) => JSON.parse(line).id)).toEqual(['a', 'b', 'c'])
+    })
+
+    it('throws with the bad index when an item is not JSON-serializable', () => {
+        expect(() => formatNdjson([1, undefined, 2])).toThrow(/index 1.*not JSON-serializable/)
+        expect(() => formatNdjson([() => 0])).toThrow(/index 0/)
+        expect(() => formatNdjson([Symbol('x')])).toThrow(/index 0/)
     })
 })

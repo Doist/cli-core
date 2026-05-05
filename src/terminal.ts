@@ -24,7 +24,11 @@ export function isStderrTTY(): boolean {
  * Checks `process.env.CI`, which every major CI provider (GitHub Actions,
  * GitLab, CircleCI, Buildkite, Travis, …) sets to a truthy value by
  * convention.
+ *
+ * `CI='false'` is treated as opt-out (handy when a parent environment has
+ * `CI=true` set but a nested invocation needs to behave interactively).
  */
 export function isCI(): boolean {
-    return Boolean(process.env.CI)
+    const value = process.env.CI
+    return Boolean(value) && value !== 'false'
 }
