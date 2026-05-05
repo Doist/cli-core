@@ -1,0 +1,62 @@
+{
+    "name": "@doist/cli-core",
+    "version": "0.0.0",
+    "description": "Shared core utilities for Doist CLI projects",
+    "type": "module",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
+    "scripts": {
+        "build": "tsc -p tsconfig.build.json",
+        "dev": "tsc -p tsconfig.build.json --watch",
+        "type-check": "tsc --noEmit",
+        "check": "oxlint src && oxfmt --check",
+        "fix": "oxlint src --fix && oxfmt",
+        "test": "vitest run --passWithNoTests",
+        "test:watch": "vitest",
+        "prepublishOnly": "npm run build && npm test"
+    },
+    "keywords": [
+        "cli",
+        "doist"
+    ],
+    "author": "Doist",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Doist/cli-core.git"
+    },
+    "homepage": "https://github.com/Doist/cli-core#readme",
+    "bugs": {
+        "url": "https://github.com/Doist/cli-core/issues"
+    },
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
+    },
+    "engines": {
+        "node": ">=20.18.1"
+    },
+    "files": [
+        "dist",
+        "CHANGELOG.md"
+    ],
+    "devDependencies": {
+        "@semantic-release/changelog": "6.0.3",
+        "@semantic-release/exec": "7.1.0",
+        "@semantic-release/git": "10.0.1",
+        "@types/node": "25.6.0",
+        "conventional-changelog-conventionalcommits": "9.3.1",
+        "lefthook": "2.1.6",
+        "oxfmt": "0.46.0",
+        "oxlint": "1.61.0",
+        "semantic-release": "25.0.3",
+        "typescript": "6.0.3",
+        "vitest": "4.1.5"
+    }
+}
