@@ -44,7 +44,11 @@ export type SpinnerKit = {
     startEarlySpinner: (text?: string) => void
     /** Stop the early spinner if running and restore stdout.write. */
     stopEarlySpinner: () => void
-    /** Reset internal state without calling .stop() — for tests. */
+    /**
+     * @internal Reset internal state without calling `.stop()`. Exposed only
+     * so consumer test suites can fully reset the kit between cases; do not
+     * call from production code.
+     */
     resetEarlySpinner: () => void
 }
 
@@ -68,6 +72,18 @@ export function createSpinner(config: SpinnerConfig = {}): SpinnerKit {
 
     let earlyInstance: ReturnType<typeof yoctoSpinner> | null = null
     let originalStdoutWrite: typeof process.stdout.write | null = null
+    let stdoutInterceptor: typeof process.stdout.write | null = null
+
+    function restoreStdoutWrite(): void {
+        if (!originalStdoutWrite) return
+        // Only restore if our interceptor is still on top — anything else that
+        // monkey-patched process.stdout.write after us should keep its hook.
+        if (process.stdout.write === stdoutInterceptor) {
+            process.stdout.write = originalStdoutWrite
+        }
+        originalStdoutWrite = null
+        stdoutInterceptor = null
+    }
 
     function startEarlySpinner(text: string = earlyText): void {
         if (!isStdoutTTY() || isDisabled()) return
@@ -75,22 +91,25 @@ export function createSpinner(config: SpinnerConfig = {}): SpinnerKit {
         earlyInstance = yoctoSpinner({ text: chalk[defaultColor](text) })
         earlyInstance.start()
 
-        const savedWrite = process.stdout.write.bind(process.stdout) as typeof process.stdout.write
+        // Capture the original in a local closure variable (no .bind()) so
+        // repeat startEarlySpinner calls don't nest .bind() copies, and so
+        // the wrapper's reference survives `stopEarlySpinner` clearing the
+        // module-level `originalStdoutWrite` field.
+        const savedWrite = process.stdout.write
         originalStdoutWrite = savedWrite
-        process.stdout.write = function (
+        const wrapper = function (
             this: typeof process.stdout,
             ...args: Parameters<typeof process.stdout.write>
         ) {
             stopEarlySpinner()
             return savedWrite.apply(this, args)
         } as typeof process.stdout.write
+        stdoutInterceptor = wrapper
+        process.stdout.write = wrapper
     }
 
     function stopEarlySpinner(): void {
-        if (originalStdoutWrite) {
-            process.stdout.write = originalStdoutWrite
-            originalStdoutWrite = null
-        }
+        restoreStdoutWrite()
         if (earlyInstance) {
             earlyInstance.stop()
             earlyInstance = null
@@ -98,11 +117,8 @@ export function createSpinner(config: SpinnerConfig = {}): SpinnerKit {
     }
 
     function resetEarlySpinner(): void {
+        restoreStdoutWrite()
         earlyInstance = null
-        if (originalStdoutWrite) {
-            process.stdout.write = originalStdoutWrite
-            originalStdoutWrite = null
-        }
     }
 
     class LoadingSpinnerImpl implements LoadingSpinner {
@@ -122,6 +138,11 @@ export function createSpinner(config: SpinnerConfig = {}): SpinnerKit {
                 this.instance = earlyInstance
                 this.adopted = true
                 earlyInstance = null
+                // Adoption transfers stdout-clear responsibility to this
+                // spinner. The early-spinner's stdout interceptor would
+                // otherwise still fire (calling stopEarlySpinner with a now-
+                // null earlyInstance) while the adopted spinner kept running.
+                restoreStdoutWrite()
                 this.instance.text = colorFn(options.text)
                 return this
             }
@@ -131,36 +152,40 @@ export function createSpinner(config: SpinnerConfig = {}): SpinnerKit {
             return this
         }
 
+        /** Release an adopted spinner back to the pool. Returns true if released. */
+        private releaseAdopted(): boolean {
+            if (!this.adopted || !this.instance) return false
+            earlyInstance = this.instance
+            this.instance = null
+            this.adopted = false
+            return true
+        }
+
         succeed(text?: string): void {
             if (!this.instance) return
-            if (this.adopted) {
-                // Release back to the early-spinner pool so the next API call
-                // can re-adopt instead of starting another.
-                earlyInstance = this.instance
-                this.instance = null
-                this.adopted = false
-                return
-            }
-            this.instance.success(text ? chalk.green(`✓ ${text}`) : undefined)
+            // Release-back is silent; only do it when the caller didn't ask
+            // for a visible success line. With text, the user wants the
+            // checkmark + message and we terminate.
+            if (text === undefined && this.releaseAdopted()) return
+            // yocto-spinner prepends its own ✔ glyph; passing the bare text
+            // (coloured) avoids a duplicated symbol.
+            this.instance.success(text ? chalk.green(text) : undefined)
             this.instance = null
+            this.adopted = false
         }
 
         fail(text?: string): void {
             if (!this.instance) return
-            // Errors always terminate the spinner — never released back.
-            this.instance.error(text ? chalk.red(`✗ ${text}`) : undefined)
+            // yocto-spinner prepends its own ✖ glyph; passing the bare text
+            // (coloured) avoids a duplicated symbol. Errors always terminate.
+            this.instance.error(text ? chalk.red(text) : undefined)
             this.instance = null
             this.adopted = false
         }
 
         stop(): void {
             if (!this.instance) return
-            if (this.adopted) {
-                earlyInstance = this.instance
-                this.instance = null
-                this.adopted = false
-                return
-            }
+            if (this.releaseAdopted()) return
             this.instance.stop()
             this.instance = null
         }
