@@ -1,3 +1,9 @@
+## [0.2.0](https://github.com/Doist/cli-core/compare/v0.1.0...v0.2.0) (2026-05-06)
+
+### Features
+
+* bake cli-core codes into CliError, add CliErrorCode aggregator ([#4](https://github.com/Doist/cli-core/issues/4)) ([8c0d959](https://github.com/Doist/cli-core/commit/8c0d95987db3b35b1715cd72eb603cbb99420211))
+
 ## [0.1.0](https://github.com/Doist/cli-core/compare/v0.0.1...v0.1.0) (2026-05-06)
 
 ### Features
