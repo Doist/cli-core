@@ -10,4 +10,12 @@ export type { ConfigErrorCode, ReadConfigStrictResult, WriteConfigOptions } from
 export { CliError } from './errors.js'
 export type { CliErrorCode, CliErrorOptions, ErrorType } from './errors.js'
 export { formatJson, formatNdjson } from './json.js'
+export { createSpinner } from './spinner.js'
+export type {
+    LoadingSpinner,
+    SpinnerColor,
+    SpinnerConfig,
+    SpinnerKit,
+    SpinnerOptions,
+} from './spinner.js'
 export { isCI, isStderrTTY, isStdinTTY, isStdoutTTY } from './terminal.js'

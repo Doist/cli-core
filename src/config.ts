@@ -103,7 +103,7 @@ export async function readConfigStrict(path: string): Promise<ReadConfigStrictRe
     return { state: 'present', config: parsed }
 }
 
-export interface WriteConfigOptions {
+export type WriteConfigOptions = {
     /**
      * When true and the supplied config has no own enumerable keys, delete the
      * file instead of writing an empty `{}`. Default false.

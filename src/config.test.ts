@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { getConfigPath, readConfig, readConfigStrict, updateConfig, writeConfig } from './config.js'
 
-interface TestConfig {
+type TestConfig = {
     token?: string
     workspace?: number
     nested?: { x?: number; y?: number }

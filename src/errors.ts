@@ -2,7 +2,7 @@ import type { ConfigErrorCode } from './config.js'
 
 export type ErrorType = 'error' | 'info'
 
-export interface CliErrorOptions {
+export type CliErrorOptions = {
     hints?: string[]
     type?: ErrorType
 }

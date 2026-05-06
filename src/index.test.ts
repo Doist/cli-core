@@ -5,6 +5,7 @@ import {
     CliError,
     type CliErrorCode,
     type ConfigErrorCode,
+    createSpinner,
     formatJson,
     formatNdjson,
     getConfigPath,
@@ -12,8 +13,13 @@ import {
     isStderrTTY,
     isStdinTTY,
     isStdoutTTY,
+    type LoadingSpinner,
     readConfig,
     readConfigStrict,
+    type SpinnerColor,
+    type SpinnerConfig,
+    type SpinnerKit,
+    type SpinnerOptions,
     updateConfig,
     writeConfig,
 } from './index.js'
@@ -25,6 +31,7 @@ import {
 describe('package root exports', () => {
     it('re-exports the runtime values', () => {
         expect(typeof CliError).toBe('function')
+        expect(typeof createSpinner).toBe('function')
         expect(typeof formatJson).toBe('function')
         expect(typeof formatNdjson).toBe('function')
         expect(typeof getConfigPath).toBe('function')
@@ -41,6 +48,20 @@ describe('package root exports', () => {
             'invalid-json': 'CONFIG_INVALID_JSON',
             'invalid-shape': 'CONFIG_INVALID_SHAPE',
         })
+    })
+
+    it('re-exports the spinner type aliases', () => {
+        // Anchor each type to a typed literal so dropping the re-export fails
+        // to compile.
+        const color: SpinnerColor = 'blue'
+        const opts: SpinnerOptions = { text: 'x', color, noSpinner: true }
+        const cfg: SpinnerConfig = { isDisabled: () => true }
+        expect(opts).toEqual({ text: 'x', color: 'blue', noSpinner: true })
+        expect(cfg.isDisabled?.()).toBe(true)
+        // Structural assertions — make sure the kit/loading-spinner shapes
+        // compile against the re-exported type names.
+        expectTypeOf<SpinnerKit>().toHaveProperty('withSpinner')
+        expectTypeOf<LoadingSpinner>().toHaveProperty('start')
     })
 
     it('re-exports the canonical error code types', () => {
