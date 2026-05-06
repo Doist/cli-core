@@ -1,3 +1,5 @@
+import type { ConfigErrorCode } from './config.js'
+
 export type ErrorType = 'error' | 'info'
 
 export interface CliErrorOptions {
@@ -6,9 +8,25 @@ export interface CliErrorOptions {
 }
 
 /**
- * Generic CLI error carrying a structured code, optional hints, and a severity type.
+ * Aggregator of every error code that cli-core itself defines. Baked into the
+ * `CliError` constructor so consumers don't have to redeclare these strings in
+ * their own `ErrorCode` union — they're always accepted.
  *
- * Pass a string-literal union as `TCode` to constrain codes per CLI:
+ * Grows as future modules add their own well-known codes:
+ *
+ * ```ts
+ * export type CliErrorCode = ConfigErrorCode | SpinnerErrorCode | …
+ * ```
+ */
+export type CliErrorCode = ConfigErrorCode
+
+/**
+ * Generic CLI error carrying a structured code, optional hints, and a severity
+ * type.
+ *
+ * `code` accepts either the consumer's `TCode` union or any code defined by
+ * cli-core itself (`CliErrorCode`). Pass a string-literal union as `TCode` to
+ * constrain codes per CLI; the cli-core codes are always allowed alongside.
  *
  * ```ts
  * import { CliError } from '@doist/cli-core'
@@ -16,21 +34,21 @@ export interface CliErrorOptions {
  * throw new CliError<Code>('AUTH_FAILED', 'Token rejected', {
  *     hints: ['Run td auth login'],
  * })
+ * // CONFIG_INVALID_JSON also accepted without listing it in `Code`:
+ * throw new CliError<Code>('CONFIG_INVALID_JSON', 'Bad JSON')
  * ```
  *
  * The `(string & {})` trick preserves intellisense while accepting dynamic codes.
  */
 export class CliError<TCode extends string = string> extends Error {
+    readonly code: TCode | CliErrorCode
     readonly hints?: string[]
     readonly type: ErrorType
 
-    constructor(
-        public readonly code: TCode,
-        message: string,
-        options: CliErrorOptions = {},
-    ) {
+    constructor(code: TCode | CliErrorCode, message: string, options: CliErrorOptions = {}) {
         super(message)
         this.name = 'CliError'
+        this.code = code
         this.hints = options.hints
         this.type = options.type ?? 'error'
     }

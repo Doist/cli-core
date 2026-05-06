@@ -44,4 +44,13 @@ describe('CliError', () => {
         const error = new CliError<Code>('A', 'msg')
         expect(error.code).toBe('A')
     })
+
+    it('accepts cli-core canonical codes alongside the consumer union', () => {
+        // Consumer's TCode does NOT include CONFIG_INVALID_JSON, but the
+        // CliErrorCode aggregator is unioned into the constructor signature
+        // so the call still type-checks.
+        type Code = 'AUTH_FAILED' | (string & {})
+        const error = new CliError<Code>('CONFIG_INVALID_JSON', 'Bad JSON')
+        expect(error.code).toBe('CONFIG_INVALID_JSON')
+    })
 })

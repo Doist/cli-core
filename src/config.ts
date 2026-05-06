@@ -36,6 +36,42 @@ export type ReadConfigStrictResult =
     | { state: 'present'; config: Record<string, unknown> }
 
 /**
+ * The states of `ReadConfigStrictResult` that represent a failure (everything
+ * except `missing` and `present`). Derived from the result type so that adding
+ * a new failure state breaks the `BROKEN_STATE_TO_CODE` mapping below at
+ * compile time.
+ */
+type BrokenConfigState = Exclude<ReadConfigStrictResult['state'], 'missing' | 'present'>
+
+/**
+ * Canonical CliError codes for the broken states of `readConfigStrict`. The
+ * `satisfies` clause guarantees every failure state has a corresponding code.
+ *
+ * Exported as both a runtime map (so a future `readConfigOrThrow` helper — and
+ * consumers writing their own state-to-throw translation — can look codes up
+ * instead of hand-writing strings) and as the `ConfigErrorCode` type alias.
+ */
+export const BROKEN_CONFIG_STATE_TO_CODE = {
+    'read-failed': 'CONFIG_READ_FAILED',
+    'invalid-json': 'CONFIG_INVALID_JSON',
+    'invalid-shape': 'CONFIG_INVALID_SHAPE',
+} as const satisfies Record<BrokenConfigState, string>
+
+/**
+ * Canonical CliError codes emitted when `readConfigStrict` reports a broken
+ * config file. Derived from `BROKEN_CONFIG_STATE_TO_CODE` so the type and the
+ * runtime map can never drift.
+ *
+ * cli-core does not throw these itself (the library returns a discriminated
+ * result so consumers control formatting), but every consumer that does the
+ * states-to-throw translation ends up using the same three codes. Including
+ * this in each CLI's `ErrorCode` union is also unnecessary now that
+ * `CliError`'s constructor accepts the cli-core canonical codes directly.
+ */
+export type ConfigErrorCode =
+    (typeof BROKEN_CONFIG_STATE_TO_CODE)[keyof typeof BROKEN_CONFIG_STATE_TO_CODE]
+
+/**
  * Read and parse a JSON config file strictly, distinguishing missing files
  * from broken ones. The library returns a discriminated result instead of
  * throwing so consumers can format errors with their own copy/codes.

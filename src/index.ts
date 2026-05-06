@@ -1,6 +1,13 @@
-export { getConfigPath, readConfig, readConfigStrict, updateConfig, writeConfig } from './config.js'
-export type { ReadConfigStrictResult, WriteConfigOptions } from './config.js'
+export {
+    BROKEN_CONFIG_STATE_TO_CODE,
+    getConfigPath,
+    readConfig,
+    readConfigStrict,
+    updateConfig,
+    writeConfig,
+} from './config.js'
+export type { ConfigErrorCode, ReadConfigStrictResult, WriteConfigOptions } from './config.js'
 export { CliError } from './errors.js'
-export type { CliErrorOptions, ErrorType } from './errors.js'
+export type { CliErrorCode, CliErrorOptions, ErrorType } from './errors.js'
 export { formatJson, formatNdjson } from './json.js'
 export { isCI, isStderrTTY, isStdinTTY, isStdoutTTY } from './terminal.js'
