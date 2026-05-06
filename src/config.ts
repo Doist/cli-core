@@ -36,6 +36,22 @@ export type ReadConfigStrictResult =
     | { state: 'present'; config: Record<string, unknown> }
 
 /**
+ * Canonical CliError codes for the failure modes detected by `readConfigStrict`.
+ *
+ * cli-core does not throw these itself (the library returns a discriminated
+ * result so consumers control formatting), but every consumer that does the
+ * states-to-throw translation ends up using the same three codes. Exporting
+ * the shape here lets each CLI's `ErrorCode` union include them with one
+ * import instead of redeclaring the strings:
+ *
+ * ```ts
+ * import type { ConfigErrorCode } from '@doist/cli-core'
+ * export type ErrorCode = ConfigErrorCode | 'AUTH_ERROR' | … | (string & {})
+ * ```
+ */
+export type ConfigErrorCode = 'CONFIG_READ_FAILED' | 'CONFIG_INVALID_JSON' | 'CONFIG_INVALID_SHAPE'
+
+/**
  * Read and parse a JSON config file strictly, distinguishing missing files
  * from broken ones. The library returns a discriminated result instead of
  * throwing so consumers can format errors with their own copy/codes.
