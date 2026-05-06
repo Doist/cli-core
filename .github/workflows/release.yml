@@ -1,10 +1,10 @@
 name: Release
 
-# Auto-release disabled while the package is pre-publish.
-# Re-enable by restoring the `push` trigger:
-#   push:
-#     branches: [main, next]
 on:
+    push:
+        branches:
+            - main
+            - next
     workflow_dispatch:
 
 permissions:
