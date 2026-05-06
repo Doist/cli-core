@@ -1,3 +1,9 @@
+## [0.3.0](https://github.com/Doist/cli-core/compare/v0.2.0...v0.3.0) (2026-05-06)
+
+### Features
+
+* add createSpinner factory ([#5](https://github.com/Doist/cli-core/issues/5)) ([7092427](https://github.com/Doist/cli-core/commit/70924271385bb9ad2009a0d56df5a8768c9943f7))
+
 ## [0.2.0](https://github.com/Doist/cli-core/compare/v0.1.0...v0.2.0) (2026-05-06)
 
 ### Features
