@@ -4,14 +4,14 @@ import { isStdoutTTY } from './terminal.js'
 
 export type SpinnerColor = 'green' | 'yellow' | 'blue' | 'red' | 'gray' | 'cyan' | 'magenta'
 
-export interface SpinnerOptions {
+export type SpinnerOptions = {
     text: string
     color?: SpinnerColor
     /** Per-call opt-out (e.g. when a flag like `--no-spinner` was passed). */
     noSpinner?: boolean
 }
 
-export interface SpinnerConfig {
+export type SpinnerConfig = {
     /**
      * Returns true to suppress every spinner produced by this kit. CLIs
      * supply this to combine well-known signals (CI, `--json`, etc.) with
@@ -26,14 +26,14 @@ export interface SpinnerConfig {
     earlySpinnerText?: string
 }
 
-export interface LoadingSpinner {
-    start(options: SpinnerOptions): this
+export type LoadingSpinner = {
+    start(options: SpinnerOptions): LoadingSpinner
     succeed(text?: string): void
     fail(text?: string): void
     stop(): void
 }
 
-export interface SpinnerKit {
+export type SpinnerKit = {
     /** Class so consumers can use `new spinner.LoadingSpinner()` if they want
      *  to manage start/stop manually. Most call sites should prefer `withSpinner`. */
     LoadingSpinner: new () => LoadingSpinner
