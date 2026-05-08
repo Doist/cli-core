@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+    type GlobalArgs,
     createAccessibleGate,
     createGlobalArgsStore,
     createSpinnerGate,
@@ -10,147 +11,87 @@ import {
 } from './global-args.js'
 
 describe('parseGlobalArgs', () => {
-    describe('long flags', () => {
-        it('parses --json', () => {
-            expect(parseGlobalArgs(['--json']).json).toBe(true)
-        })
-        it('parses --ndjson', () => {
-            expect(parseGlobalArgs(['--ndjson']).ndjson).toBe(true)
-        })
-        it('parses --quiet', () => {
-            expect(parseGlobalArgs(['--quiet']).quiet).toBe(true)
-        })
-        it('parses --verbose as 1', () => {
-            expect(parseGlobalArgs(['--verbose']).verbose).toBe(1)
-        })
-        it('parses --accessible', () => {
-            expect(parseGlobalArgs(['--accessible']).accessible).toBe(true)
-        })
-        it('parses --no-spinner', () => {
-            expect(parseGlobalArgs(['--no-spinner']).noSpinner).toBe(true)
-        })
-        it('defaults all flags to false/0', () => {
-            expect(parseGlobalArgs([])).toEqual({
-                json: false,
-                ndjson: false,
-                quiet: false,
-                verbose: 0,
-                accessible: false,
-                noSpinner: false,
-                progressJsonl: false,
-            })
+    it('defaults every field to false/0', () => {
+        expect(parseGlobalArgs([])).toEqual({
+            json: false,
+            ndjson: false,
+            quiet: false,
+            verbose: 0,
+            accessible: false,
+            noSpinner: false,
+            progressJsonl: false,
         })
     })
 
-    describe('short flags', () => {
-        it('parses -q as quiet', () => {
-            expect(parseGlobalArgs(['-q']).quiet).toBe(true)
-        })
-        it('parses -v as verbose level 1', () => {
-            expect(parseGlobalArgs(['-v']).verbose).toBe(1)
+    it.each([
+        ['--json', 'json', true],
+        ['--ndjson', 'ndjson', true],
+        ['--quiet', 'quiet', true],
+        ['--verbose', 'verbose', 1],
+        ['--accessible', 'accessible', true],
+        ['--no-spinner', 'noSpinner', true],
+    ] as const)('flips %s -> %s', (flag, field, expected) => {
+        expect(parseGlobalArgs([flag])[field]).toBe(expected)
+    })
+
+    it.each([
+        // Single short flag
+        [['-q'], { quiet: true }],
+        [['-v'], { verbose: 1 }],
+        // Group order doesn't matter
+        [['-vq'], { verbose: 1, quiet: true }],
+        [['-qv'], { verbose: 1, quiet: true }],
+        // Repeats stack within a group
+        [['-vvv'], { verbose: 3 }],
+        [['-vvq'], { verbose: 2, quiet: true }],
+        // Unknown shorts are silently dropped
+        [['-xvq'], { verbose: 1, quiet: true }],
+    ])('parses short flags %j', (argv, expected) => {
+        expect(parseGlobalArgs(argv)).toMatchObject(expected)
+    })
+
+    it('verbose stacks across mixed long + short forms', () => {
+        expect(parseGlobalArgs(['-vv', '--verbose']).verbose).toBe(3)
+    })
+
+    it('caps verbose at 4', () => {
+        expect(parseGlobalArgs(['-vvv', '--verbose', '--verbose']).verbose).toBe(4)
+    })
+
+    it.each([
+        // bare -> stderr
+        [['--progress-jsonl'], true],
+        // = form -> path
+        [['--progress-jsonl=/tmp/out'], '/tmp/out'],
+        // Regression: space form is not supported. `td task add --progress-jsonl "Buy milk"`
+        // must NOT consume "Buy milk" as a file path.
+        [['task', 'add', '--progress-jsonl', 'Buy milk'], true],
+    ] as const)('parses --progress-jsonl %j -> %j', (argv, expected) => {
+        expect(parseGlobalArgs([...argv]).progressJsonl).toEqual(expected)
+    })
+
+    it('stops parsing flags after the -- terminator', () => {
+        expect(parseGlobalArgs(['--json', '--', '-vq', '--quiet'])).toMatchObject({
+            json: true,
+            verbose: 0,
+            quiet: false,
         })
     })
 
-    describe('grouped short flags', () => {
-        it('parses -vq as verbose + quiet', () => {
-            const r = parseGlobalArgs(['-vq'])
-            expect(r.verbose).toBe(1)
-            expect(r.quiet).toBe(true)
-        })
-        it('parses -qv as quiet + verbose', () => {
-            const r = parseGlobalArgs(['-qv'])
-            expect(r.verbose).toBe(1)
-            expect(r.quiet).toBe(true)
-        })
-        it('parses -vvv as verbose level 3', () => {
-            expect(parseGlobalArgs(['-vvv']).verbose).toBe(3)
-        })
-        it('parses -vvq as verbose level 2 + quiet', () => {
-            const r = parseGlobalArgs(['-vvq'])
-            expect(r.verbose).toBe(2)
-            expect(r.quiet).toBe(true)
-        })
-        it('ignores unknown short flags', () => {
-            const r = parseGlobalArgs(['-xvq'])
-            expect(r.verbose).toBe(1)
-            expect(r.quiet).toBe(true)
-        })
-    })
-
-    describe('verbose counting', () => {
-        it('stacks --verbose flags', () => {
-            expect(parseGlobalArgs(['--verbose', '--verbose', '--verbose']).verbose).toBe(3)
-        })
-        it('stacks mixed -v and --verbose', () => {
-            expect(parseGlobalArgs(['-vv', '--verbose']).verbose).toBe(3)
-        })
-        it('caps verbose at 4', () => {
-            expect(parseGlobalArgs(['-vvvvvv']).verbose).toBe(4)
-        })
-        it('caps verbose at 4 with mixed flags', () => {
-            expect(parseGlobalArgs(['-vvv', '--verbose', '--verbose']).verbose).toBe(4)
-        })
-    })
-
-    describe('--progress-jsonl', () => {
-        it('sets true when present without value', () => {
-            expect(parseGlobalArgs(['--progress-jsonl']).progressJsonl).toBe(true)
-        })
-        it('extracts value from = format', () => {
-            expect(parseGlobalArgs(['--progress-jsonl=/tmp/out']).progressJsonl).toBe('/tmp/out')
-        })
-        it('does not consume the next arg as a path (space-separated form unsupported)', () => {
-            // Regression guard: the space form would silently swallow a
-            // positional like `td task add --progress-jsonl "Buy milk"`.
-            const r = parseGlobalArgs(['task', 'add', '--progress-jsonl', 'Buy milk'])
-            expect(r.progressJsonl).toBe(true)
-        })
-        it('does not consume the next arg even when it starts with -', () => {
-            const r = parseGlobalArgs(['--progress-jsonl', '--json'])
-            expect(r.progressJsonl).toBe(true)
-            expect(r.json).toBe(true)
-        })
-        it('preserves = characters in path value', () => {
-            expect(parseGlobalArgs(['--progress-jsonl=/tmp/a=b=c']).progressJsonl).toBe(
-                '/tmp/a=b=c',
-            )
-        })
-    })
-
-    describe('-- terminator', () => {
-        it('stops parsing flags after --', () => {
-            const r = parseGlobalArgs(['--json', '--', '-vq', '--quiet'])
-            expect(r.json).toBe(true)
-            expect(r.verbose).toBe(0)
-            expect(r.quiet).toBe(false)
-        })
-    })
-
-    describe('positional arguments', () => {
-        it('does not treat positional args as flags', () => {
-            expect(parseGlobalArgs(['today', '--json']).json).toBe(true)
-        })
-        it('handles mixed positional and flag args', () => {
-            expect(parseGlobalArgs(['task', 'add', '--quiet', 'Buy milk']).quiet).toBe(true)
-        })
+    it('reads global flags regardless of position relative to positionals', () => {
+        expect(parseGlobalArgs(['task', 'add', '--quiet', 'Buy milk']).quiet).toBe(true)
     })
 })
 
-describe('isProgressJsonlEnabled / getProgressJsonlPath', () => {
-    it('reports disabled when absent', () => {
-        const args = parseGlobalArgs([])
-        expect(isProgressJsonlEnabled(args)).toBe(false)
-        expect(getProgressJsonlPath(args)).toBeUndefined()
-    })
-    it('reports enabled with no path when bare', () => {
-        const args = parseGlobalArgs(['--progress-jsonl'])
-        expect(isProgressJsonlEnabled(args)).toBe(true)
-        expect(getProgressJsonlPath(args)).toBeUndefined()
-    })
-    it('reports enabled with path when set', () => {
-        const args = parseGlobalArgs(['--progress-jsonl=/tmp/out'])
-        expect(isProgressJsonlEnabled(args)).toBe(true)
-        expect(getProgressJsonlPath(args)).toBe('/tmp/out')
+describe('progressJsonl helpers', () => {
+    it.each([
+        [[], false, undefined],
+        [['--progress-jsonl'], true, undefined],
+        [['--progress-jsonl=/tmp/out'], true, '/tmp/out'],
+    ] as const)('argv %j -> enabled=%j path=%j', (argv, enabled, path) => {
+        const args = parseGlobalArgs([...argv])
+        expect(isProgressJsonlEnabled(args)).toBe(enabled)
+        expect(getProgressJsonlPath(args)).toBe(path)
     })
 })
 
@@ -160,32 +101,23 @@ describe('createGlobalArgsStore', () => {
         process.argv = originalArgv
     })
 
-    it('caches the parsed result across calls', () => {
+    it('caches across calls and re-parses after reset', () => {
         process.argv = ['node', 'cli', '--json']
         const store = createGlobalArgsStore()
         expect(store.get().json).toBe(true)
         process.argv = ['node', 'cli']
-        expect(store.get().json).toBe(true)
-    })
-
-    it('reset() forces re-parse', () => {
-        process.argv = ['node', 'cli', '--json']
-        const store = createGlobalArgsStore()
-        expect(store.get().json).toBe(true)
-        process.argv = ['node', 'cli']
+        expect(store.get().json).toBe(true) // still cached
         store.reset()
-        expect(store.get().json).toBe(false)
+        expect(store.get().json).toBe(false) // re-parsed
     })
 
-    it('accepts a custom parser for CLI-extended types', () => {
-        type Extended = ReturnType<typeof parseGlobalArgs> & { user: string | undefined }
+    it('threads custom-parser fields through the cached value', () => {
+        type Extended = GlobalArgs & { user: string | undefined }
         const store = createGlobalArgsStore<Extended>(() => ({
             ...parseGlobalArgs(['--json']),
             user: 'scott@doist.com',
         }))
-        const args = store.get()
-        expect(args.json).toBe(true)
-        expect(args.user).toBe('scott@doist.com')
+        expect(store.get()).toMatchObject({ json: true, user: 'scott@doist.com' })
     })
 })
 
@@ -194,38 +126,19 @@ describe('createAccessibleGate', () => {
         vi.unstubAllEnvs()
     })
 
-    it('returns true when env var is "1"', () => {
-        vi.stubEnv('CORE_TEST_ACCESSIBLE', '1')
+    it.each([
+        // env, argv, expected
+        ['1', [], true],
+        [undefined, ['--accessible'], true],
+        ['true', [], false], // non-"1" env values do not force accessible
+        [undefined, [], false],
+    ] as const)('env=%j argv=%j -> %j', (env, argv, expected) => {
+        if (env !== undefined) vi.stubEnv('CORE_TEST_ACCESSIBLE', env)
         const gate = createAccessibleGate({
             envVar: 'CORE_TEST_ACCESSIBLE',
-            getArgs: () => parseGlobalArgs([]),
+            getArgs: () => parseGlobalArgs([...argv]),
         })
-        expect(gate()).toBe(true)
-    })
-
-    it('returns true when --accessible is parsed', () => {
-        const gate = createAccessibleGate({
-            envVar: 'CORE_TEST_ACCESSIBLE',
-            getArgs: () => parseGlobalArgs(['--accessible']),
-        })
-        expect(gate()).toBe(true)
-    })
-
-    it('returns false when env var is set but not "1"', () => {
-        vi.stubEnv('CORE_TEST_ACCESSIBLE', 'true')
-        const gate = createAccessibleGate({
-            envVar: 'CORE_TEST_ACCESSIBLE',
-            getArgs: () => parseGlobalArgs([]),
-        })
-        expect(gate()).toBe(false)
-    })
-
-    it('returns false by default', () => {
-        const gate = createAccessibleGate({
-            envVar: 'CORE_TEST_ACCESSIBLE',
-            getArgs: () => parseGlobalArgs([]),
-        })
-        expect(gate()).toBe(false)
+        expect(gate()).toBe(expected)
     })
 })
 
@@ -234,113 +147,63 @@ describe('createSpinnerGate', () => {
         vi.unstubAllEnvs()
     })
 
-    it('returns false by default', () => {
+    function gateWith(argv: string[] = [], extraTriggers?: () => boolean) {
+        return createSpinnerGate({
+            envVar: 'CORE_TEST_SPINNER',
+            getArgs: () => parseGlobalArgs(argv),
+            extraTriggers,
+        })
+    }
+
+    it('returns false when no trigger fires', () => {
         vi.stubEnv('CI', undefined)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-        })
-        expect(gate()).toBe(false)
-    })
-
-    it('returns true when env var equals "false"', () => {
-        vi.stubEnv('CORE_TEST_SPINNER', 'false')
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-        })
-        expect(gate()).toBe(true)
-    })
-
-    it('returns true under CI', () => {
-        vi.stubEnv('CI', 'true')
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-        })
-        expect(gate()).toBe(true)
+        expect(gateWith()()).toBe(false)
     })
 
     it.each([
-        ['--json', ['--json']],
-        ['--ndjson', ['--ndjson']],
-        ['--no-spinner', ['--no-spinner']],
-        ['--progress-jsonl', ['--progress-jsonl']],
-        ['--verbose', ['--verbose']],
-        ['-v', ['-v']],
-        ['-vq grouped', ['-vq']],
-    ])('returns true with %s', (_label, argv) => {
+        ['--json'],
+        ['--ndjson'],
+        ['--no-spinner'],
+        ['--progress-jsonl'],
+        ['--verbose'],
+        ['-v'],
+        ['-vq'],
+    ])('disables for %s', (flag) => {
         vi.stubEnv('CI', undefined)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs(argv),
-        })
-        expect(gate()).toBe(true)
+        expect(gateWith([flag])()).toBe(true)
+    })
+
+    it.each([['--quiet'], ['-q'], ['--accessible']])('does not disable for %s', (flag) => {
+        vi.stubEnv('CI', undefined)
+        expect(gateWith([flag])()).toBe(false)
+    })
+
+    it('disables on env="false"', () => {
+        vi.stubEnv('CORE_TEST_SPINNER', 'false')
+        expect(gateWith()()).toBe(true)
+    })
+
+    it('disables under CI', () => {
+        vi.stubEnv('CI', 'true')
+        expect(gateWith()()).toBe(true)
+    })
+
+    it('passes extraTriggers result through when nothing else fires', () => {
+        vi.stubEnv('CI', undefined)
+        expect(gateWith([], () => true)()).toBe(true)
+        expect(gateWith([], () => false)()).toBe(false)
     })
 
     it.each([
-        ['--quiet', ['--quiet']],
-        ['-q', ['-q']],
-        ['--accessible', ['--accessible']],
-    ])('does not disable for %s (not a spinner trigger)', (_label, argv) => {
-        vi.stubEnv('CI', undefined)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs(argv),
-        })
-        expect(gate()).toBe(false)
-    })
-
-    it('returns true when extraTriggers returns true', () => {
-        vi.stubEnv('CI', undefined)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-            extraTriggers: () => true,
-        })
-        expect(gate()).toBe(true)
-    })
-
-    it('returns false when extraTriggers returns false and no other trigger', () => {
-        vi.stubEnv('CI', undefined)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-            extraTriggers: () => false,
-        })
-        expect(gate()).toBe(false)
-    })
-
-    it('does not call extraTriggers when env var already disables', () => {
-        vi.stubEnv('CORE_TEST_SPINNER', 'false')
+        ['env', () => vi.stubEnv('CORE_TEST_SPINNER', 'false'), [] as string[]],
+        ['CI', () => vi.stubEnv('CI', 'true'), [] as string[]],
+        ['canonical flag', () => vi.stubEnv('CI', undefined), ['--json']],
+    ] as const)('does not call extraTriggers when %s already disables', (_label, setup, argv) => {
+        setup()
         const extra = vi.fn(() => false)
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-            extraTriggers: extra,
-        })
-        expect(gate()).toBe(true)
-        expect(extra).not.toHaveBeenCalled()
-    })
-
-    it('does not call extraTriggers when CI already disables', () => {
-        vi.stubEnv('CI', 'true')
-        const extra = vi.fn(() => false)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs([]),
-            extraTriggers: extra,
-        })
-        expect(gate()).toBe(true)
-        expect(extra).not.toHaveBeenCalled()
-    })
-
-    it('does not call extraTriggers when a canonical flag already disables', () => {
-        vi.stubEnv('CI', undefined)
-        const extra = vi.fn(() => false)
-        const gate = createSpinnerGate({
-            envVar: 'CORE_TEST_SPINNER',
-            getArgs: () => parseGlobalArgs(['--json']),
+            getArgs: () => parseGlobalArgs([...argv]),
             extraTriggers: extra,
         })
         expect(gate()).toBe(true)
