@@ -10,6 +10,20 @@ export type { ConfigErrorCode, ReadConfigStrictResult, WriteConfigOptions } from
 export { printEmpty } from './empty.js'
 export { CliError } from './errors.js'
 export type { CliErrorCode, CliErrorOptions, ErrorType } from './errors.js'
+export {
+    createAccessibleGate,
+    createGlobalArgsStore,
+    createSpinnerGate,
+    getProgressJsonlPath,
+    isProgressJsonlEnabled,
+    parseGlobalArgs,
+} from './global-args.js'
+export type {
+    AccessibleGateOptions,
+    GlobalArgs,
+    GlobalArgsStore,
+    SpinnerGateOptions,
+} from './global-args.js'
 export { formatJson, formatNdjson } from './json.js'
 export type { ViewOptions } from './options.js'
 export { createSpinner } from './spinner.js'
