@@ -1,3 +1,9 @@
+## [0.5.0](https://github.com/Doist/cli-core/compare/v0.4.0...v0.5.0) (2026-05-08)
+
+### Features
+
+* add global args parser + factories ([#7](https://github.com/Doist/cli-core/issues/7)) ([419243e](https://github.com/Doist/cli-core/commit/419243e8543f180e15a2f6efe91d99a4c93bee40))
+
 ## [0.4.0](https://github.com/Doist/cli-core/compare/v0.3.0...v0.4.0) (2026-05-08)
 
 ### Features
