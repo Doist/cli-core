@@ -1,3 +1,9 @@
+## [0.4.0](https://github.com/Doist/cli-core/compare/v0.3.0...v0.4.0) (2026-05-08)
+
+### Features
+
+* add printEmpty + describeEmptyMachineOutput helpers ([#6](https://github.com/Doist/cli-core/issues/6)) ([2c0a74e](https://github.com/Doist/cli-core/commit/2c0a74e7874ef47184a071f9fc15f22f254ca20a))
+
 ## [0.3.0](https://github.com/Doist/cli-core/compare/v0.2.0...v0.3.0) (2026-05-06)
 
 ### Features
