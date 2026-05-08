@@ -13,11 +13,10 @@
  * twist's `--non-interactive`) can layer their own fields over `GlobalArgs`.
  */
 
+import type { ViewOptions } from './options.js'
 import { isCI } from './terminal.js'
 
-export type GlobalArgs = {
-    json: boolean
-    ndjson: boolean
+export type GlobalArgs = Required<Pick<ViewOptions, 'json' | 'ndjson'>> & {
     quiet: boolean
     verbose: 0 | 1 | 2 | 3 | 4
     accessible: boolean
@@ -31,6 +30,23 @@ const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
     v: 'verbose',
 }
 
+/**
+ * Parse well-known global flags from `argv`. Pure — pass an explicit array
+ * for testing, or omit to read `process.argv.slice(2)`.
+ *
+ * The parser scans the entire argv: a CLI-specific positional that happens
+ * to look like a global short flag (`td comment add 123 -q`) will flip the
+ * matching global state. Workaround: use the standard `--` terminator
+ * (`td comment add 123 -- -q`) so the parser stops before the positional.
+ * The trade-off is intentional — callers run this before Commander has
+ * parsed argv, so we can't yet distinguish positionals from option values.
+ *
+ * `--progress-jsonl` accepts only the bare form (output to stderr) and the
+ * `--progress-jsonl=path` form. The space-separated `--progress-jsonl path`
+ * form is intentionally unsupported because it silently consumes the next
+ * positional argument (e.g., `td task add --progress-jsonl "Buy milk"`
+ * would treat `Buy milk` as a file path).
+ */
 export function parseGlobalArgs(argv?: string[]): GlobalArgs {
     const args = argv ?? process.argv.slice(2)
 
@@ -61,15 +77,10 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
             result.accessible = true
         } else if (arg === '--no-spinner') {
             result.noSpinner = true
-        } else if (arg === '--progress-jsonl' || arg.startsWith('--progress-jsonl=')) {
-            if (arg.includes('=')) {
-                result.progressJsonl = arg.slice(arg.indexOf('=') + 1)
-            } else if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-                i++
-                result.progressJsonl = args[i]
-            } else {
-                result.progressJsonl = true
-            }
+        } else if (arg === '--progress-jsonl') {
+            result.progressJsonl = true
+        } else if (arg.startsWith('--progress-jsonl=')) {
+            result.progressJsonl = arg.slice('--progress-jsonl='.length)
         } else if (arg.length > 1 && arg[0] === '-' && arg[1] !== '-') {
             // Short-flag group: -v, -vq, -vvv, etc. Unknown shorts are
             // silently ignored — they belong to Commander or subcommands.
@@ -113,13 +124,17 @@ export type GlobalArgsStore<T extends GlobalArgs = GlobalArgs> = {
  * })
  * ```
  */
-export function createGlobalArgsStore<T extends GlobalArgs = GlobalArgs>(
-    parse: () => T = parseGlobalArgs as () => T,
-): GlobalArgsStore<T> {
+export function createGlobalArgsStore(): GlobalArgsStore<GlobalArgs>
+export function createGlobalArgsStore<T extends GlobalArgs>(parse: () => T): GlobalArgsStore<T>
+export function createGlobalArgsStore<T extends GlobalArgs>(parse?: () => T): GlobalArgsStore<T> {
+    // Overloads ensure callers passing a custom `T` must supply a matching
+    // parser; the implementation default only kicks in for the no-arg
+    // canonical case where `T` collapses to `GlobalArgs`.
+    const parser = parse ?? (parseGlobalArgs as () => T)
     let cached: T | null = null
     return {
         get() {
-            if (cached === null) cached = parse()
+            if (cached === null) cached = parser()
             return cached
         },
         reset() {
@@ -207,7 +222,7 @@ export function createSpinnerGate(opts: SpinnerGateOptions): () => boolean {
             args.json ||
             args.ndjson ||
             args.noSpinner ||
-            args.progressJsonl !== false ||
+            isProgressJsonlEnabled(args) ||
             args.verbose > 0
         ) {
             return true

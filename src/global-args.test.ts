@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
     createAccessibleGate,
@@ -99,10 +99,13 @@ describe('parseGlobalArgs', () => {
         it('extracts value from = format', () => {
             expect(parseGlobalArgs(['--progress-jsonl=/tmp/out']).progressJsonl).toBe('/tmp/out')
         })
-        it('extracts value from next arg', () => {
-            expect(parseGlobalArgs(['--progress-jsonl', '/tmp/out']).progressJsonl).toBe('/tmp/out')
+        it('does not consume the next arg as a path (space-separated form unsupported)', () => {
+            // Regression guard: the space form would silently swallow a
+            // positional like `td task add --progress-jsonl "Buy milk"`.
+            const r = parseGlobalArgs(['task', 'add', '--progress-jsonl', 'Buy milk'])
+            expect(r.progressJsonl).toBe(true)
         })
-        it('does not consume next arg if it starts with -', () => {
+        it('does not consume the next arg even when it starts with -', () => {
             const r = parseGlobalArgs(['--progress-jsonl', '--json'])
             expect(r.progressJsonl).toBe(true)
             expect(r.json).toBe(true)
@@ -187,17 +190,12 @@ describe('createGlobalArgsStore', () => {
 })
 
 describe('createAccessibleGate', () => {
-    const original = process.env.CORE_TEST_ACCESSIBLE
-    beforeEach(() => {
-        delete process.env.CORE_TEST_ACCESSIBLE
-    })
     afterEach(() => {
-        if (original === undefined) delete process.env.CORE_TEST_ACCESSIBLE
-        else process.env.CORE_TEST_ACCESSIBLE = original
+        vi.unstubAllEnvs()
     })
 
     it('returns true when env var is "1"', () => {
-        process.env.CORE_TEST_ACCESSIBLE = '1'
+        vi.stubEnv('CORE_TEST_ACCESSIBLE', '1')
         const gate = createAccessibleGate({
             envVar: 'CORE_TEST_ACCESSIBLE',
             getArgs: () => parseGlobalArgs([]),
@@ -214,7 +212,7 @@ describe('createAccessibleGate', () => {
     })
 
     it('returns false when env var is set but not "1"', () => {
-        process.env.CORE_TEST_ACCESSIBLE = 'true'
+        vi.stubEnv('CORE_TEST_ACCESSIBLE', 'true')
         const gate = createAccessibleGate({
             envVar: 'CORE_TEST_ACCESSIBLE',
             getArgs: () => parseGlobalArgs([]),
@@ -232,21 +230,12 @@ describe('createAccessibleGate', () => {
 })
 
 describe('createSpinnerGate', () => {
-    const originalEnvVar = process.env.CORE_TEST_SPINNER
-    const originalCI = process.env.CI
-
-    beforeEach(() => {
-        delete process.env.CORE_TEST_SPINNER
-        delete process.env.CI
-    })
     afterEach(() => {
-        if (originalEnvVar === undefined) delete process.env.CORE_TEST_SPINNER
-        else process.env.CORE_TEST_SPINNER = originalEnvVar
-        if (originalCI === undefined) delete process.env.CI
-        else process.env.CI = originalCI
+        vi.unstubAllEnvs()
     })
 
     it('returns false by default', () => {
+        vi.stubEnv('CI', undefined)
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
             getArgs: () => parseGlobalArgs([]),
@@ -255,7 +244,7 @@ describe('createSpinnerGate', () => {
     })
 
     it('returns true when env var equals "false"', () => {
-        process.env.CORE_TEST_SPINNER = 'false'
+        vi.stubEnv('CORE_TEST_SPINNER', 'false')
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
             getArgs: () => parseGlobalArgs([]),
@@ -264,7 +253,7 @@ describe('createSpinnerGate', () => {
     })
 
     it('returns true under CI', () => {
-        process.env.CI = 'true'
+        vi.stubEnv('CI', 'true')
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
             getArgs: () => parseGlobalArgs([]),
@@ -281,6 +270,7 @@ describe('createSpinnerGate', () => {
         ['-v', ['-v']],
         ['-vq grouped', ['-vq']],
     ])('returns true with %s', (_label, argv) => {
+        vi.stubEnv('CI', undefined)
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
             getArgs: () => parseGlobalArgs(argv),
@@ -288,7 +278,21 @@ describe('createSpinnerGate', () => {
         expect(gate()).toBe(true)
     })
 
+    it.each([
+        ['--quiet', ['--quiet']],
+        ['-q', ['-q']],
+        ['--accessible', ['--accessible']],
+    ])('does not disable for %s (not a spinner trigger)', (_label, argv) => {
+        vi.stubEnv('CI', undefined)
+        const gate = createSpinnerGate({
+            envVar: 'CORE_TEST_SPINNER',
+            getArgs: () => parseGlobalArgs(argv),
+        })
+        expect(gate()).toBe(false)
+    })
+
     it('returns true when extraTriggers returns true', () => {
+        vi.stubEnv('CI', undefined)
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
             getArgs: () => parseGlobalArgs([]),
@@ -298,11 +302,48 @@ describe('createSpinnerGate', () => {
     })
 
     it('returns false when extraTriggers returns false and no other trigger', () => {
+        vi.stubEnv('CI', undefined)
         const gate = createSpinnerGate({
             envVar: 'CORE_TEST_SPINNER',
             getArgs: () => parseGlobalArgs([]),
             extraTriggers: () => false,
         })
         expect(gate()).toBe(false)
+    })
+
+    it('does not call extraTriggers when env var already disables', () => {
+        vi.stubEnv('CORE_TEST_SPINNER', 'false')
+        const extra = vi.fn(() => false)
+        const gate = createSpinnerGate({
+            envVar: 'CORE_TEST_SPINNER',
+            getArgs: () => parseGlobalArgs([]),
+            extraTriggers: extra,
+        })
+        expect(gate()).toBe(true)
+        expect(extra).not.toHaveBeenCalled()
+    })
+
+    it('does not call extraTriggers when CI already disables', () => {
+        vi.stubEnv('CI', 'true')
+        const extra = vi.fn(() => false)
+        const gate = createSpinnerGate({
+            envVar: 'CORE_TEST_SPINNER',
+            getArgs: () => parseGlobalArgs([]),
+            extraTriggers: extra,
+        })
+        expect(gate()).toBe(true)
+        expect(extra).not.toHaveBeenCalled()
+    })
+
+    it('does not call extraTriggers when a canonical flag already disables', () => {
+        vi.stubEnv('CI', undefined)
+        const extra = vi.fn(() => false)
+        const gate = createSpinnerGate({
+            envVar: 'CORE_TEST_SPINNER',
+            getArgs: () => parseGlobalArgs(['--json']),
+            extraTriggers: extra,
+        })
+        expect(gate()).toBe(true)
+        expect(extra).not.toHaveBeenCalled()
     })
 })
