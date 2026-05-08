@@ -11,8 +11,8 @@
             "import": "./dist/index.js"
         },
         "./testing": {
-            "types": "./dist/testing/empty-output.d.ts",
-            "import": "./dist/testing/empty-output.js"
+            "types": "./dist/testing.d.ts",
+            "import": "./dist/testing.js"
         }
     },
     "scripts": {

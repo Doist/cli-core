@@ -1,37 +1,53 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { printEmpty } from './empty.js'
+import { describeEmptyMachineOutput } from './testing.js'
 
-describe('printEmpty', () => {
-    let logSpy: ReturnType<typeof vi.spyOn>
+const HUMAN_MESSAGE = 'No threads in inbox.'
+
+// The 3-test contract for `printEmpty` is asserted via the shared helper —
+// running the helper here doubles as a smoke test that the helper itself
+// works against a known-good implementation.
+describeEmptyMachineOutput('printEmpty (contract via describeEmptyMachineOutput)', {
+    setup: () => {},
+    run: async (extraArgs) => {
+        printEmpty({
+            options: {
+                json: extraArgs.includes('--json'),
+                ndjson: extraArgs.includes('--ndjson'),
+            },
+            message: HUMAN_MESSAGE,
+        })
+    },
+    humanMessage: HUMAN_MESSAGE,
+})
+
+describe('printEmpty (extras)', () => {
+    let captured = ''
+    let consoleSpy: ReturnType<typeof vi.spyOn> | undefined
+    let writeSpy: ReturnType<typeof vi.spyOn> | undefined
 
     beforeEach(() => {
-        logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        captured = ''
+        consoleSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+            captured += `${args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ')}\n`
+        })
+        writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(((
+            chunk: string | Uint8Array,
+        ): boolean => {
+            captured += typeof chunk === 'string' ? chunk : chunk.toString()
+            return true
+        }) as typeof process.stdout.write)
     })
 
     afterEach(() => {
-        logSpy.mockRestore()
+        consoleSpy?.mockRestore()
+        writeSpy?.mockRestore()
+        consoleSpy = undefined
+        writeSpy = undefined
     })
 
-    it('prints "[]" exactly once for --json', () => {
-        printEmpty({ options: { json: true }, message: 'No threads in inbox.' })
-        expect(logSpy).toHaveBeenCalledTimes(1)
-        expect(logSpy).toHaveBeenCalledWith('[]')
-    })
-
-    it('does not call console.log at all for --ndjson (no stray newline)', () => {
-        printEmpty({ options: { ndjson: true }, message: 'No threads in inbox.' })
-        expect(logSpy).not.toHaveBeenCalled()
-    })
-
-    it('prints the human message when neither flag is set', () => {
-        printEmpty({ options: {}, message: 'No threads in inbox.' })
-        expect(logSpy).toHaveBeenCalledTimes(1)
-        expect(logSpy).toHaveBeenCalledWith('No threads in inbox.')
-    })
-
-    it('prefers --json when both --json and --ndjson are set', () => {
+    it('prefers --json over --ndjson when both flags are set', () => {
         printEmpty({ options: { json: true, ndjson: true }, message: 'unused' })
-        expect(logSpy).toHaveBeenCalledTimes(1)
-        expect(logSpy).toHaveBeenCalledWith('[]')
+        expect(captured).toBe('[]\n')
     })
 })
