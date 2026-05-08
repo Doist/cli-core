@@ -9,6 +9,10 @@
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
+        },
+        "./testing": {
+            "types": "./dist/testing/empty-output.d.ts",
+            "import": "./dist/testing/empty-output.js"
         }
     },
     "scripts": {
@@ -62,5 +66,13 @@
     "dependencies": {
         "chalk": "5.6.2",
         "yocto-spinner": "1.1.0"
+    },
+    "peerDependencies": {
+        "vitest": ">=4.1"
+    },
+    "peerDependenciesMeta": {
+        "vitest": {
+            "optional": true
+        }
     }
 }
