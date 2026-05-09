@@ -165,9 +165,14 @@ describe('update --check', () => {
         mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
         mockFetchOk('1.36.0-next.1')
         await createProgram().parseAsync(['node', 'td', 'update', '--check'])
-        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next', {
-            headers: { Accept: 'application/vnd.npm.install-v1+json' },
-        })
+        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next')
+    })
+
+    it('does not send the install-v1 Accept header (rejected with 406 on dist-tag URLs)', async () => {
+        mockFetchOk('99.99.99')
+        await createProgram().parseAsync(['node', 'td', 'update', '--check'])
+        const fetchCall = (fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]
+        expect(fetchCall).toHaveLength(1)
     })
 })
 
