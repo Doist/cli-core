@@ -2,7 +2,7 @@
 
 Shared core utilities for Doist CLI projects ([todoist-cli](https://github.com/Doist/todoist-cli), [twist-cli](https://github.com/Doist/twist-cli), [outline-cli](https://github.com/Doist/outline-cli)).
 
-> **Status:** scaffolding only. No exports yet — extraction work is in progress.
+TypeScript, ESM-only, Node ≥ 20.18.1.
 
 ## Install
 
@@ -10,17 +10,81 @@ Shared core utilities for Doist CLI projects ([todoist-cli](https://github.com/D
 npm install @doist/cli-core
 ```
 
+## What's in it
+
+| Module               | Key exports                                                                                                                               | Purpose                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`             | `getConfigPath`, `readConfig`, `readConfigStrict`, `writeConfig`, `updateConfig`                                                          | Read / write a per-CLI JSON config file with typed error codes for broken or missing state.                                                                       |
+| `empty`              | `printEmpty`                                                                                                                              | Print an empty-state message gated on `--json` / `--ndjson` so machine consumers never see human strings on stdout.                                               |
+| `errors`             | `CliError`                                                                                                                                | Typed CLI error class with `code` and exit-code mapping.                                                                                                          |
+| `global-args`        | `parseGlobalArgs`, `createGlobalArgsStore`, `createAccessibleGate`, `createSpinnerGate`, `getProgressJsonlPath`, `isProgressJsonlEnabled` | Parse well-known global flags (`--json`, `--ndjson`, `--quiet`, `--verbose`, `--accessible`, `--no-spinner`, `--progress-jsonl`) and derive predicates from them. |
+| `json`               | `formatJson`, `formatNdjson`                                                                                                              | Stable JSON / newline-delimited JSON formatting for stdout.                                                                                                       |
+| `markdown` (subpath) | `preloadMarkdown`, `renderMarkdown`, `darkTheme`, `lightTheme`                                                                            | Lazy-init terminal markdown renderer. **Requires** `marked` and `marked-terminal-renderer` as peer-deps — install only if your CLI uses this subpath.             |
+| `spinner`            | `createSpinner`                                                                                                                           | Loading spinner factory wrapping `yocto-spinner` with disable gates.                                                                                              |
+| `terminal`           | `isCI`, `isStderrTTY`, `isStdinTTY`, `isStdoutTTY`                                                                                        | TTY / CI detection helpers.                                                                                                                                       |
+
+The `./testing` subpath ships shared test helpers for consumers.
+
+## Usage
+
+### Global args + spinner gate
+
+```ts
+import { createGlobalArgsStore, createSpinnerGate, createSpinner } from '@doist/cli-core'
+
+const store = createGlobalArgsStore()
+export const isJsonMode = () => store.get().json
+
+const shouldDisableSpinner = createSpinnerGate({
+    envVar: 'TD_SPINNER',
+    getArgs: store.get,
+})
+const { withSpinner } = createSpinner({ isDisabled: shouldDisableSpinner })
+```
+
+### Empty-state print
+
+```ts
+import { printEmpty } from '@doist/cli-core'
+
+if (tasks.length === 0) {
+    printEmpty({ options, message: 'No tasks found.' })
+    return
+}
+```
+
+### Markdown rendering (optional subpath)
+
+Install the peer-deps in the consuming CLI:
+
+```bash
+npm install marked marked-terminal-renderer
+```
+
+Then:
+
+```ts
+import { preloadMarkdown, renderMarkdown } from '@doist/cli-core/markdown'
+
+if (!options.json && !options.raw) {
+    await preloadMarkdown()
+}
+console.log(await renderMarkdown(comment.body))
+```
+
+If the peer-deps are missing, `preloadMarkdown` throws a clear error pointing to the install command. TypeScript will also fail to resolve the subpath's types until the peers are installed.
+
 ## Development
 
 ```bash
 npm install
 npm run build
 npm test
-npm run check   # lint + format
-npm run fix     # auto-fix lint + format
+npm run check   # oxlint + oxfmt --check (PR gate)
+npm run fix     # oxlint --fix + oxfmt
 ```
 
-Requires Node `>=20.18.1`.
+See [AGENTS.md](AGENTS.md) for project conventions, including the rule that this README is kept in sync with public API changes.
 
 ## License
 
