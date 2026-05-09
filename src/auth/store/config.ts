@@ -1,6 +1,12 @@
 import { readConfigStrict, updateConfig } from '../../config.js'
 import { CliError } from '../../errors.js'
-import type { AuthAccount, AuthBackend, StoreMigration, TokenStore } from '../types.js'
+import type {
+    AuthAccount,
+    AuthBackend,
+    StoreMigration,
+    TokenStore,
+    TokenStoreSetOptions,
+} from '../types.js'
 
 export type CreateConfigTokenStoreOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** Absolute path to the CLI's config file (use `getConfigPath(appName)`). */
@@ -163,7 +169,7 @@ export function createConfigTokenStore<TAccount extends AuthAccount>(
                 : null
         },
 
-        async set(account, token) {
+        async set(account, token, setOptions: TokenStoreSetOptions = {}) {
             try {
                 if (options.multiUser) {
                     const state = await readState()
@@ -174,7 +180,9 @@ export function createConfigTokenStore<TAccount extends AuthAccount>(
                         [accountsKey]: next,
                         [tokensKey]: tokens,
                     }
-                    if (!getActiveId(state)) updates[activeKey] = account.id
+                    if (setOptions.setActive || !getActiveId(state)) {
+                        updates[activeKey] = account.id
+                    }
                     await updateConfig(options.configPath, updates)
                 } else {
                     await updateConfig(options.configPath, {

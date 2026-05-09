@@ -13,6 +13,11 @@ export type AuthAccount = {
 
 export type AuthBackend = 'keyring' | 'config' | 'env'
 
+export type TokenStoreSetOptions = {
+    /** Mark this account as active in the same write. */
+    setActive?: boolean
+}
+
 /**
  * Result of an optional pre-flight step the provider can run before the
  * browser is opened — e.g. Twist's Dynamic Client Registration POST. The
@@ -129,8 +134,13 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
     get(id: string): Promise<{ token: string; account: TAccount } | null>
     /** Resolve "the account this CLI should use right now". */
     active(): Promise<{ token: string; account: TAccount } | null>
-    /** Upsert. Implementations are expected to overwrite an existing record at `account.id`. */
-    set(account: TAccount, token: string): Promise<void>
+    /**
+     * Upsert. Implementations are expected to overwrite an existing record at
+     * `account.id`. Pass `{ setActive: true }` to atomically mark this account
+     * as active in the same store mutation — multi-user backends collapse the
+     * write into one cycle instead of two.
+     */
+    set(account: TAccount, token: string, options?: TokenStoreSetOptions): Promise<void>
     /** Mark `id` as the default account returned by `active()`. */
     setActive(id: string): Promise<void>
     /** Remove a single account. */
@@ -156,14 +166,15 @@ export type StoreMigration<TAccount extends AuthAccount = AuthAccount> = (
 
 /**
  * Per-CLI extra flag declared at registration time, threaded through to the
- * provider via `AuthorizeInput.flags[key]` / `PasteInput.flags[key]`.
+ * provider via `AuthorizeInput.flags`. The lookup key is derived from the
+ * Commander long-flag the same way Commander itself derives option names —
+ * `--additional-scopes` lands as `flags.additionalScopes`.
  *
  * Example — Todoist's `--additional-scopes`:
  *
  * ```ts
  * { flags: '--additional-scopes <list>',
  *   description: 'Comma-separated extra scopes to request',
- *   key: 'additionalScopes',
  *   parse: (raw) => raw.split(',').map((s) => s.trim()) }
  * ```
  */
@@ -171,8 +182,6 @@ export type LoginFlagSpec = {
     /** Commander flag spec, e.g. `'--additional-scopes <list>'`. */
     flags: string
     description: string
-    /** Key under which the parsed value lands in `AuthorizeInput.flags`. */
-    key: string
     /** Optional value parser. Defaults to identity (Commander's default behaviour). */
     parse?: (raw: string, previous: unknown) => unknown
     /** Default value when the flag isn't supplied. */

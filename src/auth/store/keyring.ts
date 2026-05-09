@@ -1,5 +1,5 @@
 import { CliError } from '../../errors.js'
-import type { AuthAccount, AuthBackend, TokenStore } from '../types.js'
+import type { AuthAccount, AuthBackend, TokenStore, TokenStoreSetOptions } from '../types.js'
 
 export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** Service name registered in the OS credential manager. Pick `'<app>-cli'`. */
@@ -126,18 +126,18 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             return this.get(id)
         },
 
-        async set(account, token) {
+        async set(account, token, setOptions: TokenStoreSetOptions = {}) {
             const impl = await getKeyring()
             if (impl && tryKeyringWrite(impl, account.id, token)) {
                 lastBackend = 'keyring'
                 // Persist the account record without the token in the fallback.
-                await options.fallback.set(account, '')
+                await options.fallback.set(account, '', setOptions)
                 return
             }
             // Keyring write failed — store everything in the fallback.
             lastBackend = 'config'
             try {
-                await options.fallback.set(account, token)
+                await options.fallback.set(account, token, setOptions)
             } catch (error) {
                 throw new CliError(
                     'AUTH_STORE_WRITE_FAILED',

@@ -121,22 +121,27 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
 
         const callback = await server.waitForCallback(options.timeoutMs)
 
+        // Merge prepareHandshake into the downstream handshake so prepare-time
+        // state (DCR client_secret, base URL, …) survives even when a custom
+        // provider's authorize() forgets to forward it. The authorize-side
+        // additions take precedence on key collisions.
+        const downstreamHandshake = { ...prepareHandshake, ...authorize.handshake }
+
         const exchange = await options.provider.exchangeCode({
             code: callback.code,
             state: callback.state,
             redirectUri: server.redirectUri,
-            handshake: authorize.handshake,
+            handshake: downstreamHandshake,
         })
 
         const account =
             exchange.account ??
             (await options.provider.validateToken({
                 token: exchange.accessToken,
-                handshake: authorize.handshake,
+                handshake: downstreamHandshake,
             }))
 
-        await options.store.set(account, exchange.accessToken)
-        await options.store.setActive(account.id)
+        await options.store.set(account, exchange.accessToken, { setActive: true })
 
         return { token: exchange.accessToken, account }
     } finally {

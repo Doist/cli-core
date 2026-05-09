@@ -81,6 +81,7 @@ export async function startCallbackServer(
         })
     })
 
+    assertValidPort(options.preferredPort, 'preferredPort')
     const port = await listenWithFallback(server, host, options.preferredPort, fallback)
     // Use the literal bind host in the redirect URI rather than `localhost` so
     // the OAuth provider's redirect lands on the same address family the
@@ -117,6 +118,21 @@ export async function startCallbackServer(
         async stop() {
             if (stopped) return
             stopped = true
+            // Settle the outcome promise if no callback ever arrived. Without
+            // this, an in-flight `waitForCallback` (e.g. one cancelled via
+            // AbortSignal in `runOAuthFlow`) hangs forever.
+            settle?.({
+                ok: false,
+                error: new CliError(
+                    'AUTH_OAUTH_FAILED',
+                    'Callback server stopped before authorization completed.',
+                ),
+            })
+            // `server.close()` waits for every open socket. Browsers keep the
+            // success-page connection alive for several seconds after the
+            // redirect, which would block the CLI from exiting. Close those
+            // sockets eagerly so the CLI can move on once the response is sent.
+            server.closeAllConnections()
             await new Promise<void>((resolve) => {
                 server.close(() => resolve())
             })
@@ -238,6 +254,21 @@ async function listenWithFallback(
             ].filter(Boolean),
         },
     )
+}
+
+/**
+ * Throw `AUTH_PORT_BIND_FAILED` for non-integer / out-of-range port numbers
+ * before they reach `server.listen()`, where they'd surface as a raw
+ * `RangeError` outside the `CliError` envelope. Port `0` is allowed (OS-
+ * assigned ephemeral).
+ */
+export function assertValidPort(port: unknown, label: string = 'port'): asserts port is number {
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) {
+        throw new CliError(
+            'AUTH_PORT_BIND_FAILED',
+            `Invalid ${label} '${String(port)}': expected an integer in [0..65535].`,
+        )
+    }
 }
 
 function tryListen(server: Server, host: string, port: number): Promise<void> {

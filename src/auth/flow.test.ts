@@ -21,88 +21,71 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true })
 })
 
-function makeProvider(overrides: Partial<AuthProvider<Account>> = {}): AuthProvider<Account> {
-    return {
-        async authorize(input) {
-            return {
-                authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}`,
-                handshake: { codeVerifier: 'v1' },
-            }
-        },
+const renderSuccess = () => '<html>ok</html>'
+const renderError = () => '<html>err</html>'
+
+/**
+ * Build a provider that records the runtime-assigned redirectUri so the
+ * caller's `openBrowser` mock can drive the callback against the actual
+ * server port (rather than guessing a hardcoded one).
+ *
+ * Caller-supplied `authorize` overrides are wrapped, not replaced, so the
+ * redirectUri capture survives.
+ */
+function instrument(provider: Partial<AuthProvider<Account>> = {}): {
+    provider: AuthProvider<Account>
+    getRedirect: () => string
+} {
+    let redirectUri = ''
+    const defaultAuthorize: AuthProvider<Account>['authorize'] = async (input) => ({
+        authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}`,
+        handshake: { codeVerifier: 'v1' },
+    })
+    const innerAuthorize: AuthProvider<Account>['authorize'] =
+        provider.authorize ?? defaultAuthorize
+    const { authorize: _drop, ...rest } = provider
+    void _drop
+    const wrapped: AuthProvider<Account> = {
         async exchangeCode() {
             return { accessToken: 'tok-1' }
         },
         async validateToken() {
             return { id: '1', email: 'a@b' }
         },
-        ...overrides,
+        ...rest,
+        async authorize(input) {
+            redirectUri = input.redirectUri
+            return innerAuthorize(input)
+        },
     }
+    return { provider: wrapped, getRedirect: () => redirectUri }
 }
-
-const renderSuccess = () => '<html>ok</html>'
-const renderError = () => '<html>err</html>'
 
 describe('runOAuthFlow', () => {
     it('drives prepare → authorize → exchange → validate → store and returns the result', async () => {
         const prepare = vi.fn(async () => ({ handshake: { dcrSecret: 'shh' } }))
         const exchangeCode = vi.fn(async () => ({ accessToken: 'tok-1' }))
-        const validateToken = vi.fn(async () => ({
-            id: '1',
-            email: 'a@b',
-        }))
-
-        const provider = makeProvider({ prepare, exchangeCode, validateToken })
+        const validateToken = vi.fn(async () => ({ id: '1', email: 'a@b' }))
+        const { provider, getRedirect } = instrument({ prepare, exchangeCode, validateToken })
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
 
-        // Drive a callback into the server as soon as the browser-open hook fires.
         const openBrowser = vi.fn(async (url: string) => {
-            // Hit the callback synchronously after openBrowser returns.
-            const u = new URL(url)
-            const state = u.searchParams.get('state') ?? ''
-            const callbackHost = url.replace(/https:\/\/example\.com\/oauth\/authorize\?.*$/, '')
-            // The opener gets the *authorize* URL, not the redirect URI; we need
-            // the redirect URI from the running server. Fish it out via the
-            // referer-style assumption: the test server renders /callback on a
-            // local port we don't know yet from inside this hook. Instead, use
-            // the global fetch with a known port discovered after the fact.
-            void state
-            void callbackHost
+            const state = new URL(url).searchParams.get('state') ?? ''
+            await fetch(`${getRedirect()}?code=abc&state=${state}`)
         })
 
-        // Trick: openBrowser cannot see the server URL. So instead, intercept
-        // the print fallback by making `onAuthorizeUrl` perform the callback.
-        const result = await new Promise<{ token: string; account: Account }>((resolve, reject) => {
-            const onAuthorizeUrl = (authorizeUrl: string) => {
-                void authorizeUrl
-                // The redirect URI is exposed through the server, but flow.ts
-                // doesn't surface it. Use a side channel: read the running
-                // server's port from openBrowser's URL is hard. Instead,
-                // make the provider emit a known authorize URL and hit the
-                // local callback by enumerating common ports.
-                // Simpler: we listen for the openBrowser invocation, use a
-                // CountdownLatch via a global, and the test fakes the
-                // entire callback by extracting the state from the URL
-                // and POSTing to the server via `fetch` to a port we know
-                // in advance.
-                const u = new URL(authorizeUrl)
-                const state = u.searchParams.get('state') ?? ''
-                fetch(`http://localhost:${preferredPort}/callback?code=abc&state=${state}`)
-            }
-            const preferredPort = 39871
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                displayName: 'Test',
-                scopes: ['read'],
-                readOnly: false,
-                flags: {},
-                preferredPort,
-                renderSuccess,
-                renderError,
-                openBrowser,
-                onAuthorizeUrl,
-                timeoutMs: 5000,
-            }).then(resolve, reject)
+        const result = await runOAuthFlow<Account>({
+            provider,
+            store,
+            displayName: 'Test',
+            scopes: ['read'],
+            readOnly: false,
+            flags: {},
+            preferredPort: 0,
+            renderSuccess,
+            renderError,
+            openBrowser,
+            timeoutMs: 5000,
         })
 
         expect(result.token).toBe('tok-1')
@@ -111,15 +94,15 @@ describe('runOAuthFlow', () => {
         expect(exchangeCode).toHaveBeenCalledTimes(1)
         expect(validateToken).toHaveBeenCalledTimes(1)
         expect(openBrowser).toHaveBeenCalledTimes(1)
-
-        // Token was persisted.
-        const persisted = await store.active()
-        expect(persisted).toEqual({ token: 'tok-1', account: { id: '1', email: 'a@b' } })
+        expect(await store.active()).toEqual({
+            token: 'tok-1',
+            account: { id: '1', email: 'a@b' },
+        })
     })
 
     it('skips validateToken when exchangeCode returns an account', async () => {
         const validateToken = vi.fn(async () => ({ id: 'WRONG', email: 'x@x' }))
-        const provider = makeProvider({
+        const { provider, getRedirect } = instrument({
             exchangeCode: async () => ({
                 accessToken: 'tok-1',
                 account: { id: '99', email: 'right@b' },
@@ -128,32 +111,64 @@ describe('runOAuthFlow', () => {
         })
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
 
-        const preferredPort = 39872
-        const result = await new Promise<{ token: string; account: Account }>((resolve, reject) => {
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                displayName: 'Test',
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort,
-                renderSuccess,
-                renderError,
-                openBrowser: async () => {},
-                onAuthorizeUrl: (url) => {
-                    const state = new URL(url).searchParams.get('state') ?? ''
-                    fetch(`http://localhost:${preferredPort}/callback?code=abc&state=${state}`)
-                },
-                timeoutMs: 5000,
-            }).then(resolve, reject)
+        const result = await runOAuthFlow<Account>({
+            provider,
+            store,
+            displayName: 'Test',
+            scopes: [],
+            readOnly: false,
+            flags: {},
+            preferredPort: 0,
+            renderSuccess,
+            renderError,
+            openBrowser: async (url) => {
+                const state = new URL(url).searchParams.get('state') ?? ''
+                await fetch(`${getRedirect()}?code=abc&state=${state}`)
+            },
+            timeoutMs: 5000,
         })
         expect(result.account.id).toBe('99')
         expect(validateToken).not.toHaveBeenCalled()
     })
 
+    it('threads prepare-time handshake into validateToken even when authorize forgets to forward it', async () => {
+        const validateToken = vi.fn(async ({ handshake }) => {
+            expect(handshake.dcrSecret).toBe('shh') // came from prepare(), not authorize()
+            return { id: '1', email: 'a@b' }
+        })
+        const { provider, getRedirect } = instrument({
+            prepare: async () => ({ handshake: { dcrSecret: 'shh' } }),
+            // authorize deliberately drops the prepare handshake — runOAuthFlow
+            // must merge it back in for downstream methods.
+            authorize: async (input) => ({
+                authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}`,
+                handshake: { codeVerifier: 'v1' },
+            }),
+            validateToken,
+        })
+        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+
+        await runOAuthFlow<Account>({
+            provider,
+            store,
+            displayName: 'Test',
+            scopes: [],
+            readOnly: false,
+            flags: {},
+            preferredPort: 0,
+            renderSuccess,
+            renderError,
+            openBrowser: async (url) => {
+                const state = new URL(url).searchParams.get('state') ?? ''
+                await fetch(`${getRedirect()}?code=abc&state=${state}`)
+            },
+            timeoutMs: 5000,
+        })
+        expect(validateToken).toHaveBeenCalledTimes(1)
+    })
+
     it('rejects with AUTH_CALLBACK_TIMEOUT when no callback arrives', async () => {
-        const provider = makeProvider()
+        const { provider } = instrument()
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
         await expect(
             runOAuthFlow<Account>({
@@ -163,7 +178,7 @@ describe('runOAuthFlow', () => {
                 scopes: [],
                 readOnly: false,
                 flags: {},
-                preferredPort: 39873,
+                preferredPort: 0,
                 renderSuccess,
                 renderError,
                 openBrowser: async () => {}, // never triggers a callback

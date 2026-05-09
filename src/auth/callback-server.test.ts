@@ -85,11 +85,27 @@ describe('startCallbackServer', () => {
         await assertion
     })
 
-    it('returns 404 for non-callback paths without resolving', async () => {
+    it('returns 404 for non-callback paths without settling waitForCallback', async () => {
         handle = await startCallbackServer(baseOptions())
+        // Start the wait first so we can prove the 404 doesn't settle it.
+        let settled = false
+        const waiting = handle.waitForCallback(150).then(
+            () => {
+                settled = true
+                return 'fulfilled' as const
+            },
+            (err: unknown) => {
+                settled = true
+                return err
+            },
+        )
         const wrongPath = handle.redirectUri.replace('/callback', '/other')
         const res = await fetch(wrongPath)
         expect(res.status).toBe(404)
+        expect(settled).toBe(false) // 404 must not settle the callback promise
+        // Drain the timeout so vitest doesn't see an open promise.
+        const outcome = await waiting
+        expect(outcome).toMatchObject({ code: 'AUTH_CALLBACK_TIMEOUT' })
     })
 
     it('walks to the next free port when the preferred one is busy', async () => {
@@ -137,5 +153,23 @@ describe('startCallbackServer', () => {
         handle = await startCallbackServer(baseOptions())
         await handle.stop()
         await handle.stop()
+    })
+
+    it('stop() while waitForCallback is pending settles the wait with AUTH_OAUTH_FAILED', async () => {
+        handle = await startCallbackServer(baseOptions())
+        const assertion = expect(handle.waitForCallback(60_000)).rejects.toMatchObject({
+            code: 'AUTH_OAUTH_FAILED',
+        })
+        await handle.stop()
+        await assertion
+    })
+
+    it('rejects invalid preferredPort with AUTH_PORT_BIND_FAILED', async () => {
+        await expect(startCallbackServer(baseOptions({ preferredPort: -1 }))).rejects.toMatchObject(
+            { code: 'AUTH_PORT_BIND_FAILED' },
+        )
+        await expect(
+            startCallbackServer(baseOptions({ preferredPort: 70000 })),
+        ).rejects.toMatchObject({ code: 'AUTH_PORT_BIND_FAILED' })
     })
 })

@@ -1,8 +1,8 @@
 import chalk from 'chalk'
 import { CliError } from '../../errors.js'
-import { formatJson, formatNdjson } from '../../json.js'
 import type { ViewOptions } from '../../options.js'
 import type { AuthAccount, AuthProvider, TokenStore } from '../types.js'
+import { emitView, persistPastedToken, readTokenFromStdin } from './shared.js'
 
 export type TokenHandlerOptions<TAccount extends AuthAccount = AuthAccount> = {
     provider: AuthProvider<TAccount>
@@ -19,17 +19,20 @@ export type TokenViewCmdOptions = {
 }
 
 export type TokenSetCmdOptions = {
-    user?: string
     json?: boolean
     ndjson?: boolean
+}
+
+export type TokenSetExtras = {
+    /** Override the token reader (tests). Defaults to `readTokenFromStdin`. */
+    readToken?: () => Promise<string>
 }
 
 /**
  * `<cli> [auth] token` — print the active token (or the one for `--user`).
  *
- * Honours the env-token override: when `<APP>_API_TOKEN` is set, it's printed
- * verbatim and the store is not consulted. The store should not race with the
- * runtime resolution path.
+ * Honours the env-token override: when `<APP>_API_TOKEN` is set and `--user`
+ * is not specified, it's printed verbatim and the store is not consulted.
  */
 export async function runTokenView<TAccount extends AuthAccount>(
     options: TokenHandlerOptions<TAccount>,
@@ -53,51 +56,31 @@ export async function runTokenView<TAccount extends AuthAccount>(
 }
 
 /**
- * `<cli> [auth] token set <value>` — manually persist a token, validating it
- * against the API via `provider.acceptPastedToken`.
+ * `<cli> [auth] token set` — read a token from piped stdin, validate it
+ * against the API, and persist it as the active account in a single store
+ * mutation.
+ *
+ * Reads from stdin (not argv) so secrets never appear in `ps`, shell
+ * history, or audit logs. Errors with a hint when stdin is a TTY.
  */
 export async function runTokenSet<TAccount extends AuthAccount>(
     options: TokenHandlerOptions<TAccount>,
-    rawToken: string,
     cmd: TokenSetCmdOptions,
+    extras: TokenSetExtras = {},
 ): Promise<void> {
     const view: ViewOptions = { json: cmd.json, ndjson: cmd.ndjson }
-    if (!options.provider.acceptPastedToken) {
-        throw new CliError(
-            'AUTH_PROVIDER_UNSUPPORTED',
-            'Token paste is not supported by the configured auth provider.',
-        )
-    }
-    const trimmed = rawToken.trim()
-    if (trimmed.length === 0) {
-        throw new CliError('AUTH_INVALID_TOKEN', 'Token cannot be empty.')
-    }
-    const account = await options.provider.acceptPastedToken({ token: trimmed, flags: {} })
-    await options.store.set(account, trimmed)
-    await options.store.setActive(account.id)
-
-    if (view.json) {
-        console.log(formatJson({ saved: true, account, displayName: options.displayName }))
-        return
-    }
-    if (view.ndjson) {
-        console.log(formatNdjson([{ saved: true, account, displayName: options.displayName }]))
-        return
-    }
+    const rawToken = await (extras.readToken ?? readTokenFromStdin)()
+    const account = await persistPastedToken({
+        provider: options.provider,
+        store: options.store,
+        rawToken,
+    })
     const label = account.label ?? account.id
-    console.log(
+    emitView(view, { saved: true, account, displayName: options.displayName }, () => [
         `${chalk.green('✓')} Token saved for ${options.displayName} (${chalk.cyan(label)}).`,
-    )
+    ])
 }
 
 function emitToken(view: ViewOptions, token: string, source: string): void {
-    if (view.json) {
-        console.log(formatJson({ token, source }))
-        return
-    }
-    if (view.ndjson) {
-        console.log(formatNdjson([{ token, source }]))
-        return
-    }
-    console.log(token)
+    emitView(view, { token, source }, () => [token])
 }

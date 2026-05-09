@@ -32,6 +32,7 @@ export { runTokenSet, runTokenView } from './commands/token.js'
 export type {
     TokenHandlerOptions,
     TokenSetCmdOptions,
+    TokenSetExtras,
     TokenViewCmdOptions,
 } from './commands/token.js'
 export { createConfigTokenStore, createKeyringTokenStore } from './store/index.js'
@@ -56,5 +57,6 @@ export type {
     StoreMigration,
     SuccessContext,
     TokenStore,
+    TokenStoreSetOptions,
     ValidateInput,
 } from './types.js'
