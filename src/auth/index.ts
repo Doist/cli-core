@@ -2,7 +2,7 @@ export type { AuthErrorCode } from './errors.js'
 export { runOAuthFlow } from './flow.js'
 export type { RunOAuthFlowOptions, RunOAuthFlowResult } from './flow.js'
 export { attachLoginCommand } from './login.js'
-export type { AttachLoginCommandOptions, AttachLoginView } from './login.js'
+export type { AttachLoginCommandOptions, AttachLoginContext } from './login.js'
 export {
     DEFAULT_VERIFIER_ALPHABET,
     deriveChallenge,

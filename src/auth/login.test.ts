@@ -16,25 +16,8 @@ type Account = { id: string; label?: string; email: string }
 
 const account: Account = { id: '1', label: 'me', email: 'a@b' }
 
-const provider: AuthProvider<Account> = {
-    async authorize() {
-        return { authorizeUrl: '', handshake: {} }
-    },
-    async exchangeCode() {
-        return { accessToken: 'tok' }
-    },
-    async validateToken() {
-        return account
-    },
-}
-
-const store: TokenStore<Account> = {
-    async active() {
-        return null
-    },
-    async set() {},
-    async clear() {},
-}
+const provider = {} as AuthProvider<Account>
+const store = {} as TokenStore<Account>
 
 const renderSuccess = () => '<html>ok</html>'
 const renderError = () => '<html>err</html>'
@@ -81,6 +64,8 @@ describe('attachLoginCommand', () => {
         expect(resolveScopes).toHaveBeenCalledWith({ readOnly: false, flags: {} })
         expect(mockedRunOAuthFlow).toHaveBeenCalledTimes(1)
         const call = mockedRunOAuthFlow.mock.calls[0][0]
+        expect(call.provider).toBe(provider)
+        expect(call.store).toBe(store)
         expect(call.scopes).toEqual(['read'])
         expect(call.readOnly).toBe(false)
         expect(call.flags).toEqual({})
@@ -89,7 +74,11 @@ describe('attachLoginCommand', () => {
         expect(call.renderSuccess).toBe(renderSuccess)
         expect(call.renderError).toBe(renderError)
         expect(call.onAuthorizeUrl).toBeUndefined()
-        expect(onSuccess).toHaveBeenCalledWith(account, { json: false, ndjson: false })
+        expect(onSuccess).toHaveBeenCalledWith({
+            account,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
     })
 
     it('threads --read-only into resolveScopes and runOAuthFlow', async () => {
@@ -109,45 +98,93 @@ describe('attachLoginCommand', () => {
         expect(mockedRunOAuthFlow.mock.calls[0][0].preferredPort).toBe(9000)
     })
 
-    it('rejects non-integer --callback-port values via CliError', async () => {
+    it('rejects non-integer --callback-port with AUTH_PORT_BIND_FAILED before invoking the flow', async () => {
         const { program } = build()
 
         await expect(
             program.parseAsync(['node', 'cli', 'auth', 'login', '--callback-port', 'abc']),
-        ).rejects.toBeInstanceOf(CliError)
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'AUTH_PORT_BIND_FAILED',
+        })
+        expect(mockedRunOAuthFlow).not.toHaveBeenCalled()
     })
 
-    it('rejects out-of-range --callback-port values via CliError', async () => {
+    it('rejects out-of-range --callback-port with AUTH_PORT_BIND_FAILED before invoking the flow', async () => {
         const { program } = build()
 
         await expect(
             program.parseAsync(['node', 'cli', 'auth', 'login', '--callback-port', '70000']),
-        ).rejects.toBeInstanceOf(CliError)
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'AUTH_PORT_BIND_FAILED',
+        })
+        expect(mockedRunOAuthFlow).not.toHaveBeenCalled()
     })
 
-    it('suppresses the authorize-url fallback print under --json', async () => {
+    it('routes the authorize-url fallback to stderr (not stdout) under --json', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+        const stdoutLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        // Make the mocked flow invoke the supplied onAuthorizeUrl so the test
+        // exercises the actual fallback path rather than just inspecting the
+        // function reference.
+        mockedRunOAuthFlow.mockImplementationOnce(async (opts) => {
+            opts.onAuthorizeUrl?.('https://example.com/auth')
+            return { token: 'tok', account }
+        })
         const { program, onSuccess } = build()
 
         await program.parseAsync(['node', 'cli', 'auth', 'login', '--json'])
 
-        const call = mockedRunOAuthFlow.mock.calls[0][0]
-        expect(call.onAuthorizeUrl).toBeTypeOf('function')
-        // Confirm the supplied stub is a no-op rather than a stdout writer.
-        expect(call.onAuthorizeUrl?.('https://example.com')).toBeUndefined()
-        expect(onSuccess).toHaveBeenCalledWith(account, { json: true, ndjson: false })
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('https://example.com/auth'))
+        expect(stdoutLogSpy).not.toHaveBeenCalled()
+        expect(onSuccess).toHaveBeenCalledWith({
+            account,
+            view: { json: true, ndjson: false },
+            flags: {},
+        })
+
+        stderrSpy.mockRestore()
+        stdoutLogSpy.mockRestore()
     })
 
-    it('suppresses the authorize-url fallback print under --ndjson', async () => {
-        const { program, onSuccess } = build()
+    it('routes the authorize-url fallback to stderr under --ndjson', async () => {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+        const stdoutLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        mockedRunOAuthFlow.mockImplementationOnce(async (opts) => {
+            opts.onAuthorizeUrl?.('https://example.com/auth')
+            return { token: 'tok', account }
+        })
+        const { program } = build()
 
         await program.parseAsync(['node', 'cli', 'auth', 'login', '--ndjson'])
 
-        expect(mockedRunOAuthFlow.mock.calls[0][0].onAuthorizeUrl).toBeTypeOf('function')
-        expect(onSuccess).toHaveBeenCalledWith(account, { json: false, ndjson: true })
+        expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('https://example.com/auth'))
+        expect(stdoutLogSpy).not.toHaveBeenCalled()
+
+        stderrSpy.mockRestore()
+        stdoutLogSpy.mockRestore()
+    })
+
+    it('leaves onAuthorizeUrl undefined in human mode (lets runOAuthFlow fall back to its TTY default)', async () => {
+        const { program } = build()
+
+        await program.parseAsync(['node', 'cli', 'auth', 'login'])
+
+        expect(mockedRunOAuthFlow.mock.calls[0][0].onAuthorizeUrl).toBeUndefined()
+    })
+
+    it('forwards a consumer-supplied onAuthorizeUrl override (and skips the stderr default)', async () => {
+        const onAuthorizeUrl = vi.fn()
+        const { program } = build({ onAuthorizeUrl })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'login', '--json'])
+
+        expect(mockedRunOAuthFlow.mock.calls[0][0].onAuthorizeUrl).toBe(onAuthorizeUrl)
     })
 
     it('exposes consumer-attached options in flags but strips the standard ones', async () => {
-        const { program, resolveScopes } = build({}, (login) => {
+        const { program, onSuccess, resolveScopes } = build({}, (login) => {
             login.option('--additional-scopes <list>', 'extra scopes', (v: string) => v)
         })
 
@@ -169,6 +206,11 @@ describe('attachLoginCommand', () => {
         expect(call.flags).toEqual({ additionalScopes: 'projects:read' })
         expect(resolveScopes).toHaveBeenCalledWith({
             readOnly: true,
+            flags: { additionalScopes: 'projects:read' },
+        })
+        expect(onSuccess).toHaveBeenCalledWith({
+            account,
+            view: { json: true, ndjson: false },
             flags: { additionalScopes: 'projects:read' },
         })
     })

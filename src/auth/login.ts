@@ -1,11 +1,19 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
+import type { ViewOptions } from '../options.js'
 import { runOAuthFlow } from './flow.js'
 import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
 
-export type AttachLoginView = {
-    json: boolean
-    ndjson: boolean
+export type AttachLoginContext<TAccount extends AuthAccount> = {
+    account: TAccount
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
+    view: Required<ViewOptions>
+    /**
+     * Stripped per-CLI flags — the parsed options object with the standard
+     * registrar flags (`--read-only`, `--callback-port`, `--json`, `--ndjson`)
+     * removed. Same view `resolveScopes` saw at flow start.
+     */
+    flags: Record<string, unknown>
 }
 
 export type AttachLoginCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -22,10 +30,15 @@ export type AttachLoginCommandOptions<TAccount extends AuthAccount = AuthAccount
     /** Override the browser opener (tests). When omitted, `runOAuthFlow` imports `open`. */
     openBrowser?(url: string): Promise<void>
     /**
-     * Called after the token is persisted. Receives the resolved account and
-     * the `--json` / `--ndjson` view flags so the consumer can format output.
+     * Override the authorize-URL fallback callback that fires when the browser
+     * can't be opened (no `open` peer / opener throws). When omitted, the URL
+     * is written to stderr in machine-output mode (so the JSON / NDJSON
+     * envelope on stdout stays clean) and to stdout via `runOAuthFlow`'s
+     * default in human mode.
      */
-    onSuccess(account: TAccount, view: AttachLoginView): void | Promise<void>
+    onAuthorizeUrl?(url: string): void
+    /** Called after the token is persisted. */
+    onSuccess(ctx: AttachLoginContext<TAccount>): void | Promise<void>
 }
 
 /**
@@ -51,7 +64,10 @@ export function attachLoginCommand<TAccount extends AuthAccount>(
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async (cmd: Record<string, unknown>) => {
             const { readOnly, callbackPort, json, ndjson, ...flags } = cmd
-            const view: AttachLoginView = { json: Boolean(json), ndjson: Boolean(ndjson) }
+            const view: Required<ViewOptions> = {
+                json: Boolean(json),
+                ndjson: Boolean(ndjson),
+            }
             const machineOutput = view.json || view.ndjson
             const result = await runOAuthFlow<TAccount>({
                 provider: options.provider,
@@ -64,24 +80,26 @@ export function attachLoginCommand<TAccount extends AuthAccount>(
                 renderSuccess: options.renderSuccess,
                 renderError: options.renderError,
                 openBrowser: options.openBrowser,
-                // Suppress the human-mode authorize-URL fallback print under
-                // machine output so JSON / NDJSON consumers never see a stray
-                // line on stdout.
-                onAuthorizeUrl: machineOutput ? () => undefined : undefined,
+                // In machine-output mode, route the fallback URL to stderr so
+                // the JSON / NDJSON envelope on stdout stays clean — the user
+                // can still see the URL if `open` is missing or throws. In
+                // human mode, leave it undefined so `runOAuthFlow`'s TTY
+                // default (stdout) fires. Consumer override wins either way.
+                onAuthorizeUrl:
+                    options.onAuthorizeUrl ??
+                    (machineOutput
+                        ? (url: string) => {
+                              process.stderr.write(`Open this URL in your browser:\n  ${url}\n`)
+                          }
+                        : undefined),
             })
-            await options.onSuccess(result.account, view)
+            await options.onSuccess({ account: result.account, view, flags })
         })
 }
 
 function parsePort(raw: string): number {
-    if (!/^\d+$/.test(raw)) {
-        throw new CliError(
-            'AUTH_PORT_BIND_FAILED',
-            `Invalid --callback-port '${raw}': expected an integer in [0..65535].`,
-        )
-    }
-    const port = Number(raw)
-    if (port > 65535) {
+    const port = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+    if (!Number.isFinite(port) || port > 65535) {
         throw new CliError(
             'AUTH_PORT_BIND_FAILED',
             `Invalid --callback-port '${raw}': expected an integer in [0..65535].`,

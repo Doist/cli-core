@@ -161,15 +161,15 @@ const login = attachLoginCommand<Account>(auth, {
     resolveScopes: ({ readOnly }) => (readOnly ? ['read'] : ['read', 'write']),
     renderSuccess: () => `<html>...</html>`,
     renderError: (message) => `<html>${message}</html>`,
-    onSuccess: (account, view) => {
-        if (view.json) console.log(JSON.stringify({ account }))
+    onSuccess: ({ account, view, flags }) => {
+        if (view.json) console.log(JSON.stringify({ account, flags }))
         else console.log(`Signed in as ${account.label ?? account.id}`)
     },
 })
 login.description('Authenticate via OAuth')
 ```
 
-`attachLoginCommand` wires `--read-only`, `--callback-port`, `--json`, `--ndjson` and returns the new `Command` so the consumer can chain `.description(...)` / `.option(...)` / `.addHelpText(...)`. Consumer-attached options land in the `flags` object passed to `resolveScopes`. The success / error HTML is a render hook — every CLI brings its own template (no shared layout enforced). Errors are `CliError` (`AUTH_OAUTH_FAILED`, `AUTH_CALLBACK_TIMEOUT`, `AUTH_PORT_BIND_FAILED`, `AUTH_TOKEN_EXCHANGE_FAILED`, `AUTH_STORE_WRITE_FAILED`); the consumer's top-level handler formats and exits.
+`attachLoginCommand` wires `--read-only`, `--callback-port`, `--json`, `--ndjson` and returns the new `Command` so the consumer can chain `.description(...)` / `.option(...)` / `.addHelpText(...)`. Consumer-attached options land in the `flags` object passed to `resolveScopes` and (post-flow) to `onSuccess`. Under `--json` / `--ndjson` the authorize-URL fallback (printed when `open` is missing or fails to launch) is routed to stderr so the JSON envelope on stdout stays clean; pass `onAuthorizeUrl` to override. The success / error HTML is a render hook — every CLI brings its own template (no shared layout enforced). Errors are `CliError` (`AUTH_OAUTH_FAILED`, `AUTH_CALLBACK_TIMEOUT`, `AUTH_PORT_BIND_FAILED`, `AUTH_TOKEN_EXCHANGE_FAILED`, `AUTH_STORE_WRITE_FAILED`); the consumer's top-level handler formats and exits.
 
 For a lower-level integration that doesn't want the Commander helper, `runOAuthFlow` is exposed directly with the same option set.
 
