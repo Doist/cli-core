@@ -1,3 +1,9 @@
+## [0.7.0](https://github.com/Doist/cli-core/compare/v0.6.0...v0.7.0) (2026-05-09)
+
+### Features
+
+* add registerUpdateCommand to ./commands subpath ([#9](https://github.com/Doist/cli-core/issues/9)) ([17c6dc7](https://github.com/Doist/cli-core/commit/17c6dc74cd180ddcdb3e30bf2395ad3db05fe5c9))
+
 ## [0.6.0](https://github.com/Doist/cli-core/compare/v0.5.0...v0.6.0) (2026-05-09)
 
 ### Features
