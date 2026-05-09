@@ -6,7 +6,13 @@ export {
     updateConfig,
     writeConfig,
 } from './config.js'
-export type { ConfigErrorCode, ReadConfigStrictResult, WriteConfigOptions } from './config.js'
+export type {
+    ConfigErrorCode,
+    CoreConfig,
+    ReadConfigStrictResult,
+    UpdateChannel,
+    WriteConfigOptions,
+} from './config.js'
 export { printEmpty } from './empty.js'
 export { CliError } from './errors.js'
 export type { CliErrorCode, CliErrorOptions, ErrorType } from './errors.js'

@@ -3,6 +3,18 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { formatJson } from './json.js'
 
+export type UpdateChannel = 'stable' | 'pre-release'
+
+/**
+ * Shape of the fields cli-core itself reads or writes in a CLI's config file.
+ * Consumers compose their own config type with `type MyConfig = CoreConfig & { … }`
+ * so a single CLI config can be typed once and extended as future cli-core
+ * modules (auth, token storage, …) claim more fields.
+ */
+export type CoreConfig = {
+    update_channel?: UpdateChannel
+}
+
 /**
  * Resolve the canonical config path for a CLI, honouring `XDG_CONFIG_HOME`
  * when set: `${XDG_CONFIG_HOME ?? ~/.config}/<appName>/config.json`.

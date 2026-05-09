@@ -12,19 +12,19 @@ npm install @doist/cli-core
 
 ## What's in it
 
-| Module               | Key exports                                                                                                                               | Purpose                                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `commands` (subpath) | `registerChangelogCommand` (more to come)                                                                                                 | Commander wiring for cli-core's standard commands (e.g. `<cli> changelog`). **Requires** `commander` as an optional peer-dep.                                     |
-| `config`             | `getConfigPath`, `readConfig`, `readConfigStrict`, `writeConfig`, `updateConfig`                                                          | Read / write a per-CLI JSON config file with typed error codes for broken or missing state.                                                                       |
-| `empty`              | `printEmpty`                                                                                                                              | Print an empty-state message gated on `--json` / `--ndjson` so machine consumers never see human strings on stdout.                                               |
-| `errors`             | `CliError`                                                                                                                                | Typed CLI error class with `code` and exit-code mapping.                                                                                                          |
-| `global-args`        | `parseGlobalArgs`, `createGlobalArgsStore`, `createAccessibleGate`, `createSpinnerGate`, `getProgressJsonlPath`, `isProgressJsonlEnabled` | Parse well-known global flags (`--json`, `--ndjson`, `--quiet`, `--verbose`, `--accessible`, `--no-spinner`, `--progress-jsonl`) and derive predicates from them. |
-| `json`               | `formatJson`, `formatNdjson`                                                                                                              | Stable JSON / newline-delimited JSON formatting for stdout.                                                                                                       |
-| `markdown` (subpath) | `preloadMarkdown`, `renderMarkdown`, `TerminalRendererOptions`                                                                            | Lazy-init terminal markdown renderer. **Requires** `marked` and `marked-terminal-renderer` as peer-deps — install only if your CLI uses this subpath.             |
-| `options`            | `ViewOptions`                                                                                                                             | Type contract for `{ json?, ndjson? }` per-command options that machine-output gates derive from.                                                                 |
-| `spinner`            | `createSpinner`                                                                                                                           | Loading spinner factory wrapping `yocto-spinner` with disable gates.                                                                                              |
-| `terminal`           | `isCI`, `isStderrTTY`, `isStdinTTY`, `isStdoutTTY`                                                                                        | TTY / CI detection helpers.                                                                                                                                       |
-| `testing` (subpath)  | `describeEmptyMachineOutput`                                                                                                              | Vitest helpers reusable by consuming CLIs (e.g. parametrised empty-state suite covering `--json` / `--ndjson` / human modes).                                     |
+| Module               | Key exports                                                                                                                               | Purpose                                                                                                                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commands` (subpath) | `registerChangelogCommand`, `registerUpdateCommand` (+ semver helpers)                                                                    | Commander wiring for cli-core's standard commands (e.g. `<cli> changelog`, `<cli> update`, `<cli> update switch`). **Requires** `commander` as an optional peer-dep. |
+| `config`             | `getConfigPath`, `readConfig`, `readConfigStrict`, `writeConfig`, `updateConfig`, `CoreConfig`, `UpdateChannel`                           | Read / write a per-CLI JSON config file with typed error codes; `CoreConfig` is the shape of fields cli-core itself owns (extend it for per-CLI fields).             |
+| `empty`              | `printEmpty`                                                                                                                              | Print an empty-state message gated on `--json` / `--ndjson` so machine consumers never see human strings on stdout.                                                  |
+| `errors`             | `CliError`                                                                                                                                | Typed CLI error class with `code` and exit-code mapping.                                                                                                             |
+| `global-args`        | `parseGlobalArgs`, `createGlobalArgsStore`, `createAccessibleGate`, `createSpinnerGate`, `getProgressJsonlPath`, `isProgressJsonlEnabled` | Parse well-known global flags (`--json`, `--ndjson`, `--quiet`, `--verbose`, `--accessible`, `--no-spinner`, `--progress-jsonl`) and derive predicates from them.    |
+| `json`               | `formatJson`, `formatNdjson`                                                                                                              | Stable JSON / newline-delimited JSON formatting for stdout.                                                                                                          |
+| `markdown` (subpath) | `preloadMarkdown`, `renderMarkdown`, `TerminalRendererOptions`                                                                            | Lazy-init terminal markdown renderer. **Requires** `marked` and `marked-terminal-renderer` as peer-deps — install only if your CLI uses this subpath.                |
+| `options`            | `ViewOptions`                                                                                                                             | Type contract for `{ json?, ndjson? }` per-command options that machine-output gates derive from.                                                                    |
+| `spinner`            | `createSpinner`                                                                                                                           | Loading spinner factory wrapping `yocto-spinner` with disable gates.                                                                                                 |
+| `terminal`           | `isCI`, `isStderrTTY`, `isStdinTTY`, `isStdoutTTY`                                                                                        | TTY / CI detection helpers.                                                                                                                                          |
+| `testing` (subpath)  | `describeEmptyMachineOutput`                                                                                                              | Vitest helpers reusable by consuming CLIs (e.g. parametrised empty-state suite covering `--json` / `--ndjson` / human modes).                                        |
 
 ## Usage
 
@@ -99,6 +99,27 @@ registerChangelogCommand(program, {
 ```
 
 The helper throws `CliError` (`INVALID_TYPE` for a bad `--count`, `FILE_READ_ERROR` if the file can't be read) so the CLI's top-level error handler formats and exits.
+
+Wire `<cli> update` and `<cli> update switch` similarly:
+
+```ts
+import { createSpinner, getConfigPath } from '@doist/cli-core'
+import { registerUpdateCommand } from '@doist/cli-core/commands'
+import packageJson from '../package.json' with { type: 'json' }
+
+const { withSpinner } = createSpinner()
+registerUpdateCommand(program, {
+    packageName: '@doist/todoist-cli',
+    currentVersion: packageJson.version,
+    configPath: getConfigPath('todoist-cli'),
+    changelogCommandName: 'td changelog',
+    withSpinner,
+})
+```
+
+`update` checks the configured channel's npm dist-tag (`stable` → `latest`, `pre-release` → `next`), compares against `currentVersion`, and shells out to `npm i -g` (or `pnpm add -g` if `npm_execpath` indicates pnpm). `update switch --stable | --pre-release` flips the persisted `update_channel` field via `updateConfig`, preserving any sibling keys. Both subcommands accept `--json` / `--ndjson`. Errors are `CliError` (`INVALID_FLAGS`, `UPDATE_CHECK_FAILED`, `UPDATE_INSTALL_FAILED`, or the canonical `CONFIG_*` codes if the config file is broken).
+
+The semver helpers (`parseVersion`, `compareVersions`, `isNewer`, `getInstallTag`, `fetchLatestVersion`, `getConfiguredUpdateChannel`) are also exported for ad-hoc use outside the registered command.
 
 ## Development
 
