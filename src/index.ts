@@ -16,7 +16,7 @@ export type {
     WriteConfigOptions,
 } from './config.js'
 export { printEmpty } from './empty.js'
-export { CliError } from './errors.js'
+export { CliError, getErrorMessage } from './errors.js'
 export type { CliErrorCode, CliErrorOptions, ErrorType } from './errors.js'
 export {
     createAccessibleGate,
@@ -33,6 +33,7 @@ export type {
     SpinnerGateOptions,
 } from './global-args.js'
 export { formatJson, formatNdjson } from './json.js'
+export { emitView } from './options.js'
 export type { ViewOptions } from './options.js'
 export { createSpinner } from './spinner.js'
 export type {

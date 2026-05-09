@@ -7,9 +7,8 @@ import {
     type UpdateChannel,
     updateConfigOrThrow,
 } from '../config.js'
-import { CliError } from '../errors.js'
-import { formatJson, formatNdjson } from '../json.js'
-import type { ViewOptions } from '../options.js'
+import { CliError, getErrorMessage } from '../errors.js'
+import { emitView, type ViewOptions } from '../options.js'
 import type { SpinnerOptions } from '../spinner.js'
 
 const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org'
@@ -165,22 +164,6 @@ function runInstall(
     })
 }
 
-function emit(
-    view: ViewOptions,
-    payload: Record<string, unknown>,
-    humanLines: () => ReadonlyArray<string>,
-): void {
-    if (view.json) {
-        console.log(formatJson(payload))
-        return
-    }
-    if (view.ndjson) {
-        console.log(formatNdjson([payload]))
-        return
-    }
-    for (const line of humanLines()) console.log(line)
-}
-
 function formatChannel(channel: UpdateChannel): string {
     return channel === 'pre-release' ? chalk.magenta('pre-release') : chalk.green('stable')
 }
@@ -213,7 +196,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const channel = await getConfiguredUpdateChannel(options.configPath)
 
     if (cmd.channel) {
-        emit(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
+        emitView(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
         return
     }
 
@@ -233,7 +216,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
                 }),
         )
     } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
+        const message = getErrorMessage(error)
         throw new CliError('UPDATE_CHECK_FAILED', `Failed to check for updates: ${message}`)
     }
 
@@ -242,7 +225,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const updateAvailable = !upToDate && isNewer(currentVersion, latestVersion)
 
     if (cmd.check) {
-        emit(view, { currentVersion, latestVersion, channel, updateAvailable }, () => {
+        emitView(view, { currentVersion, latestVersion, channel, updateAvailable }, () => {
             const channelLine = `  Channel: ${formatChannel(channel)}`
             const headline = upToDate
                 ? `${chalk.green('✓')} Already up to date (v${currentVersion})`
@@ -255,7 +238,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     }
 
     if (upToDate) {
-        emit(view, { currentVersion, latestVersion, channel, installed: false }, () => [
+        emitView(view, { currentVersion, latestVersion, channel, installed: false }, () => [
             `${chalk.green('✓')} Already up to date${label} (v${currentVersion})`,
         ])
         return
@@ -289,7 +272,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
                 ],
             })
         }
-        const message = error instanceof Error ? error.message : String(error)
+        const message = getErrorMessage(error)
         throw new CliError('UPDATE_INSTALL_FAILED', `Install failed: ${message}`)
     }
 
@@ -301,7 +284,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         )
     }
 
-    emit(view, { currentVersion, latestVersion, channel, installed: true }, () => {
+    emitView(view, { currentVersion, latestVersion, channel, installed: true }, () => {
         const lines = [`${chalk.green('✓')} Updated to v${latestVersion}${label}`]
         if (channel === 'stable' && options.changelogCommandName) {
             lines.push(
@@ -336,7 +319,7 @@ async function runSwitch(
 
     await updateConfigOrThrow<CoreConfig>(options.configPath, { update_channel: channel })
 
-    emit(view, { channel }, () => {
+    emitView(view, { channel }, () => {
         if (channel === 'pre-release') {
             return [
                 `${chalk.green('✓')} Update channel set to ${formatChannel(channel)}`,
