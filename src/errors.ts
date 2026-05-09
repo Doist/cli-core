@@ -1,3 +1,4 @@
+import type { AuthErrorCode } from './auth/errors.js'
 import type { CommandErrorCode } from './commands/errors.js'
 import type { ConfigErrorCode } from './config.js'
 
@@ -19,7 +20,7 @@ export type CliErrorOptions = {
  * export type CliErrorCode = ConfigErrorCode | SpinnerErrorCode | …
  * ```
  */
-export type CliErrorCode = CommandErrorCode | ConfigErrorCode
+export type CliErrorCode = AuthErrorCode | CommandErrorCode | ConfigErrorCode
 
 /**
  * Generic CLI error carrying a structured code, optional hints, and a severity
@@ -53,4 +54,14 @@ export class CliError<TCode extends string = string> extends Error {
         this.hints = options.hints
         this.type = options.type ?? 'error'
     }
+}
+
+/**
+ * Extract a human-readable message from any thrown value. `Error` instances
+ * keep their `.message`; everything else stringifies. Used at boundaries that
+ * accept arbitrary values (catch blocks, fetch failures) so error formatting
+ * stays consistent.
+ */
+export function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
 }
