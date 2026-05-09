@@ -1,3 +1,9 @@
+## [0.8.0](https://github.com/Doist/cli-core/compare/v0.7.1...v0.8.0) (2026-05-09)
+
+### Features
+
+* **auth:** extract OAuth login runtime into ./auth subpath ([#12](https://github.com/Doist/cli-core/issues/12)) ([d402f02](https://github.com/Doist/cli-core/commit/d402f02d45237245259df753dbc8a97e0c7791e8))
+
 ## [0.7.1](https://github.com/Doist/cli-core/compare/v0.7.0...v0.7.1) (2026-05-09)
 
 ### Bug Fixes
