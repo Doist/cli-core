@@ -80,7 +80,10 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
  * single-user case.
  */
 export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
+    /** The currently signed-in identity, or `null` when nothing is stored. */
     active(): Promise<{ token: string; account: TAccount } | null>
+    /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` to surface a typed failure; any other thrown value is wrapped as `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
+    /** Remove the active credential. No-op when nothing is stored. */
     clear(): Promise<void>
 }

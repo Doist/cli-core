@@ -49,7 +49,12 @@ const DEFAULT_CALLBACK_HOST = '127.0.0.1'
  * Drive the OAuth dance end-to-end and persist the resulting token.
  *
  * `prepare?` → bind callback server → `authorize` → open browser →
- * wait for callback → `exchangeCode` → `validateToken` → `store.set`.
+ * wait for callback → `exchangeCode` → `validateToken?` → `store.set`.
+ * (`validateToken` is skipped when `exchangeCode` already returned an
+ * `account`.)
+ *
+ * Aborting `signal` throws `AUTH_OAUTH_FAILED`. A timeout throws
+ * `AUTH_CALLBACK_TIMEOUT`. Bind failures throw `AUTH_PORT_BIND_FAILED`.
  *
  * The local HTTP callback server is an internal implementation detail; it
  * is not a separately reusable module since OAuth login is its only
