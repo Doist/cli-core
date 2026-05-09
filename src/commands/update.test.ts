@@ -1,6 +1,8 @@
 import chalk from 'chalk'
 import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CliError } from '../errors.js'
+import type { SpinnerOptions } from '../spinner.js'
 import {
     compareVersions,
     isNewer,
@@ -15,18 +17,16 @@ vi.mock('../config.js', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../config.js')>()
     return {
         ...actual,
-        readConfig: vi.fn().mockResolvedValue({}),
-        readConfigStrict: vi.fn().mockResolvedValue({ state: 'missing' }),
-        updateConfig: vi.fn().mockResolvedValue(undefined),
+        readConfigOrThrow: vi.fn().mockResolvedValue({}),
+        updateConfigOrThrow: vi.fn().mockResolvedValue(undefined),
     }
 })
 
 const { spawn } = await import('node:child_process')
 const config = await import('../config.js')
 const mockSpawn = vi.mocked(spawn)
-const mockReadConfig = vi.mocked(config.readConfig)
-const mockReadConfigStrict = vi.mocked(config.readConfigStrict)
-const mockUpdateConfig = vi.mocked(config.updateConfig)
+const mockReadConfigOrThrow = vi.mocked(config.readConfigOrThrow)
+const mockUpdateConfigOrThrow = vi.mocked(config.updateConfigOrThrow)
 
 const BASE_OPTIONS: UpdateCommandOptions = {
     packageName: '@doist/todoist-cli',
@@ -76,9 +76,8 @@ let consoleSpy: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
     chalk.level = 0
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    mockReadConfig.mockReset().mockResolvedValue({})
-    mockReadConfigStrict.mockReset().mockResolvedValue({ state: 'missing' })
-    mockUpdateConfig.mockReset().mockResolvedValue(undefined)
+    mockReadConfigOrThrow.mockReset().mockResolvedValue({})
+    mockUpdateConfigOrThrow.mockReset().mockResolvedValue(undefined)
     mockSpawn.mockClear()
 })
 
@@ -123,7 +122,7 @@ describe('update --channel', () => {
         ['stable', undefined],
         ['pre-release', 'pre-release' as const],
     ])('reports %s without hitting the registry', async (expected, configured) => {
-        if (configured) mockReadConfig.mockResolvedValue({ update_channel: configured })
+        if (configured) mockReadConfigOrThrow.mockResolvedValue({ update_channel: configured })
         const fetchMock = vi.fn()
         vi.stubGlobal('fetch', fetchMock)
         await createProgram().parseAsync(['node', 'td', 'update', '--channel'])
@@ -163,10 +162,12 @@ describe('update --check', () => {
     })
 
     it('respects pre-release channel for the registry URL', async () => {
-        mockReadConfig.mockResolvedValue({ update_channel: 'pre-release' })
+        mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
         mockFetchOk('1.36.0-next.1')
         await createProgram().parseAsync(['node', 'td', 'update', '--check'])
-        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next')
+        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next', {
+            headers: { Accept: 'application/vnd.npm.install-v1+json' },
+        })
     })
 })
 
@@ -205,17 +206,20 @@ describe('update install flow', () => {
     it.each(cases)(
         'spawns the right install command (%s)',
         async (_, channel, execpath, pm, args) => {
-            if (channel) mockReadConfig.mockResolvedValue({ update_channel: channel })
+            if (channel) mockReadConfigOrThrow.mockResolvedValue({ update_channel: channel })
             if (execpath) vi.stubEnv('npm_execpath', execpath)
             mockFetchOk('99.99.99')
             mockSpawnExit()
             await createProgram().parseAsync(['node', 'td', 'update'])
-            expect(mockSpawn).toHaveBeenCalledWith(pm, args, { stdio: 'pipe' })
+            expect(mockSpawn).toHaveBeenCalledWith(pm, args, {
+                stdio: ['ignore', 'ignore', 'pipe'],
+                shell: process.platform === 'win32',
+            })
         },
     )
 
     it('warns and still installs when registry version is older (downgrade)', async () => {
-        mockReadConfig.mockResolvedValue({ update_channel: 'pre-release' })
+        mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
         mockFetchOk('1.0.0-next.1')
         mockSpawnExit()
         await createProgram().parseAsync(['node', 'td', 'update'])
@@ -234,7 +238,7 @@ describe('update install flow', () => {
         ['stable', undefined, true],
         ['pre-release', 'pre-release' as const, false],
     ])('shows the changelog tip only on %s success', async (_, channel, expectsTip) => {
-        if (channel) mockReadConfig.mockResolvedValue({ update_channel: channel })
+        if (channel) mockReadConfigOrThrow.mockResolvedValue({ update_channel: channel })
         mockFetchOk('99.99.99')
         mockSpawnExit()
         await createProgram().parseAsync(['node', 'td', 'update'])
@@ -303,7 +307,7 @@ describe('update switch', () => {
         ['pre-release', '--pre-release', true],
     ])('persists %s', async (channel, flag, expectsGuidance) => {
         await createProgram().parseAsync(['node', 'td', 'update', 'switch', flag])
-        expect(mockUpdateConfig).toHaveBeenCalledWith('/fake/config.json', {
+        expect(mockUpdateConfigOrThrow).toHaveBeenCalledWith('/fake/config.json', {
             update_channel: channel,
         })
         if (expectsGuidance) {
@@ -317,8 +321,17 @@ describe('update switch', () => {
         }
     })
 
-    it('emits { channel } envelope under --json', async () => {
-        await createProgram().parseAsync(['node', 'td', 'update', 'switch', '--stable', '--json'])
+    it.each([
+        [
+            'child-parsed: --json after switch',
+            ['node', 'td', 'update', 'switch', '--stable', '--json'],
+        ],
+        [
+            'parent-parsed: --json before switch',
+            ['node', 'td', 'update', '--json', 'switch', '--stable'],
+        ],
+    ])('emits { channel } envelope when %s', async (_, argv) => {
+        await createProgram().parseAsync(argv)
         expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toEqual({ channel: 'stable' })
     })
 
@@ -335,25 +348,90 @@ describe('update switch', () => {
         })
     })
 
-    it('translates a broken config file to a CONFIG_* CliError', async () => {
-        mockReadConfigStrict.mockResolvedValueOnce({
-            state: 'invalid-json',
-            error: new SyntaxError('Unexpected token'),
-        })
+    it('surfaces broken-config CliErrors thrown by updateConfigOrThrow', async () => {
+        // updateConfigOrThrow already maps broken-config states; we just
+        // verify the error propagates verbatim.
+        mockUpdateConfigOrThrow.mockRejectedValueOnce(
+            new CliError('CONFIG_INVALID_JSON', 'Cannot update config at /fake/config.json: bad'),
+        )
         await expect(
             createProgram().parseAsync(['node', 'td', 'update', 'switch', '--stable']),
         ).rejects.toMatchObject({ code: 'CONFIG_INVALID_JSON' })
-        expect(mockUpdateConfig).not.toHaveBeenCalled()
+    })
+})
+
+describe('parseVersion edge cases', () => {
+    it('strips +build metadata per semver §10', () => {
+        expect(parseVersion('1.2.3+build.5')).toEqual({
+            major: 1,
+            minor: 2,
+            patch: 3,
+            prerelease: undefined,
+        })
+        expect(parseVersion('1.2.3-next.4+build.5')).toEqual({
+            major: 1,
+            minor: 2,
+            patch: 3,
+            prerelease: 'next.4',
+        })
     })
 
-    it('delegates the merge to updateConfig (preserves sibling keys)', async () => {
-        mockReadConfigStrict.mockResolvedValueOnce({
-            state: 'present',
-            config: { auth_mode: 'read-write' },
+    it('throws on inputs without a numeric major.minor.patch', () => {
+        expect(() => parseVersion('not-a-version')).toThrow(/Invalid version string/)
+        expect(() => parseVersion('1.2')).toThrow(/Invalid version string/)
+    })
+})
+
+describe('getConfiguredUpdateChannel', () => {
+    it('throws INVALID_UPDATE_CHANNEL on an unrecognised channel value in config', async () => {
+        // The lenient parser would have silently fallen back to 'stable' here;
+        // strict validation surfaces the misconfig instead.
+        mockReadConfigOrThrow.mockResolvedValue({
+            update_channel: 'canary',
+        } as Record<string, unknown>)
+        await expect(
+            createProgram().parseAsync(['node', 'td', 'update', '--channel']),
+        ).rejects.toMatchObject({ code: 'INVALID_UPDATE_CHANNEL' })
+    })
+})
+
+describe('update --check downgrade reporting', () => {
+    it('reports Downgrade available when current > latest (no install)', async () => {
+        // currentVersion is BASE_OPTIONS.currentVersion = '1.0.0'; registry
+        // returning '0.9.0' is a strict downgrade.
+        mockFetchOk('0.9.0')
+        await createProgram().parseAsync(['node', 'td', 'update', '--check'])
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Downgrade available'))
+        expect(mockSpawn).not.toHaveBeenCalled()
+    })
+})
+
+describe('withSpinner threading', () => {
+    it('wraps both fetch and install ops with the supplied spinner', async () => {
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        // vi.fn loses the generic in `WithSpinner`; cast at the call site.
+        const withSpinner = vi.fn((_opts: SpinnerOptions, op: () => Promise<unknown>) => op())
+        const program = new Command()
+        program.name('td').exitOverride()
+        registerUpdateCommand(program, {
+            ...BASE_OPTIONS,
+            withSpinner: withSpinner as unknown as UpdateCommandOptions['withSpinner'],
         })
-        await createProgram().parseAsync(['node', 'td', 'update', 'switch', '--stable'])
-        expect(mockUpdateConfig).toHaveBeenCalledWith('/fake/config.json', {
-            update_channel: 'stable',
-        })
+        await program.parseAsync(['node', 'td', 'update'])
+        expect(withSpinner).toHaveBeenCalledWith(
+            expect.objectContaining({
+                text: expect.stringContaining('Checking for updates'),
+                color: 'blue',
+            }),
+            expect.any(Function),
+        )
+        expect(withSpinner).toHaveBeenCalledWith(
+            expect.objectContaining({
+                text: expect.stringContaining('Updating to v99.99.99'),
+                color: 'blue',
+            }),
+            expect.any(Function),
+        )
     })
 })

@@ -2,12 +2,10 @@ import { spawn } from 'node:child_process'
 import chalk from 'chalk'
 import type { Command } from 'commander'
 import {
-    BROKEN_CONFIG_STATE_TO_CODE,
     type CoreConfig,
-    readConfig,
-    readConfigStrict,
+    readConfigOrThrow,
     type UpdateChannel,
-    updateConfig,
+    updateConfigOrThrow,
 } from '../config.js'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
@@ -46,9 +44,19 @@ type ParsedVersion = {
     prerelease: string | undefined
 }
 
+/**
+ * Parse a semver-ish string into core triplet + optional prerelease tag. Build
+ * metadata (`+build…`) is stripped per semver §10 since it doesn't affect
+ * ordering. Throws on input that doesn't have a numeric `major.minor.patch`.
+ */
 export function parseVersion(version: string): ParsedVersion {
-    const [core, ...rest] = version.replace(/^v/, '').split('-')
+    // Strip leading `v` and any `+build` metadata before splitting prerelease.
+    const stripped = version.replace(/^v/, '').split('+', 1)[0]
+    const [core, ...rest] = stripped.split('-')
     const [major, minor, patch] = core.split('.').map(Number)
+    if (!Number.isInteger(major) || !Number.isInteger(minor) || !Number.isInteger(patch)) {
+        throw new Error(`Invalid version string: '${version}'`)
+    }
     return { major, minor, patch, prerelease: rest.length > 0 ? rest.join('-') : undefined }
 }
 
@@ -84,7 +92,11 @@ export async function fetchLatestVersion(args: {
 }): Promise<string> {
     const base = args.registryUrl ?? DEFAULT_REGISTRY_URL
     const url = `${base}/${args.packageName}/${getInstallTag(args.channel)}`
-    const response = await fetch(url)
+    // The abbreviated metadata format skips `readme`, dependency trees, etc.
+    // (~50× smaller than the default response on a typical package).
+    const response = await fetch(url, {
+        headers: { Accept: 'application/vnd.npm.install-v1+json' },
+    })
     if (!response.ok) {
         throw new Error(`Registry request failed (HTTP ${response.status})`)
     }
@@ -92,15 +104,37 @@ export async function fetchLatestVersion(args: {
     return data.version
 }
 
-/** Read the persisted channel; missing or unreadable config falls back to `'stable'`. */
-export async function getConfiguredUpdateChannel(configPath: string): Promise<UpdateChannel> {
-    const config = await readConfig<CoreConfig>(configPath)
-    return config.update_channel ?? 'stable'
+function isValidChannel(value: unknown): value is UpdateChannel {
+    return value === 'stable' || value === 'pre-release'
 }
 
-function detectPackageManager(): string {
-    const execPath = process.env.npm_execpath ?? ''
-    return execPath.includes('pnpm') ? 'pnpm' : 'npm'
+/**
+ * Read the persisted channel. Missing config returns `'stable'`; broken config
+ * surfaces as a canonical `CONFIG_*` `CliError`; an unrecognised
+ * `update_channel` value surfaces as `INVALID_UPDATE_CHANNEL`.
+ */
+export async function getConfiguredUpdateChannel(configPath: string): Promise<UpdateChannel> {
+    const config = await readConfigOrThrow<CoreConfig>(configPath)
+    const channel = config.update_channel
+    if (channel === undefined) return 'stable'
+    if (!isValidChannel(channel)) {
+        throw new CliError(
+            'INVALID_UPDATE_CHANNEL',
+            `Invalid update_channel '${String(channel)}' in config; expected 'stable' or 'pre-release'`,
+        )
+    }
+    return channel
+}
+
+function detectPackageManager(): 'npm' | 'pnpm' {
+    // `npm_execpath` is only set when the CLI is invoked via a package manager
+    // (e.g. `npm run`). Globally-installed CLIs run directly from the shell, so
+    // also widen the search to the running script path and node binary path —
+    // both typically include `pnpm` when installed via pnpm's global store.
+    const haystack = [process.env.npm_execpath, process.argv[1], process.execPath]
+        .filter(Boolean)
+        .join(' ')
+    return haystack.includes('pnpm') ? 'pnpm' : 'npm'
 }
 
 function runInstall(
@@ -110,7 +144,17 @@ function runInstall(
 ): Promise<{ exitCode: number; stderr: string }> {
     const command = pm === 'pnpm' ? 'add' : 'install'
     return new Promise((resolve, reject) => {
-        const child = spawn(pm, [command, '-g', `${packageName}@${tag}`], { stdio: 'pipe' })
+        const child = spawn(pm, [command, '-g', `${packageName}@${tag}`], {
+            // Ignore stdout so a chatty install can't deadlock by filling an
+            // unread pipe buffer; keep stderr piped so we can surface the tail
+            // in the CliError hint on a non-zero exit.
+            stdio: ['ignore', 'ignore', 'pipe'],
+            // npm/pnpm on Windows are `.cmd` shims that spawn() can't resolve
+            // without the shell. Safe to enable here because every argv element
+            // is library-controlled (literal command, fixed flags, validated
+            // package name + tag).
+            shell: process.platform === 'win32',
+        })
         let stderr = ''
         child.stderr?.on('data', (data: Buffer) => {
             stderr += data.toString()
@@ -136,29 +180,20 @@ function emit(
     for (const line of humanLines()) console.log(line)
 }
 
+function formatChannel(channel: UpdateChannel): string {
+    return channel === 'pre-release' ? chalk.magenta('pre-release') : chalk.green('stable')
+}
+
 function channelLabel(channel: UpdateChannel): string {
     return channel === 'pre-release' ? ` ${chalk.magenta('(pre-release)')}` : ''
 }
 
-async function persistChannel(configPath: string, channel: UpdateChannel): Promise<void> {
-    // Pre-check so a broken config surfaces as a typed CliError instead of the
-    // raw Error that updateConfig throws.
-    const result = await readConfigStrict(configPath)
-    if (
-        result.state === 'read-failed' ||
-        result.state === 'invalid-json' ||
-        result.state === 'invalid-shape'
-    ) {
-        const detail =
-            result.state === 'invalid-shape'
-                ? `contents are ${result.actual}, not a JSON object`
-                : result.error.message
-        throw new CliError(
-            BROKEN_CONFIG_STATE_TO_CODE[result.state],
-            `Cannot update config at ${configPath}: ${detail}`,
-        )
-    }
-    await updateConfig<CoreConfig>(configPath, { update_channel: channel })
+async function runWithSpinner<T>(
+    withSpinner: WithSpinner | undefined,
+    text: string,
+    op: () => Promise<T>,
+): Promise<T> {
+    return withSpinner ? withSpinner({ text, color: 'blue' }, op) : op()
 }
 
 type UpdateCmdOptions = {
@@ -177,54 +212,48 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const channel = await getConfiguredUpdateChannel(options.configPath)
 
     if (cmd.channel) {
-        emit(view, { channel }, () => [
-            `Update channel: ${
-                channel === 'pre-release' ? chalk.magenta('pre-release') : chalk.green('stable')
-            }`,
-        ])
+        emit(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
         return
     }
 
     const tag = getInstallTag(channel)
     const label = channelLabel(channel)
-    const fetchOp = () =>
-        fetchLatestVersion({
-            packageName: options.packageName,
-            channel,
-            registryUrl: options.registryUrl,
-        })
 
     let latestVersion: string
     try {
-        latestVersion = options.withSpinner
-            ? await options.withSpinner(
-                  { text: `Checking for updates${label}...`, color: 'blue' },
-                  fetchOp,
-              )
-            : await fetchOp()
+        latestVersion = await runWithSpinner(
+            options.withSpinner,
+            `Checking for updates${label}...`,
+            () =>
+                fetchLatestVersion({
+                    packageName: options.packageName,
+                    channel,
+                    registryUrl: options.registryUrl,
+                }),
+        )
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         throw new CliError('UPDATE_CHECK_FAILED', `Failed to check for updates: ${message}`)
     }
 
     const { currentVersion } = options
-    const updateAvailable = isNewer(currentVersion, latestVersion)
+    const upToDate = currentVersion === latestVersion
+    const updateAvailable = !upToDate && isNewer(currentVersion, latestVersion)
 
     if (cmd.check) {
         emit(view, { currentVersion, latestVersion, channel, updateAvailable }, () => {
-            const channelLine =
-                channel === 'pre-release'
-                    ? `  Channel: ${chalk.magenta('pre-release')}`
-                    : `  Channel: ${chalk.green('stable')}`
-            const headline = updateAvailable
-                ? `Update available: ${chalk.dim(`v${currentVersion}`)} → ${chalk.green(`v${latestVersion}`)}`
-                : `${chalk.green('✓')} Already up to date (v${currentVersion})`
+            const channelLine = `  Channel: ${formatChannel(channel)}`
+            const headline = upToDate
+                ? `${chalk.green('✓')} Already up to date (v${currentVersion})`
+                : updateAvailable
+                  ? `Update available: ${chalk.dim(`v${currentVersion}`)} → ${chalk.green(`v${latestVersion}`)}`
+                  : `Downgrade available: ${chalk.dim(`v${currentVersion}`)} → ${chalk.yellow(`v${latestVersion}`)}`
             return [headline, channelLine]
         })
         return
     }
 
-    if (currentVersion === latestVersion) {
+    if (upToDate) {
         emit(view, { currentVersion, latestVersion, channel, installed: false }, () => [
             `${chalk.green('✓')} Already up to date${label} (v${currentVersion})`,
         ])
@@ -239,16 +268,14 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     }
 
     const pm = detectPackageManager()
-    const installOp = () => runInstall(pm, options.packageName, tag)
 
     let result: { exitCode: number; stderr: string }
     try {
-        result = options.withSpinner
-            ? await options.withSpinner(
-                  { text: `Updating to v${latestVersion}${label}...`, color: 'blue' },
-                  installOp,
-              )
-            : await installOp()
+        result = await runWithSpinner(
+            options.withSpinner,
+            `Updating to v${latestVersion}${label}...`,
+            () => runInstall(pm, options.packageName, tag),
+        )
     } catch (error) {
         if (
             error instanceof Error &&
@@ -306,22 +333,21 @@ async function runSwitch(
     const channel: UpdateChannel = cmd.preRelease ? 'pre-release' : 'stable'
     const view: ViewOptions = { json: cmd.json, ndjson: cmd.ndjson }
 
-    await persistChannel(options.configPath, channel)
+    await updateConfigOrThrow<CoreConfig>(options.configPath, { update_channel: channel })
 
     emit(view, { channel }, () => {
         if (channel === 'pre-release') {
-            const cliName = program.name()
             return [
-                `${chalk.green('✓')} Update channel set to ${chalk.magenta('pre-release')}`,
+                `${chalk.green('✓')} Update channel set to ${formatChannel(channel)}`,
                 '',
                 `${chalk.yellow('Note:')} Pre-release updates follow the ${chalk.cyan('next')} branch.`,
                 'When pre-release changes are merged into a stable release, no further',
                 'pre-release updates will be published until a new pre-release cycle begins.',
                 'Remember to switch back to stable when done:',
-                chalk.dim(`  ${cliName} update switch --stable`),
+                chalk.dim(`  ${program.name()} update switch --stable`),
             ]
         }
-        return [`${chalk.green('✓')} Update channel set to stable`]
+        return [`${chalk.green('✓')} Update channel set to ${formatChannel(channel)}`]
     })
 }
 
@@ -329,14 +355,14 @@ async function runSwitch(
  * Register the standard `<cli> update` and `<cli> update switch` commands on a
  * Commander program. The `update` action checks the npm registry for the
  * configured channel's dist-tag, compares against `currentVersion`, and shells
- * out to `npm i -g` (or `pnpm add -g` if `npm_execpath` indicates pnpm).
- * `update switch` flips the persisted `update_channel` field between `'stable'`
- * and `'pre-release'`.
+ * out to `npm i -g` (or `pnpm add -g` if pnpm is detected on the running
+ * script's path). `update switch` flips the persisted `update_channel` field
+ * between `'stable'` and `'pre-release'`.
  *
- * Errors as `CliError` (`INVALID_FLAGS`, `UPDATE_CHECK_FAILED`,
- * `UPDATE_INSTALL_FAILED`, or the canonical `CONFIG_*` codes when the config
- * file is broken). The consumer's top-level error handler is expected to format
- * and exit.
+ * Errors as `CliError` (`INVALID_FLAGS`, `INVALID_UPDATE_CHANNEL`,
+ * `UPDATE_CHECK_FAILED`, `UPDATE_INSTALL_FAILED`, or the canonical `CONFIG_*`
+ * codes when the config file is broken). The consumer's top-level error
+ * handler is expected to format and exit.
  *
  * Both subcommands accept `--json` / `--ndjson`; success branches emit a single
  * record (`{ currentVersion, latestVersion, channel, updateAvailable | installed }`

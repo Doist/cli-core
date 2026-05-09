@@ -2,8 +2,10 @@ export {
     BROKEN_CONFIG_STATE_TO_CODE,
     getConfigPath,
     readConfig,
+    readConfigOrThrow,
     readConfigStrict,
     updateConfig,
+    updateConfigOrThrow,
     writeConfig,
 } from './config.js'
 export type {

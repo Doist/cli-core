@@ -7,5 +7,6 @@ export type CommandErrorCode =
     | 'INVALID_TYPE'
     | 'FILE_READ_ERROR'
     | 'INVALID_FLAGS'
+    | 'INVALID_UPDATE_CHANNEL'
     | 'UPDATE_CHECK_FAILED'
     | 'UPDATE_INSTALL_FAILED'

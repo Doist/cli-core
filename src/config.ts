@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { CliError } from './errors.js'
 import { formatJson } from './json.js'
 
 export type UpdateChannel = 'stable' | 'pre-release'
@@ -180,6 +181,74 @@ export async function updateConfig<T extends object>(
         case 'invalid-shape':
             throw new Error(
                 `Cannot update config at ${path}: file contents are ${result.actual}, not a JSON object. Fix or remove the file before retrying.`,
+            )
+    }
+}
+
+function describeBrokenConfig(
+    verb: 'read' | 'update',
+    path: string,
+    result: Extract<
+        ReadConfigStrictResult,
+        { state: 'read-failed' | 'invalid-json' | 'invalid-shape' }
+    >,
+): string {
+    if (result.state === 'invalid-shape') {
+        return `Cannot ${verb} config at ${path}: contents are ${result.actual}, not a JSON object`
+    }
+    return `Cannot ${verb} config at ${path}: ${result.error.message}`
+}
+
+/**
+ * `readConfig` variant that surfaces broken-config states as `CliError` keyed
+ * off `BROKEN_CONFIG_STATE_TO_CODE`. Use this when a command needs to fail
+ * loudly on a damaged file (rather than silently treating it as empty), so the
+ * consumer's top-level handler can format and exit consistently.
+ *
+ * Missing files still return an empty object — that's the same "no config"
+ * affordance `readConfig` already offers.
+ */
+export async function readConfigOrThrow<T extends object>(path: string): Promise<Partial<T>> {
+    const result = await readConfigStrict(path)
+    switch (result.state) {
+        case 'missing':
+            return {}
+        case 'present':
+            return result.config as Partial<T>
+        case 'read-failed':
+        case 'invalid-json':
+        case 'invalid-shape':
+            throw new CliError(
+                BROKEN_CONFIG_STATE_TO_CODE[result.state],
+                describeBrokenConfig('read', path, result),
+            )
+    }
+}
+
+/**
+ * `updateConfig` variant that translates broken-config states to `CliError`
+ * keyed off `BROKEN_CONFIG_STATE_TO_CODE` in the same single read pass — no
+ * pre-check needed at the call site.
+ */
+export async function updateConfigOrThrow<T extends object>(
+    path: string,
+    updates: Partial<T>,
+    options: WriteConfigOptions = {},
+): Promise<void> {
+    const result = await readConfigStrict(path)
+    switch (result.state) {
+        case 'missing':
+            await writeConfig(path, updates, options)
+            return
+        case 'present':
+            await writeConfig(path, { ...result.config, ...updates }, options)
+            return
+        case 'read-failed':
+        case 'invalid-json':
+        case 'invalid-shape':
+            throw new CliError(
+                BROKEN_CONFIG_STATE_TO_CODE[result.state],
+                describeBrokenConfig('update', path, result),
             )
     }
 }
