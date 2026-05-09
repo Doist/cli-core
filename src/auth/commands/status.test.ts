@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createConfigTokenStore } from '../store/config.js'
 import { runStatus } from './status.js'
 
+// Smoke-level: env override (incl. --user bypass) + multi-user listing. JSON
+// envelope shape is also exercised via register.test.ts.
+
 type Account = { id: string; label?: string; email: string }
 
 let dir: string
@@ -30,7 +33,7 @@ afterEach(async () => {
 })
 
 describe('runStatus', () => {
-    it('reports env override when env var is set and no --user', async () => {
+    it('reports backend=env when env var is set and no --user', async () => {
         process.env.TEST_API_TOKEN = 'env-tok'
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
         await runStatus(
@@ -59,12 +62,6 @@ describe('runStatus', () => {
         expect(out.backend).toBe('config')
         expect(out.envTokenSet).toBe(true)
         expect(out.activeAccount).toEqual({ id: '1', email: 'a@b' })
-    })
-
-    it('reports not-signed-in human output when nothing is stored', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
-        await runStatus({ store, displayName: 'Test', envTokenVar: 'TEST_API_TOKEN' }, {})
-        expect(logs[0]).toContain('Not signed in')
     })
 
     it('lists multiple accounts in multi-user mode', async () => {

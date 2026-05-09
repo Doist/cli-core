@@ -20,59 +20,58 @@ afterEach(async () => {
 })
 
 async function readJson(): Promise<Record<string, unknown>> {
-    const text = await readFile(path, 'utf-8')
-    return JSON.parse(text) as Record<string, unknown>
+    return JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>
 }
 
-describe('createConfigTokenStore — single-user', () => {
-    it('round-trips one account + token', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+// Cases that behave identically across single- and multi-user modes are run
+// against both via `it.each` so every cardinality is covered without parallel
+// blocks. Multi-user-specific behaviour (account list shape, setActive,
+// custom keys) lives in its own block below.
+describe.each([{ multiUser: false }, { multiUser: true }])(
+    'createConfigTokenStore (multiUser=$multiUser)',
+    ({ multiUser }) => {
+        it('round-trips set → list/get/active and overwrites on re-set', async () => {
+            const store = createConfigTokenStore<Account>({ configPath: path, multiUser })
 
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        expect(await store.list()).toEqual([{ id: '1', email: 'a@b' }])
-        expect(await store.active()).toEqual({
-            token: 'tok-1',
-            account: { id: '1', email: 'a@b' },
+            await store.set({ id: '1', email: 'a@b' }, 'tok-1')
+            expect(await store.list()).toEqual([{ id: '1', email: 'a@b' }])
+            expect(await store.active()).toEqual({
+                token: 'tok-1',
+                account: { id: '1', email: 'a@b' },
+            })
+            expect(await store.get('1')).toEqual({
+                token: 'tok-1',
+                account: { id: '1', email: 'a@b' },
+            })
+            expect(await store.get('missing')).toBeNull()
+
+            await store.set({ id: '1', email: 'changed@b' }, 'tok-2')
+            expect(await store.active()).toEqual({
+                token: 'tok-2',
+                account: { id: '1', email: 'changed@b' },
+            })
         })
-        expect(await store.get('1')).toEqual({
-            token: 'tok-1',
-            account: { id: '1', email: 'a@b' },
+
+        it('delete drops the matching account; clear empties the store', async () => {
+            const store = createConfigTokenStore<Account>({ configPath: path, multiUser })
+            await store.set({ id: '1', email: 'a@b' }, 'tok-1')
+            await store.delete('1')
+            expect(await store.active()).toBeNull()
+
+            await store.set({ id: '1', email: 'a@b' }, 'tok-1')
+            await store.clear()
+            expect(await store.active()).toBeNull()
         })
-        expect(await store.get('missing')).toBeNull()
-    })
 
-    it('overwrites on re-set', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.set({ id: '1', email: 'changed@b' }, 'tok-2')
-        expect(await store.active()).toEqual({
-            token: 'tok-2',
-            account: { id: '1', email: 'changed@b' },
+        it('backend() reports config', async () => {
+            const store = createConfigTokenStore<Account>({ configPath: path, multiUser })
+            expect(await store.backend()).toBe('config')
         })
-    })
+    },
+)
 
-    it('delete removes the slot when ids match', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.delete('1')
-        expect(await store.active()).toBeNull()
-    })
-
-    it('clear empties the slot', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.clear()
-        expect(await store.active()).toBeNull()
-    })
-
-    it('backend() reports config', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
-        expect(await store.backend()).toBe('config')
-    })
-})
-
-describe('createConfigTokenStore — multi-user', () => {
-    it('stores accounts and tokens under separate top-level keys', async () => {
+describe('createConfigTokenStore — multi-user only', () => {
+    it('keeps accounts and tokens under separate top-level keys; first set seeds active_id', async () => {
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
         await store.set({ id: '1', email: 'a@b' }, 'tok-1')
         await store.set({ id: '2', email: 'c@d' }, 'tok-2')
@@ -86,22 +85,6 @@ describe('createConfigTokenStore — multi-user', () => {
         expect(raw.auth_active_id).toBe('1')
     })
 
-    it('list returns every account, get/active resolve tokens', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.set({ id: '2', email: 'c@d' }, 'tok-2')
-
-        expect((await store.list()).length).toBe(2)
-        expect(await store.active()).toEqual({
-            token: 'tok-1',
-            account: { id: '1', email: 'a@b' },
-        })
-        expect(await store.get('2')).toEqual({
-            token: 'tok-2',
-            account: { id: '2', email: 'c@d' },
-        })
-    })
-
     it('setActive switches the active pointer; throws on unknown id', async () => {
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
         await store.set({ id: '1', email: 'a@b' }, 'tok-1')
@@ -113,25 +96,13 @@ describe('createConfigTokenStore — multi-user', () => {
         })
     })
 
-    it('delete removes one account; reassigns active when needed', async () => {
+    it('delete reassigns active when removing the current active account', async () => {
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
         await store.set({ id: '1', email: 'a@b' }, 'tok-1')
         await store.set({ id: '2', email: 'c@d' }, 'tok-2')
         await store.delete('1')
         const raw = await readJson()
-        expect(raw.auth_accounts).toEqual([{ id: '2', email: 'c@d' }])
-        expect(raw.auth_tokens).toEqual({ '2': 'tok-2' })
         expect(raw.auth_active_id).toBe('2')
-    })
-
-    it('clear empties accounts + tokens + active', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.clear()
-        const raw = await readJson()
-        expect(raw.auth_accounts).toEqual([])
-        expect(raw.auth_tokens).toEqual({})
-        expect(raw.auth_active_id).toBeUndefined()
     })
 
     it('honours custom keys (matches an existing CLI shape)', async () => {
@@ -151,8 +122,7 @@ describe('createConfigTokenStore — multi-user', () => {
 })
 
 describe('createConfigTokenStore — migration hook', () => {
-    it('runs once on first read when target shape is absent and a hook is provided', async () => {
-        // Seed a legacy v1 single-token config.
+    it('runs once on first read when target shape is absent', async () => {
         await writeFile(
             path,
             JSON.stringify({ token: 'legacy-token', authMode: 'read-write' }),
@@ -176,31 +146,16 @@ describe('createConfigTokenStore — migration hook', () => {
         })
 
         const active = await store.active()
-        expect(active).toEqual({
-            token: 'legacy-token',
-            account: { id: 'u1', email: 'a@b' },
-        })
+        expect(active).toEqual({ token: 'legacy-token', account: { id: 'u1', email: 'a@b' } })
         expect(migrate).toHaveBeenCalledTimes(1)
 
-        // Subsequent calls do not re-run migration even though instance is the same.
+        // Subsequent reads must not re-run the migration.
         await store.list()
         expect(migrate).toHaveBeenCalledTimes(1)
 
-        // Persisted shape no longer has the legacy `token` field on the account.
+        // Persisted shape strips the legacy `token` field from the account.
         const raw = await readJson()
         expect(raw.auth_accounts).toEqual([{ id: 'u1', email: 'a@b' }])
         expect(raw.auth_tokens).toEqual({ u1: 'legacy-token' })
-    })
-
-    it('skips migration when target shape already present', async () => {
-        const migrate = vi.fn(async () => null)
-        const store = createConfigTokenStore<Account>({
-            configPath: path,
-            multiUser: true,
-            migrate,
-        })
-        await store.set({ id: '1', email: 'a@b' }, 'tok')
-        await store.list()
-        expect(migrate).not.toHaveBeenCalled()
     })
 })

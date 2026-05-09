@@ -6,21 +6,20 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createConfigTokenStore } from '../store/config.js'
 import { runLogout } from './logout.js'
 
+// Smoke-level: covers the three branches (active, --all, --user) and the
+// no-account error path. Output formatting is exercised via register.test.ts.
+
 type Account = { id: string; label?: string; email: string }
 
 let dir: string
 let path: string
-let logs: string[]
 let originalLog: typeof console.log
 
 beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'cli-core-logout-'))
     path = join(dir, 'config.json')
-    logs = []
     originalLog = console.log
-    console.log = (...args: unknown[]) => {
-        logs.push(args.map(String).join(' '))
-    }
+    console.log = () => undefined
 })
 
 afterEach(async () => {
@@ -29,28 +28,20 @@ afterEach(async () => {
 })
 
 describe('runLogout', () => {
-    it('removes the active account by default', async () => {
+    it('removes the active account by default; --all clears every credential; --user removes a specific account', async () => {
         const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
         await store.set({ id: '1', email: 'a@b' }, 'tok-1')
         await store.set({ id: '2', email: 'b@b' }, 'tok-2')
+
         await runLogout({ store, displayName: 'Test' }, {})
         expect((await store.list()).map((a) => a.id)).toEqual(['2'])
-    })
 
-    it('--all clears every credential', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
         await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.set({ id: '2', email: 'b@b' }, 'tok-2')
+        await runLogout({ store, displayName: 'Test' }, { user: '1' })
+        expect((await store.list()).map((a) => a.id)).toEqual(['2'])
+
         await runLogout({ store, displayName: 'Test' }, { all: true })
         expect(await store.list()).toEqual([])
-    })
-
-    it('--user removes a specific account', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-        await store.set({ id: '2', email: 'b@b' }, 'tok-2')
-        await runLogout({ store, displayName: 'Test' }, { user: '2' })
-        expect((await store.list()).map((a) => a.id)).toEqual(['1'])
     })
 
     it('throws AUTH_NOT_LOGGED_IN when nothing to remove and no flags', async () => {

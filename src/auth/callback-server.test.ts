@@ -1,7 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { CliError } from '../errors.js'
 import {
     type CallbackServerHandle,
     startCallbackServer,
@@ -59,29 +58,27 @@ describe('startCallbackServer', () => {
         expect(result).toEqual({ code: 'abc', state: 'expected-state' })
     })
 
-    it('rejects when state does not match', async () => {
-        handle = await startCallbackServer(baseOptions())
-        const assertion = expect(handle.waitForCallback(2000)).rejects.toMatchObject({
+    it.each([
+        {
+            name: 'state mismatch',
+            query: 'code=abc&state=wrong',
             code: 'AUTH_STATE_MISMATCH',
-        })
-        const res = await fetch(`${handle.redirectUri}?code=abc&state=wrong`)
-        expect(res.status).toBe(400)
-        await assertion
-    })
-
-    it('rejects when the provider returns ?error=...', async () => {
-        handle = await startCallbackServer(baseOptions())
-        const assertion = expect(handle.waitForCallback(2000)).rejects.toMatchObject({
+        },
+        {
+            name: 'provider returned ?error=...',
+            query: 'error=access_denied&error_description=denied',
             code: 'AUTH_OAUTH_FAILED',
-        })
-        await fetch(`${handle.redirectUri}?error=access_denied&error_description=denied`)
-        await assertion
-    })
-
-    it('rejects when code or state is missing', async () => {
+        },
+        {
+            name: 'code or state missing',
+            query: 'code=abc',
+            code: 'AUTH_OAUTH_FAILED',
+        },
+    ])('rejects with $code on $name', async ({ query, code }) => {
         handle = await startCallbackServer(baseOptions())
-        const assertion = expect(handle.waitForCallback(2000)).rejects.toBeInstanceOf(CliError)
-        await fetch(`${handle.redirectUri}?code=abc`)
+        const assertion = expect(handle.waitForCallback(2000)).rejects.toMatchObject({ code })
+        const res = await fetch(`${handle.redirectUri}?${query}`)
+        expect(res.status).toBe(400)
         await assertion
     })
 
