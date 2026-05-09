@@ -124,36 +124,35 @@ The semver helpers (`parseVersion`, `compareVersions`, `isNewer`, `getInstallTag
 
 ### Auth (optional subpath)
 
-Wire `<cli> [auth] login` and the supporting OAuth runtime. cli-core ships the standard public-client PKCE flow (`createPkceProvider`) and the `attachLoginCommand` Commander helper that drives `runOAuthFlow` end-to-end. Bespoke flows (Dynamic Client Registration, device code, magic link, username/password) implement the `AuthProvider` interface directly — no cli-core release needed.
+Wire `<cli> [auth] login` and the supporting OAuth runtime. cli-core ships the standard public-client PKCE flow (`createPkceProvider`) and the `attachLoginCommand` Commander helper that drives `runOAuthFlow` end-to-end. Bespoke flows (Dynamic Client Registration, device code, magic link, username / password) implement the `AuthProvider` interface directly — no cli-core release needed. Token storage is a `TokenStore` the consumer provides; cli-core does not ship a default.
 
-Token storage is a `TokenStore` the consumer provides — cli-core does not ship a default. The interface is small enough that a single-user config-file version is ~30 lines inline (use `getConfigPath` + `readConfig` / `writeConfig`). OS-keychain-backed storage, multi-account stores, and the sibling Commander helpers (`logout` / `status` / `token`) are all deferred until concrete consumer migrations prove the shared shape.
-
-Install peer-deps in the consuming CLI:
+#### Install
 
 ```bash
-npm install commander open   # `open` is optional
+npm install commander open
 ```
 
-Then:
+`commander` is required when using `attachLoginCommand`. `open` is optional — when it's missing or `open()` throws, the authorize URL is surfaced via `onAuthorizeUrl` (or printed to stdout in human mode, stderr in `--json` / `--ndjson` mode) so the user can complete the flow manually.
+
+#### Quick start (PKCE)
 
 ```ts
-import { createPkceProvider, attachLoginCommand } from '@doist/cli-core/auth'
+import { attachLoginCommand, createPkceProvider } from '@doist/cli-core/auth'
 import type { TokenStore } from '@doist/cli-core/auth'
 
 type Account = { id: string; label?: string; email: string }
 
-const store: TokenStore<Account> = createMyTokenStore() // consumer-supplied
+const store: TokenStore<Account> = createTokenStore() // see "Implementing TokenStore" below
 
 const provider = createPkceProvider<Account>({
     authorizeUrl: ({ handshake }) => `${handshake.baseUrl as string}/oauth/authorize`,
     tokenUrl: ({ handshake }) => `${handshake.baseUrl as string}/oauth/token`,
     clientId: ({ flags }) => flags.clientId as string,
-    scopes: ['read', 'write'],
     validate: async ({ token, handshake }) => probeUser(token, handshake.baseUrl as string),
 })
 
 const auth = program.command('auth')
-const login = attachLoginCommand<Account>(auth, {
+attachLoginCommand<Account>(auth, {
     provider,
     store,
     preferredPort: 54969,
@@ -161,17 +160,139 @@ const login = attachLoginCommand<Account>(auth, {
     resolveScopes: ({ readOnly }) => (readOnly ? ['read'] : ['read', 'write']),
     renderSuccess: () => `<html>...</html>`,
     renderError: (message) => `<html>${message}</html>`,
-    onSuccess: ({ account, view, flags }) => {
-        if (view.json) console.log(JSON.stringify({ account, flags }))
+    onSuccess: ({ account, view }) => {
+        if (view.json) console.log(JSON.stringify({ account }))
         else console.log(`Signed in as ${account.label ?? account.id}`)
     },
-})
-login.description('Authenticate via OAuth')
+}).description('Authenticate via OAuth')
 ```
 
-`attachLoginCommand` wires `--read-only`, `--callback-port`, `--json`, `--ndjson` and returns the new `Command` so the consumer can chain `.description(...)` / `.option(...)` / `.addHelpText(...)`. Consumer-attached options land in the `flags` object passed to `resolveScopes` and (post-flow) to `onSuccess`. Under `--json` / `--ndjson` the authorize-URL fallback (printed when `open` is missing or fails to launch) is routed to stderr so the JSON envelope on stdout stays clean; pass `onAuthorizeUrl` to override. The success / error HTML is a render hook — every CLI brings its own template (no shared layout enforced). Errors are `CliError` (`AUTH_OAUTH_FAILED`, `AUTH_CALLBACK_TIMEOUT`, `AUTH_PORT_BIND_FAILED`, `AUTH_TOKEN_EXCHANGE_FAILED`, `AUTH_STORE_WRITE_FAILED`); the consumer's top-level handler formats and exits.
+`attachLoginCommand` returns the new `Command` so you can chain `.description(...)` / `.option(...)` / `.addHelpText(...)`. Any consumer-attached options land in the `flags` object passed to `resolveScopes`, `onSuccess`, and the provider hooks.
 
-For a lower-level integration that doesn't want the Commander helper, `runOAuthFlow` is exposed directly with the same option set.
+#### Standard flag set
+
+`attachLoginCommand` registers four flags on the `login` subcommand:
+
+| Flag                     | Effect                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| `--read-only`            | Threaded through to `resolveScopes` and the provider hooks via `readOnly`.             |
+| `--callback-port <port>` | Override `preferredPort` per invocation. Validated as `[0..65535]`; `0` = OS-assigned. |
+| `--json`                 | Machine-output mode. Authorize-URL fallback is routed to stderr.                       |
+| `--ndjson`               | Machine-output mode. Same fallback routing.                                            |
+
+Under `--json` / `--ndjson`, the authorize-URL fallback (printed when `open` is missing or `open()` throws) goes to stderr so the JSON / NDJSON envelope on stdout stays clean. Pass `onAuthorizeUrl` to override the destination. The success / error HTML returned by `renderSuccess` / `renderError` is a render hook — every CLI brings its own template (no shared layout enforced).
+
+#### Implementing `TokenStore`
+
+A single-user, config-file backed store using cli-core's own config helpers:
+
+```ts
+import { getConfigPath, readConfig, updateConfig, writeConfig } from '@doist/cli-core'
+import type { TokenStore } from '@doist/cli-core/auth'
+
+type Account = { id: string; label?: string; email: string }
+type StoredAuth = { account: Account; token: string }
+
+const configPath = getConfigPath('todoist-cli')
+
+export const tokenStore: TokenStore<Account> = {
+    async active() {
+        const config = await readConfig<{ auth?: StoredAuth }>(configPath)
+        return config.auth ? { account: config.auth.account, token: config.auth.token } : null
+    },
+    async set(account, token) {
+        await updateConfig<{ auth: StoredAuth }>(configPath, { auth: { account, token } })
+    },
+    async clear() {
+        const { auth: _drop, ...rest } = await readConfig<{ auth?: StoredAuth }>(configPath)
+        await writeConfig(configPath, rest)
+    },
+}
+```
+
+For OS-keychain-backed or multi-account storage, implement the same three-method interface against your backend of choice. cli-core does not ship a default because the right answer varies per CLI (single-user vs. multi-account, config file vs. keychain, sync vs. lazy decrypt).
+
+#### Custom `AuthProvider` (non-PKCE flows)
+
+Implement `AuthProvider` directly for Dynamic Client Registration, device code, magic-link, etc. The four hooks fire in this order during `runOAuthFlow`:
+
+| Hook            | When                               | Purpose                                                                                                       |
+| --------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `prepare?`      | Before the callback server binds   | Pre-flight (e.g. DCR to mint a `client_id`). The returned `handshake` is threaded into every later hook.      |
+| `authorize`     | After the callback server is up    | Build the URL the user opens. Returns the URL plus any handshake state needed at exchange (PKCE verifier, …). |
+| `exchangeCode`  | After the browser callback fires   | Trade the `code` for an `accessToken`. Optionally returns a fully-resolved `account` to skip `validateToken`. |
+| `validateToken` | When `exchangeCode` had no account | Probe an authenticated endpoint to resolve the account.                                                       |
+
+Skeleton:
+
+```ts
+import type { AuthProvider } from '@doist/cli-core/auth'
+
+const provider: AuthProvider<Account> = {
+    async prepare({ redirectUri, flags }) {
+        const { clientId } = await registerClient(redirectUri)
+        return { handshake: { clientId } }
+    },
+    async authorize({ redirectUri, state, scopes, handshake }) {
+        const url = buildAuthorizeUrl(handshake.clientId as string, redirectUri, state, scopes)
+        return { authorizeUrl: url, handshake }
+    },
+    async exchangeCode({ code, redirectUri, handshake }) {
+        const { access_token } = await postToken(handshake, code, redirectUri)
+        return { accessToken: access_token }
+    },
+    async validateToken({ token }) {
+        return probeUser(token)
+    },
+}
+```
+
+The `handshake` is shared mutable state across hooks. `runOAuthFlow` folds the runtime `flags` and `readOnly` values into the handshake before `exchangeCode` and `validateToken`, so resolvers see the same view they had at `authorize` time without you having to re-thread them.
+
+#### Errors
+
+Every failure in this subpath surfaces as a `CliError`:
+
+| Code                         | Cause                                                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_OAUTH_FAILED`          | Provider returned `?error=...`, the flow was aborted via `signal`, or the callback server stopped before completion.    |
+| `AUTH_CALLBACK_TIMEOUT`      | No valid callback within `timeoutMs` (default 3 minutes).                                                               |
+| `AUTH_PORT_BIND_FAILED`      | Could not bind any port in `[preferredPort, preferredPort + portFallbackCount]`, or `--callback-port` was out of range. |
+| `AUTH_TOKEN_EXCHANGE_FAILED` | Token endpoint network error, non-2xx response, non-JSON body, or missing `access_token`.                               |
+| `AUTH_STORE_WRITE_FAILED`    | `TokenStore.set` threw a non-`CliError`. (`CliError`s thrown from `set` propagate unchanged.)                           |
+
+The consumer's top-level error handler formats and exits.
+
+#### Lower-level: `runOAuthFlow`
+
+For custom Commander wiring (different command name, programmatic invocation, embedding in a non-Commander host) call `runOAuthFlow` directly with the same option set `attachLoginCommand` builds internally:
+
+```ts
+import { runOAuthFlow } from '@doist/cli-core/auth'
+
+const result = await runOAuthFlow({
+    provider,
+    store,
+    scopes: ['read', 'write'],
+    readOnly: false,
+    flags: {},
+    preferredPort: 54969,
+    renderSuccess: () => `<html>...</html>`,
+    renderError: (message) => `<html>${message}</html>`,
+})
+console.log(result.account)
+```
+
+Pass `signal` (an `AbortSignal`) to wire Ctrl-C cancellation; pass `timeoutMs`, `callbackPath`, or `callbackHost` to override the defaults (3 min / `/callback` / `127.0.0.1`).
+
+#### PKCE primitives
+
+For `AuthProvider` implementations that need RFC 7636 helpers without going through `createPkceProvider`:
+
+- `generateVerifier({ length?, alphabet? })` — RFC 7636 verifier (43–128 chars, default 64). Pass a custom `alphabet` to match a specific server's canonicalisation (Todoist drops `.` and `~`).
+- `deriveChallenge(verifier)` — `base64url(sha256(verifier))`, the S256 `code_challenge`.
+- `generateState()` — 128-bit hex CSRF token suitable for the OAuth `state` parameter.
+- `DEFAULT_VERIFIER_ALPHABET` — the 66-char RFC 7636 unreserved set.
 
 ## Development
 
