@@ -1,3 +1,9 @@
+## [0.6.0](https://github.com/Doist/cli-core/compare/v0.5.0...v0.6.0) (2026-05-09)
+
+### Features
+
+* add ./markdown and ./commands subpaths (optional peer-dep extractions) ([#8](https://github.com/Doist/cli-core/issues/8)) ([6b2ad9d](https://github.com/Doist/cli-core/commit/6b2ad9d5a23b5d1d9ae83a2272e959e927a82d40))
+
 ## [0.5.0](https://github.com/Doist/cli-core/compare/v0.4.0...v0.5.0) (2026-05-08)
 
 ### Features
