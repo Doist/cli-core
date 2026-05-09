@@ -165,9 +165,7 @@ describe('update --check', () => {
         mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
         mockFetchOk('1.36.0-next.1')
         await createProgram().parseAsync(['node', 'td', 'update', '--check'])
-        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next', {
-            headers: { Accept: 'application/vnd.npm.install-v1+json' },
-        })
+        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next')
     })
 })
 

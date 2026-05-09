@@ -91,12 +91,13 @@ export async function fetchLatestVersion(args: {
     registryUrl?: string
 }): Promise<string> {
     const base = args.registryUrl ?? DEFAULT_REGISTRY_URL
+    // Hit the dist-tag endpoint (`/<package>/<tag>`) directly — it returns a
+    // single resolved version document, much smaller than the full package
+    // metadata. The abbreviated `application/vnd.npm.install-v1+json` format
+    // is rejected here with HTTP 406 — it only applies to the package-doc
+    // endpoint (`/<package>`), not dist-tag resolutions.
     const url = `${base}/${args.packageName}/${getInstallTag(args.channel)}`
-    // The abbreviated metadata format skips `readme`, dependency trees, etc.
-    // (~50× smaller than the default response on a typical package).
-    const response = await fetch(url, {
-        headers: { Accept: 'application/vnd.npm.install-v1+json' },
-    })
+    const response = await fetch(url)
     if (!response.ok) {
         throw new Error(`Registry request failed (HTTP ${response.status})`)
     }
