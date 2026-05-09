@@ -10,6 +10,10 @@
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
         },
+        "./commands": {
+            "types": "./dist/commands/index.d.ts",
+            "import": "./dist/commands/index.js"
+        },
         "./markdown": {
             "types": "./dist/markdown.d.ts",
             "import": "./dist/markdown.js"
@@ -59,6 +63,7 @@
         "@semantic-release/exec": "7.1.0",
         "@semantic-release/git": "10.0.1",
         "@types/node": "25.6.0",
+        "commander": "14.0.3",
         "conventional-changelog-conventionalcommits": "9.3.1",
         "lefthook": "2.1.6",
         "marked": "18.0.3",
@@ -74,11 +79,15 @@
         "yocto-spinner": "1.1.0"
     },
     "peerDependencies": {
+        "commander": ">=14",
         "marked": ">=18",
         "marked-terminal-renderer": ">=2",
         "vitest": ">=4.1"
     },
     "peerDependenciesMeta": {
+        "commander": {
+            "optional": true
+        },
         "marked": {
             "optional": true
         },

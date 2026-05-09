@@ -24,7 +24,7 @@ npm test            # vitest run
 
 ## Module layout
 
-Each module lives at `src/<area>.ts` with a colocated `<area>.test.ts`. Public API surface is the union of every `export` re-exported through `src/index.ts` plus any sub-path entry declared in `package.json#exports` (e.g. `./markdown`, `./testing`). Re-exports are validated at compile time by `tsc --noEmit` — there is no parallel runtime/typed-literal pinning test for the package root, since the typechecker already catches a dropped or broken re-export and any duplicate runtime suite would be redundant churn.
+Each module lives at `src/<area>.ts` with a colocated `<area>.test.ts`. A module that needs sibling files (e.g. the `./commands` subpath) lives at `src/<area>/<file>.ts` with the same colocated-test rule. Public API surface is the union of every `export` re-exported through `src/index.ts` plus any sub-path entry declared in `package.json#exports` (e.g. `./commands`, `./markdown`, `./testing`). Re-exports are validated at compile time by `tsc --noEmit` — there is no parallel runtime/typed-literal pinning test for the package root, since the typechecker already catches a dropped or broken re-export and any duplicate runtime suite would be redundant churn.
 
 ## README maintenance
 
