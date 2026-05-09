@@ -1,3 +1,9 @@
+## [0.7.1](https://github.com/Doist/cli-core/compare/v0.7.0...v0.7.1) (2026-05-09)
+
+### Bug Fixes
+
+* **update:** drop install-v1 Accept header on dist-tag fetch ([#10](https://github.com/Doist/cli-core/issues/10)) ([4a7b36f](https://github.com/Doist/cli-core/commit/4a7b36f0996479af5c080638dba65a6cd6dd7e56))
+
 ## [0.7.0](https://github.com/Doist/cli-core/compare/v0.6.0...v0.7.0) (2026-05-09)
 
 ### Features
