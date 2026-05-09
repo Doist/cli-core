@@ -24,7 +24,18 @@ npm test            # vitest run
 
 ## Module layout
 
-Each module lives at `src/<area>.ts` with a colocated `<area>.test.ts`. Public API surface is the union of every `export` re-exported through `src/index.ts`. Re-exports are validated at compile time by `tsc --noEmit` — there is no parallel runtime/typed-literal pinning test for the package root, since the typechecker already catches a dropped or broken re-export and any duplicate runtime suite would be redundant churn.
+Each module lives at `src/<area>.ts` with a colocated `<area>.test.ts`. A module that needs sibling files (e.g. the `./commands` subpath) lives at `src/<area>/<file>.ts` with the same colocated-test rule. Public API surface is the union of every `export` re-exported through `src/index.ts` plus any sub-path entry declared in `package.json#exports` (e.g. `./commands`, `./markdown`, `./testing`). Re-exports are validated at compile time by `tsc --noEmit` — there is no parallel runtime/typed-literal pinning test for the package root, since the typechecker already catches a dropped or broken re-export and any duplicate runtime suite would be redundant churn.
+
+## README maintenance
+
+`README.md` documents the public API. When a commit adds, removes, or meaningfully changes that surface, update the README in the same commit. Specifically:
+
+- a new module under `src/` that's reachable from `src/index.ts` or a sub-path export
+- a new, renamed, or removed export from `src/index.ts` or a sub-path entry
+- a new sub-path export in `package.json#exports`
+- a change to peer-dep requirements, install steps, or supported Node version
+
+The "What's in it" table and any usage block touching the affected module must reflect the change before the PR lands. Internal refactors, bug fixes, and doc-only edits don't need a README update.
 
 ## Releases
 
