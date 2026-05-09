@@ -1,7 +1,6 @@
 import chalk from 'chalk'
 import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CliError } from '../errors.js'
 import {
     cleanChangelog,
     formatForTerminal,
@@ -68,6 +67,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+    vi.restoreAllMocks()
     vi.mocked(readFile).mockReset()
 })
 
@@ -93,6 +93,35 @@ describe('cleanChangelog', () => {
         const out = cleanChangelog(FIXTURE_FLEX, { ...REQUIRED, headingLevel: 'flexible' })
         expect(out).toMatch(/^# 2\.0\.0/m)
         expect(out).toMatch(/^## 1\.0\.0/m)
+    })
+
+    it('strips consecutive empty sections, not just the last one', () => {
+        const input = [
+            '## [1.5.0](https://x/y) (2025-03-01)',
+            '',
+            '### Features',
+            '',
+            '* **deps:** bump foo',
+            '',
+            '### Bug Fixes',
+            '',
+            '* **deps:** bump bar',
+            '',
+            '## [1.4.0](https://x/y) (2025-02-01)',
+            '',
+            '### Features',
+            '',
+            '* real feature',
+            '',
+        ].join('\n')
+        const out = cleanChangelog(input, REQUIRED)
+        // Both empty sections under 1.5.0 must go; 1.4.0 keeps its real Features section.
+        expect(out).not.toContain('### Bug Fixes')
+        const between = out.slice(out.indexOf('## 1.5.0'), out.indexOf('## 1.4.0'))
+        expect(between).not.toContain('### Features')
+        expect(out).toContain('## 1.5.0')
+        expect(out).toContain('## 1.4.0')
+        expect(out).toMatch(/### Features\n\n\* real feature/)
     })
 })
 
@@ -211,7 +240,15 @@ describe('registerChangelogCommand', () => {
         registerChangelogCommand(program, REQUIRED)
         await expect(
             program.parseAsync(['node', 'cli', 'changelog', '-n', 'abc']),
-        ).rejects.toBeInstanceOf(CliError)
+        ).rejects.toMatchObject({ name: 'CliError', code: 'INVALID_TYPE' })
+    })
+
+    it('throws CliError(INVALID_TYPE) for fractional count', async () => {
+        const program = makeProgram()
+        registerChangelogCommand(program, REQUIRED)
+        await expect(
+            program.parseAsync(['node', 'cli', 'changelog', '-n', '1.5']),
+        ).rejects.toMatchObject({ name: 'CliError', code: 'INVALID_TYPE' })
     })
 
     it('throws CliError(FILE_READ_ERROR) when the file is unreadable', async () => {

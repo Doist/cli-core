@@ -4,3 +4,4 @@ export type {
     ChangelogCommandOptions,
     ChangelogHeadingLevel,
 } from './changelog.js'
+export type { CommandErrorCode } from './errors.js'

@@ -1,9 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { lightTheme } from 'marked-terminal-renderer'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 async function loadFresh() {
     vi.resetModules()
     return await import('./markdown.js')
 }
+
+afterEach(() => {
+    vi.restoreAllMocks()
+})
 
 describe('renderMarkdown', () => {
     beforeEach(() => {
@@ -44,7 +49,7 @@ describe('preloadMarkdown', () => {
     })
 
     it('accepts a custom theme', async () => {
-        const { lightTheme, preloadMarkdown, renderMarkdown } = await loadFresh()
+        const { preloadMarkdown, renderMarkdown } = await loadFresh()
         await preloadMarkdown({ theme: lightTheme() })
         const out = await renderMarkdown('**bold**')
         expect(out.length).toBeGreaterThan(0)

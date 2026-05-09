@@ -99,8 +99,8 @@ export function cleanChangelog(text: string, options: ChangelogCommandOptions): 
     const headerSrc = headingPrefixSrc(headingLevel)
     return (
         text
-            // Version headers: `## [1.2.3](url)` → `## 1.2.3` (any heading level).
-            .replace(/(#{1,2}) \[([^\]]+)\]\([^)]*\)/g, '$1 $2')
+            // Version headers: `## [1.2.3](url)` → `## 1.2.3` (heading level honoured).
+            .replace(new RegExp(`(${headerSrc}) \\[([^\\]]+)\\]\\([^)]*\\)`, 'g'), '$1 $2')
             // Plain commit-hash parens: ` (abc1234)` and ` ([abc1234](url))`.
             .replace(/ \([a-f0-9]{7}\)/g, '')
             .replace(/ \(\[[a-f0-9]{7}\]\([^)]*\)\)/g, '')
@@ -113,7 +113,9 @@ export function cleanChangelog(text: string, options: ChangelogCommandOptions): 
             // Collapse blank-line runs left by removed deps lines.
             .replace(/\n{3,}/g, '\n\n')
             // Drop now-empty section headers (e.g. `### Bug Fixes` with no items).
-            .replace(new RegExp(`### [\\w ]+\\n\\n(?=${headerSrc} |$)`, 'gm'), '')
+            // The lookahead includes `### ` so consecutive empty sections all peel
+            // away, not just the last one before a version row.
+            .replace(new RegExp(`### [\\w ]+\\n\\n(?=${headerSrc} |### |$)`, 'gm'), '')
     )
 }
 
@@ -130,9 +132,9 @@ export function parseChangelog(
     options: ChangelogCommandOptions,
 ): { text: string; hasMore: boolean } {
     const { headingLevel, filterEmptyVersions } = resolve(options)
-    const headerSrc = headingPrefixSrc(headingLevel)
-    const splitRe = new RegExp(`\\n(?=${headerSrc} (?:\\d|\\[))`)
-    const matchRe = new RegExp(`^${headerSrc} (?:\\d|\\[)`)
+    const versionHeaderSrc = `${headingPrefixSrc(headingLevel)} (?:\\d|\\[)`
+    const splitRe = new RegExp(`\\n(?=${versionHeaderSrc})`)
+    const matchRe = new RegExp(`^${versionHeaderSrc}`)
 
     const allVersions = content.split(splitRe).filter((s) => matchRe.test(s))
     const versionSections = filterEmptyVersions
@@ -180,9 +182,9 @@ export function registerChangelogCommand(program: Command, options: ChangelogCom
         .description('Show recent changelog entries')
         .option('-n, --count <number>', 'Number of versions to show', String(resolved.defaultCount))
         .action(async (commandOptions: { count: string }) => {
-            const count = Number.parseInt(commandOptions.count, 10)
-            if (Number.isNaN(count) || count < 1) {
-                throw new CliError('INVALID_TYPE', 'Count must be a positive number')
+            const count = Number(commandOptions.count)
+            if (!Number.isInteger(count) || count < 1) {
+                throw new CliError('INVALID_TYPE', 'Count must be a positive integer')
             }
 
             let content: string
