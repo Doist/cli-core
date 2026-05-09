@@ -7,7 +7,6 @@ import type {
     AuthorizeResult,
     ExchangeInput,
     ExchangeResult,
-    PasteInput,
     ValidateInput,
 } from '../types.js'
 
@@ -37,13 +36,6 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
      * the account record we'll persist.
      */
     validate: (input: ValidateInput) => Promise<TAccount>
-    /**
-     * Optional: when present, `<cli> auth login --token <value>` short-circuits
-     * the OAuth flow and routes here. Defaults to calling `validate` with the
-     * pasted token, which is right when the API used to validate also accepts
-     * a long-lived personal token.
-     */
-    acceptPastedToken?: (input: PasteInput) => Promise<TAccount>
     /** Inject a fetch implementation (tests). */
     fetchImpl?: typeof fetch
 }
@@ -54,8 +46,9 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
  * and Todoist (pre-registered client_id, custom verifier alphabet,
  * comma-separated scope string).
  *
- * Twist's DCR flow uses `createDcrProvider` instead because the token request
- * carries `client_secret` via HTTP Basic.
+ * Flows that need a per-login Dynamic Client Registration step or HTTP Basic
+ * auth on the token endpoint can implement the `AuthProvider` interface
+ * directly until cli-core grows a dedicated factory for them.
  */
 export function createPkceProvider<TAccount extends AuthAccount>(
     options: PkceProviderOptions<TAccount>,
@@ -157,9 +150,6 @@ export function createPkceProvider<TAccount extends AuthAccount>(
         },
 
         validateToken: options.validate,
-        acceptPastedToken:
-            options.acceptPastedToken ??
-            ((input: PasteInput) => options.validate({ token: input.token, handshake: {} })),
     }
 }
 

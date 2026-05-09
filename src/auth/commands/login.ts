@@ -28,27 +28,36 @@ export type LoginHandlerOptions<TAccount extends AuthAccount = AuthAccount> = {
 
 export type LoginCmdOptions = {
     readOnly?: boolean
-    callbackPort?: number
     json?: boolean
     ndjson?: boolean
     [key: string]: unknown
 }
 
+export type RunLoginExtras = {
+    /**
+     * Extra Commander-derived attribute names to strip from `cmd` before the
+     * remainder is forwarded to the provider via `flags`. The registrar uses
+     * this to drop the callback-port flag (whose attribute name varies with
+     * the caller's `flagSpec`).
+     */
+    reservedFlagAttrs?: ReadonlyArray<string>
+}
+
+const ALWAYS_RESERVED = new Set(['readOnly', 'json', 'ndjson'])
+
 /**
- * Run the `<cli> [auth] login` action — always the OAuth flow. Manual token
- * entry lives behind `<cli> [auth] token set` (stdin-piped) so secrets never
- * cross argv.
+ * Run the `<cli> [auth] login` action — always the OAuth flow.
  */
 export async function runLogin<TAccount extends AuthAccount>(
     options: LoginHandlerOptions<TAccount>,
     cmd: LoginCmdOptions,
+    extras: RunLoginExtras = {},
 ): Promise<void> {
     const view: ViewOptions = { json: cmd.json, ndjson: cmd.ndjson }
     const readOnly = Boolean(cmd.readOnly)
-    const flags = stripReservedFlags(cmd)
+    const flags = stripReservedFlags(cmd, extras.reservedFlagAttrs ?? [])
 
     const scopes = options.resolveScopes({ readOnly, flags })
-    const port = cmd.callbackPort ?? options.callbackPort.preferred
 
     const runFlow = () =>
         runOAuthFlow<TAccount>({
@@ -58,7 +67,7 @@ export async function runLogin<TAccount extends AuthAccount>(
             scopes,
             readOnly,
             flags,
-            preferredPort: port,
+            preferredPort: options.callbackPort.preferred,
             portFallbackCount: options.callbackPort.fallbackCount,
             renderSuccess: options.renderSuccess,
             renderError: options.renderError,
@@ -79,11 +88,14 @@ export async function runLogin<TAccount extends AuthAccount>(
     ])
 }
 
-function stripReservedFlags(cmd: LoginCmdOptions): Record<string, unknown> {
-    const { readOnly, callbackPort, json, ndjson, ...rest } = cmd
-    void readOnly
-    void callbackPort
-    void json
-    void ndjson
-    return rest
+function stripReservedFlags(
+    cmd: LoginCmdOptions,
+    extraReserved: ReadonlyArray<string>,
+): Record<string, unknown> {
+    const reserved = new Set([...ALWAYS_RESERVED, ...extraReserved])
+    const result: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(cmd)) {
+        if (!reserved.has(key)) result[key] = value
+    }
+    return result
 }

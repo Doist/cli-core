@@ -163,23 +163,3 @@ describe('createPkceProvider — exchangeCode', () => {
         ).rejects.toMatchObject({ code: 'AUTH_TOKEN_EXCHANGE_FAILED' })
     })
 })
-
-describe('createPkceProvider — acceptPastedToken', () => {
-    it('defaults to calling validate with the pasted token', async () => {
-        const validate = vi.fn(async ({ token }) => ({
-            id: '1',
-            label: token,
-            email: 'a@b',
-        }))
-        const provider = createPkceProvider<Account>({
-            authorizeUrl: 'unused',
-            tokenUrl: 'unused',
-            clientId: 'cid',
-            scopes: [],
-            validate,
-        })
-        const account = await provider.acceptPastedToken?.({ token: 'pasted', flags: {} })
-        expect(account).toEqual({ id: '1', label: 'pasted', email: 'a@b' })
-        expect(validate).toHaveBeenCalledWith({ token: 'pasted', handshake: {} })
-    })
-})

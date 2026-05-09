@@ -141,7 +141,7 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
                 handshake: downstreamHandshake,
             }))
 
-        await options.store.set(account, exchange.accessToken, { setActive: true })
+        await options.store.set(account, exchange.accessToken)
 
         return { token: exchange.accessToken, account }
     } finally {

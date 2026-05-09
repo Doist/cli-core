@@ -11,28 +11,18 @@ import type {
     TokenStore,
 } from '../types.js'
 import { type LoginCmdOptions, runLogin } from './login.js'
-import { type LogoutCmdOptions, runLogout } from './logout.js'
-import { type StatusCmdOptions, runStatus } from './status.js'
-import {
-    runTokenSet,
-    runTokenView,
-    type TokenSetCmdOptions,
-    type TokenViewCmdOptions,
-} from './token.js'
 
 type WithSpinner = <T>(options: SpinnerOptions, op: () => Promise<T>) => Promise<T>
 
 export type RegisterAuthCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
-    /** Used in the default env-token var (`<APP>_API_TOKEN`) and Commander metavars. */
-    appName: string
-    /** Display name in user-facing output (`'Todoist'`, `'Twist'`, …). */
+    /** Display name in user-facing output (`'Outline'`, `'Todoist'`, …). */
     displayName: string
     provider: AuthProvider<TAccount>
     store: TokenStore<TAccount>
     /**
-     * Resolve scope list per call. Receives `readOnly` (from `--read-only`) and
-     * the remaining flags bag (CLI-declared flags + reserved cli-core flags
-     * stripped).
+     * Resolve scope list per call. Receives `readOnly` (from `--read-only`)
+     * and the remaining flags bag (CLI-declared flags + reserved cli-core
+     * flags stripped).
      */
     resolveScopes: (ctx: { readOnly: boolean; flags: Record<string, unknown> }) => string[]
     callbackPort: {
@@ -47,11 +37,9 @@ export type RegisterAuthCommandOptions<TAccount extends AuthAccount = AuthAccoun
     }
     renderSuccess: (ctx: SuccessContext) => string
     renderError: (ctx: ErrorContext) => string
-    /** Override the env var name. Default `'<APPNAME>_API_TOKEN'`. */
-    envTokenVar?: string
     /** Per-CLI extra flags surfaced on `login`. */
     loginFlags?: LoginFlagSpec[]
-    /** When true, register `login` / `logout` / `status` / `token` at the program top level instead of nested under an `auth` parent. */
+    /** When true, register `login` at the program top level instead of nested under an `auth` parent. */
     flat?: boolean
     /** Parent command name when not `flat`. Default `'auth'`. */
     commandName?: string
@@ -62,16 +50,19 @@ export type RegisterAuthCommandOptions<TAccount extends AuthAccount = AuthAccoun
 }
 
 /**
- * Register `login`, `logout`, `status`, `token` (with `token set`) on a
- * Commander program. Mirrors the `registerUpdateCommand` /
- * `registerChangelogCommand` pattern: one call wires every subcommand the
- * standard auth surface needs.
+ * Register the `login` subcommand on a Commander program. Mirrors the
+ * `registerUpdateCommand` / `registerChangelogCommand` pattern: one call
+ * wires the OAuth-driving subcommand and threads provider + store + scope
+ * resolution through to the runtime.
  *
- * `flat: true` matches todoist-cli/twist-cli (top-level `td login`, …);
- * `flat: false` (default) nests under `<cli> auth` to match outline-cli.
+ * `flat: true` puts `login` at the program top level (matching todoist-cli /
+ * twist-cli); `flat: false` (default) nests under `<cli> auth login` (matching
+ * outline-cli).
  *
- * `token set` reads the token from piped stdin — never argv — to comply with
- * Doist's secrets-management standard.
+ * `logout`, `status`, and `token` are intentionally not extracted — those
+ * surfaces are short and currently CLI-specific in shape, so each CLI keeps
+ * its own implementations until a concrete migration proves them worth
+ * sharing.
  *
  * Errors as `CliError` (`AUTH_*` codes plus the canonical `CONFIG_*` codes
  * when the config file is broken). The consumer's top-level handler is
@@ -81,9 +72,8 @@ export function registerAuthCommand<TAccount extends AuthAccount>(
     program: Command,
     options: RegisterAuthCommandOptions<TAccount>,
 ): void {
-    const envTokenVar = options.envTokenVar ?? `${options.appName.toUpperCase()}_API_TOKEN`
     const portFlagSpec = options.callbackPort.flagSpec ?? '--callback-port <port>'
-    const portEnvOverride = resolveEnvPort(options.callbackPort.envVar)
+    const portFlagAttr = deriveFlagAttribute(portFlagSpec)
 
     const root = options.flat
         ? program
@@ -91,19 +81,24 @@ export function registerAuthCommand<TAccount extends AuthAccount>(
               .command(options.commandName ?? 'auth')
               .description(`Manage ${options.displayName} authentication`)
 
-    // login — OAuth only. Manual token entry lives in `token set`.
-    const loginCommand = withViewOptions(
-        root
-            .command('login')
-            .description(`Sign in to ${options.displayName}`)
-            .option('--read-only', 'Request read-only scopes')
-            .option(portFlagSpec, 'Override the local OAuth callback port', parsePortFlag),
-    )
+    const loginCommand = root
+        .command('login')
+        .description(`Sign in to ${options.displayName}`)
+        .option('--read-only', 'Request read-only scopes')
+        .option(portFlagSpec, 'Override the local OAuth callback port', parsePortFlag)
+        .option('--json', 'Emit machine-readable JSON output')
+        .option('--ndjson', 'Emit machine-readable NDJSON output')
     attachLoginFlags(loginCommand, options.loginFlags)
 
     loginCommand.action(async (cmdOptions: LoginCmdOptions) => {
+        // Defer env-var validation to action time so a malformed env var only
+        // surfaces on the command that actually needs it.
+        const envOverride = resolveEnvPort(options.callbackPort.envVar)
         // Precedence: explicit CLI flag > env override > registered preferred port.
-        const port = cmdOptions.callbackPort ?? portEnvOverride ?? options.callbackPort.preferred
+        // Read the CLI flag through its derived attribute name so a custom
+        // flagSpec (e.g. `--oauth-port <port>`) still resolves correctly.
+        const cliPort = (cmdOptions as Record<string, unknown>)[portFlagAttr] as number | undefined
+        const port = cliPort ?? envOverride ?? options.callbackPort.preferred
         assertValidPort(port, 'callback port')
         await runLogin<TAccount>(
             {
@@ -120,77 +115,10 @@ export function registerAuthCommand<TAccount extends AuthAccount>(
                 openBrowser: options.openBrowser,
                 withSpinner: options.withSpinner,
             },
-            { ...cmdOptions, callbackPort: port },
-        )
-    })
-
-    // logout
-    withViewOptions(
-        root
-            .command('logout')
-            .description(`Sign out of ${options.displayName}`)
-            .option('--user <id>', 'Sign out of a specific stored account id')
-            .option('--all', 'Clear every stored credential'),
-    ).action(async (cmdOptions: LogoutCmdOptions) => {
-        await runLogout<TAccount>(
-            { store: options.store, displayName: options.displayName },
             cmdOptions,
+            { reservedFlagAttrs: [portFlagAttr] },
         )
     })
-
-    // status
-    withViewOptions(
-        root
-            .command('status')
-            .description(`Show ${options.displayName} authentication status`)
-            .option('--user <id>', 'Show a specific stored account id'),
-    ).action(async (cmdOptions: StatusCmdOptions) => {
-        await runStatus<TAccount>(
-            { store: options.store, displayName: options.displayName, envTokenVar },
-            cmdOptions,
-        )
-    })
-
-    // token (default action: view)
-    const tokenCommand = withViewOptions(
-        root
-            .command('token')
-            .description(`Print or set the ${options.displayName} API token`)
-            .option('--user <id>', 'Show a specific stored account id'),
-    ).action(async (cmdOptions: TokenViewCmdOptions) => {
-        await runTokenView<TAccount>(
-            {
-                provider: options.provider,
-                store: options.store,
-                displayName: options.displayName,
-                envTokenVar,
-            },
-            cmdOptions,
-        )
-    })
-
-    withViewOptions(
-        tokenCommand
-            .command('set')
-            .description('Save a token from piped stdin without going through the OAuth flow'),
-    ).action(async (cmdOptions: TokenSetCmdOptions) => {
-        await runTokenSet<TAccount>(
-            {
-                provider: options.provider,
-                store: options.store,
-                displayName: options.displayName,
-                envTokenVar,
-            },
-            cmdOptions,
-        )
-    })
-}
-
-/** Append the canonical `--json` / `--ndjson` machine-output flags. */
-function withViewOptions(cmd: Command): Command {
-    return cmd
-        .option('--json', 'Emit machine-readable JSON output')
-        .option('--ndjson', 'Emit machine-readable NDJSON output')
 }
 
 function attachLoginFlags(cmd: Command, specs: ReadonlyArray<LoginFlagSpec> | undefined): void {
@@ -206,27 +134,56 @@ function attachLoginFlags(cmd: Command, specs: ReadonlyArray<LoginFlagSpec> | un
     }
 }
 
+/**
+ * Mirror Commander's own attribute-name derivation for a long flag spec:
+ * strip the `--` prefix, drop any `<value>` / `[value]` suffix, camelCase
+ * the kebab-case remainder. `--callback-port <port>` → `callbackPort`.
+ */
+function deriveFlagAttribute(spec: string): string {
+    const long = spec
+        .split(/\s+/)
+        .find((part) => part.startsWith('--'))
+        ?.slice(2)
+    if (!long) {
+        throw new Error(
+            `flagSpec '${spec}' must contain a long flag (e.g. '--callback-port <port>')`,
+        )
+    }
+    return long.replace(/-([a-z])/g, (_, ch: string) => ch.toUpperCase())
+}
+
 function parsePortFlag(value: string): number {
-    const parsed = Number.parseInt(value, 10)
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    const port = parsePortString(value)
+    if (port === null) {
         throw new CliError(
             'AUTH_PORT_BIND_FAILED',
             `Invalid --callback-port '${value}': expected an integer in [0..65535].`,
         )
     }
-    return parsed
+    return port
 }
 
 function resolveEnvPort(envVar: string | undefined): number | undefined {
     if (!envVar) return undefined
     const raw = process.env[envVar]
     if (!raw) return undefined
-    const parsed = Number.parseInt(raw, 10)
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+    const port = parsePortString(raw)
+    if (port === null) {
         throw new CliError(
             'AUTH_PORT_BIND_FAILED',
             `Invalid ${envVar}='${raw}': expected an integer in [0..65535].`,
         )
     }
-    return parsed
+    return port
+}
+
+/**
+ * Strict-integer port parser — `Number.parseInt` would silently accept
+ * `'123abc'` / `'1.5'`, masking caller mistakes that surface much later as
+ * raw bind errors.
+ */
+function parsePortString(raw: string): number | null {
+    if (!/^\d+$/.test(raw)) return null
+    const port = Number(raw)
+    return port >= 0 && port <= 65535 ? port : null
 }

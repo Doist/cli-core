@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Readable } from 'node:stream'
 import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -14,16 +13,12 @@ type Account = { id: string; label?: string; email: string }
 let dir: string
 let path: string
 let originalLog: typeof console.log
-let logs: string[]
 
 beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'cli-core-register-'))
     path = join(dir, 'config.json')
-    logs = []
     originalLog = console.log
-    console.log = (...args: unknown[]) => {
-        logs.push(args.map(String).join(' '))
-    }
+    console.log = () => undefined
 })
 
 afterEach(async () => {
@@ -31,7 +26,7 @@ afterEach(async () => {
     await rm(dir, { recursive: true, force: true })
 })
 
-function fakeProvider(account: Account = { id: '1', email: 'a@b' }): AuthProvider<Account> {
+function fakeProvider(): AuthProvider<Account> {
     return {
         async authorize(input) {
             return {
@@ -43,11 +38,34 @@ function fakeProvider(account: Account = { id: '1', email: 'a@b' }): AuthProvide
             return { accessToken: 'tok-1' }
         },
         async validateToken() {
-            return account
+            return { id: '1', email: 'a@b' }
         },
-        async acceptPastedToken({ token }) {
-            return { ...account, label: token.slice(0, 4) }
+    }
+}
+
+/**
+ * Wrap a provider so we can capture the runtime-assigned redirectUri and
+ * use it to drive the callback from `openBrowser`. The wrapped `authorize`
+ * is reapplied after the spread so a caller-supplied override still gets
+ * the redirectUri capture.
+ */
+function instrument(provider: AuthProvider<Account>): {
+    provider: AuthProvider<Account>
+    getRedirect: () => string
+} {
+    let redirectUri = ''
+    const inner = provider.authorize
+    const { authorize: _drop, ...rest } = provider
+    void _drop
+    return {
+        provider: {
+            ...rest,
+            async authorize(input) {
+                redirectUri = input.redirectUri
+                return inner(input)
+            },
         },
+        getRedirect: () => redirectUri,
     }
 }
 
@@ -58,20 +76,24 @@ type BuildOptions = {
     resolveScopes?: Parameters<typeof registerAuthCommand>[1]['resolveScopes']
     provider?: AuthProvider<Account>
     callbackEnvVar?: string
+    callbackFlagSpec?: string
     openBrowser?: (url: string) => Promise<void>
 }
 
 function build(opts: BuildOptions = {}): Command {
     const program = new Command()
     program.exitOverride()
-    const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
+    const store = createConfigTokenStore<Account>({ configPath: path })
     registerAuthCommand<Account>(program, {
-        appName: 'test',
         displayName: 'Test',
         provider: opts.provider ?? fakeProvider(),
         store,
         resolveScopes: opts.resolveScopes ?? (() => ['read']),
-        callbackPort: { preferred: 0, envVar: opts.callbackEnvVar },
+        callbackPort: {
+            preferred: 0,
+            envVar: opts.callbackEnvVar,
+            flagSpec: opts.callbackFlagSpec,
+        },
         renderSuccess: () => '',
         renderError: () => '',
         flat: opts.flat,
@@ -82,54 +104,19 @@ function build(opts: BuildOptions = {}): Command {
     return program
 }
 
-/**
- * Wrap a provider so we can capture the redirectUri from inside `authorize()`
- * and use it to drive the callback from the `openBrowser` mock.
- */
-function instrument(provider: AuthProvider<Account>): {
-    provider: AuthProvider<Account>
-    getRedirect: () => string
-} {
-    let redirectUri = ''
-    const wrapped: AuthProvider<Account> = {
-        ...provider,
-        async authorize(input) {
-            redirectUri = input.redirectUri
-            return provider.authorize(input)
-        },
-    }
-    return { provider: wrapped, getRedirect: () => redirectUri }
-}
-
 describe('registerAuthCommand', () => {
-    it('nests subcommands under `auth` by default', () => {
-        const program = build()
-        const auth = program.commands.find((c) => c.name() === 'auth')
-        expect(auth).toBeDefined()
-        const names = (auth?.commands ?? []).map((c) => c.name())
-        expect(names).toEqual(expect.arrayContaining(['login', 'logout', 'status', 'token']))
+    it('nests login under `auth` by default; flat=true puts it at the top level', () => {
+        const nested = build()
+        expect(nested.commands.find((c) => c.name() === 'auth')).toBeDefined()
+        expect(
+            nested.commands.find((c) => c.name() === 'auth')?.commands.map((c) => c.name()),
+        ).toContain('login')
+
+        const flat = build({ flat: true })
+        expect(flat.commands.find((c) => c.name() === 'login')).toBeDefined()
     })
 
-    it('registers top-level subcommands when flat is true', () => {
-        const program = build({ flat: true })
-        const names = program.commands.map((c) => c.name())
-        expect(names).toEqual(expect.arrayContaining(['login', 'logout', 'status', 'token']))
-    })
-
-    it('honours commandName override', () => {
-        const program = build({ commandName: 'account' })
-        const account = program.commands.find((c) => c.name() === 'account')
-        expect(account).toBeDefined()
-    })
-
-    it('login does not register a --token flag (secrets-via-argv prohibited)', () => {
-        const program = build({ flat: true })
-        const login = program.commands.find((c) => c.name() === 'login')
-        const tokenOpt = login?.options.find((o) => o.long === '--token')
-        expect(tokenOpt).toBeUndefined()
-    })
-
-    it('login drives the OAuth flow end-to-end', async () => {
+    it('drives the OAuth flow end-to-end via Commander', async () => {
         const { provider, getRedirect } = instrument(fakeProvider())
         const openBrowser = vi.fn(async (url: string) => {
             const state = new URL(url).searchParams.get('state') ?? ''
@@ -137,14 +124,14 @@ describe('registerAuthCommand', () => {
         })
         const program = build({ flat: true, provider, openBrowser })
         await program.parseAsync(['node', 'test', 'login'])
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
+        const store = createConfigTokenStore<Account>({ configPath: path })
         expect((await store.active())?.token).toBe('tok-1')
     })
 
     it('loginFlags parsed values reach resolveScopes via the flags bag', async () => {
         const resolveScopes = vi.fn(({ flags }) => {
             expect(flags.additionalScopes).toEqual(['app-management', 'backups'])
-            return ['data:read_write', 'app-management', 'backups']
+            return ['data:read_write']
         })
         const { provider, getRedirect } = instrument(fakeProvider())
         const program = build({
@@ -163,7 +150,6 @@ describe('registerAuthCommand', () => {
                 await fetch(`${getRedirect()}?code=abc&state=${state}`)
             },
         })
-
         await program.parseAsync([
             'node',
             'test',
@@ -183,94 +169,60 @@ describe('registerAuthCommand', () => {
             provider,
             callbackEnvVar: 'TEST_CB_PORT',
             openBrowser: async (url) => {
-                const port = Number.parseInt(getRedirect().split(':')[2].split('/')[0], 10)
-                seenPorts.push(port)
+                seenPorts.push(Number(new URL(getRedirect()).port))
                 const state = new URL(url).searchParams.get('state') ?? ''
                 await fetch(`${getRedirect()}?code=abc&state=${state}`)
             },
         })
         try {
             await program.parseAsync(['node', 'test', 'login', '--callback-port', '0'])
-            // CLI flag was 0 (OS-assigned ephemeral); env was 40001.
-            // If the env had won, the bind would have been on 40001.
+            // CLI flag was 0 (OS-assigned); env was 40001. Env-winning behaviour
+            // would have bound 40001.
             expect(seenPorts[0]).not.toBe(40001)
         } finally {
             delete process.env.TEST_CB_PORT
         }
     })
 
-    it('--callback-port rejects non-integer / out-of-range values with AUTH_PORT_BIND_FAILED', async () => {
+    it.each([
+        ['foo', '--callback-port'],
+        ['70000', '--callback-port'],
+        ['1.5', '--callback-port'],
+        ['123abc', '--callback-port'],
+    ])('rejects --callback-port=%s with AUTH_PORT_BIND_FAILED', async (value) => {
         const program = build({ flat: true })
         await expect(
-            program.parseAsync(['node', 'test', 'login', '--callback-port', 'foo']),
-        ).rejects.toMatchObject({ code: 'AUTH_PORT_BIND_FAILED' })
-        await expect(
-            program.parseAsync(['node', 'test', 'login', '--callback-port', '70000']),
+            program.parseAsync(['node', 'test', 'login', '--callback-port', value]),
         ).rejects.toMatchObject({ code: 'AUTH_PORT_BIND_FAILED' })
     })
 
-    it('status --json emits an envelope', async () => {
-        const program = build({ flat: true })
-        await program.parseAsync(['node', 'test', 'status', '--json'])
-        const out = JSON.parse(logs[0]) as {
-            displayName: string
-            backend: string
-            envTokenSet: boolean
-        }
-        expect(out.displayName).toBe('Test')
-        expect(out.envTokenSet).toBe(false)
-    })
-
-    it('logout --all clears and reports it', async () => {
-        // Seed an account so logout has something to report after clearing.
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-1')
-
-        const program = build({ flat: true })
-        await program.parseAsync(['node', 'test', 'logout', '--all', '--json'])
-        const last = JSON.parse(logs[logs.length - 1]) as { cleared: string }
-        expect(last.cleared).toBe('all')
-    })
-
-    it('token (no subcommand) prints the active token', async () => {
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
-        await store.set({ id: '1', email: 'a@b' }, 'tok-xyz')
-        const program = build({ flat: true })
-        await program.parseAsync(['node', 'test', 'token'])
-        expect(logs[0]).toBe('tok-xyz')
-    })
-
-    it('token set reads from piped stdin and persists', async () => {
-        const program = build({ flat: true })
-        const originalStdin = process.stdin
-        const piped = Object.assign(Readable.from(['paste-me']), { isTTY: false })
-        Object.defineProperty(process, 'stdin', { value: piped, configurable: true })
+    it('rejects malformed env-var port (validation deferred to action time, not registration)', async () => {
+        process.env.TEST_CB_PORT = '123abc'
+        // Registration must NOT throw — defers validation to the login action.
+        const program = build({ flat: true, callbackEnvVar: 'TEST_CB_PORT' })
         try {
-            await program.parseAsync(['node', 'test', 'token', 'set'])
-        } finally {
-            Object.defineProperty(process, 'stdin', {
-                value: originalStdin,
-                configurable: true,
+            await expect(program.parseAsync(['node', 'test', 'login'])).rejects.toMatchObject({
+                code: 'AUTH_PORT_BIND_FAILED',
             })
+        } finally {
+            delete process.env.TEST_CB_PORT
         }
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: true })
-        expect((await store.active())?.token).toBe('paste-me')
     })
 
-    it('token set rejects when stdin is a TTY', async () => {
-        const program = build({ flat: true })
-        const originalStdin = process.stdin
-        const fakeTty = Object.assign(Readable.from([]), { isTTY: true })
-        Object.defineProperty(process, 'stdin', { value: fakeTty, configurable: true })
-        try {
-            await expect(
-                program.parseAsync(['node', 'test', 'token', 'set']),
-            ).rejects.toMatchObject({ code: 'AUTH_INVALID_TOKEN' })
-        } finally {
-            Object.defineProperty(process, 'stdin', {
-                value: originalStdin,
-                configurable: true,
-            })
-        }
+    it('honours a custom flagSpec long name (strict-integer attribute mapping)', async () => {
+        const { provider, getRedirect } = instrument(fakeProvider())
+        const program = build({
+            flat: true,
+            provider,
+            callbackFlagSpec: '--oauth-port <port>',
+            openBrowser: async (url) => {
+                const state = new URL(url).searchParams.get('state') ?? ''
+                await fetch(`${getRedirect()}?code=abc&state=${state}`)
+            },
+        })
+        // The renamed flag must reach the action handler — if attribute-name
+        // derivation regressed, the bound port would silently fall back to the
+        // preferred port instead of using --oauth-port=0.
+        await program.parseAsync(['node', 'test', 'login', '--oauth-port', '0'])
     })
 })

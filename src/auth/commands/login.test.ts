@@ -42,7 +42,7 @@ describe('runLogin', () => {
                 return { id: '1', email: 'a@b' }
             },
         }
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+        const store = createConfigTokenStore<Account>({ configPath: path })
 
         await runLogin(
             {

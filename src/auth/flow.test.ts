@@ -67,7 +67,7 @@ describe('runOAuthFlow', () => {
         const exchangeCode = vi.fn(async () => ({ accessToken: 'tok-1' }))
         const validateToken = vi.fn(async () => ({ id: '1', email: 'a@b' }))
         const { provider, getRedirect } = instrument({ prepare, exchangeCode, validateToken })
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+        const store = createConfigTokenStore<Account>({ configPath: path })
 
         const openBrowser = vi.fn(async (url: string) => {
             const state = new URL(url).searchParams.get('state') ?? ''
@@ -109,7 +109,7 @@ describe('runOAuthFlow', () => {
             }),
             validateToken,
         })
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+        const store = createConfigTokenStore<Account>({ configPath: path })
 
         const result = await runOAuthFlow<Account>({
             provider,
@@ -146,7 +146,7 @@ describe('runOAuthFlow', () => {
             }),
             validateToken,
         })
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+        const store = createConfigTokenStore<Account>({ configPath: path })
 
         await runOAuthFlow<Account>({
             provider,
@@ -169,7 +169,7 @@ describe('runOAuthFlow', () => {
 
     it('rejects with AUTH_CALLBACK_TIMEOUT when no callback arrives', async () => {
         const { provider } = instrument()
-        const store = createConfigTokenStore<Account>({ configPath: path, multiUser: false })
+        const store = createConfigTokenStore<Account>({ configPath: path })
         await expect(
             runOAuthFlow<Account>({
                 provider,
