@@ -9,3 +9,5 @@ export type AuthErrorCode =
     | 'AUTH_PORT_BIND_FAILED'
     | 'AUTH_TOKEN_EXCHANGE_FAILED'
     | 'AUTH_STORE_WRITE_FAILED'
+    | 'NOT_AUTHENTICATED'
+    | 'TOKEN_FROM_ENV'
