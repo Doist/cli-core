@@ -2,6 +2,7 @@ import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import { formatJson, formatNdjson } from '../json.js'
 import { attachStatusCommand } from './status.js'
 import type { TokenStore } from './types.js'
 
@@ -64,6 +65,7 @@ describe('attachStatusCommand', () => {
         expect(renderText).toHaveBeenCalledWith({
             account,
             view: { json: false, ndjson: false },
+            flags: {},
         })
         expect(logSpy).toHaveBeenCalledWith('Signed in as a@b')
     })
@@ -74,10 +76,8 @@ describe('attachStatusCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'status'])
 
-        expect(logSpy).toHaveBeenCalledTimes(3)
-        expect(logSpy).toHaveBeenNthCalledWith(1, 'line 1')
-        expect(logSpy).toHaveBeenNthCalledWith(2, 'line 2')
-        expect(logSpy).toHaveBeenNthCalledWith(3, 'line 3')
+        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0]).join('\n')
+        expect(emitted).toBe('line 1\nline 2\nline 3')
     })
 
     it('emits account as JSON by default under --json', async () => {
@@ -86,7 +86,7 @@ describe('attachStatusCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--json'])
 
         expect(renderText).not.toHaveBeenCalled()
-        expect(logSpy).toHaveBeenCalledWith(JSON.stringify(account, null, 2))
+        expect(logSpy).toHaveBeenCalledWith(formatJson(account))
     })
 
     it('emits renderJson payload when supplied under --json', async () => {
@@ -98,8 +98,8 @@ describe('attachStatusCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--json'])
 
-        expect(renderJson).toHaveBeenCalledWith({ account })
-        expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ id: '1', email: 'a@b' }, null, 2))
+        expect(renderJson).toHaveBeenCalledWith({ account, flags: {} })
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ id: '1', email: 'a@b' }))
     })
 
     it('emits a single NDJSON line under --ndjson', async () => {
@@ -107,7 +107,16 @@ describe('attachStatusCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledWith(JSON.stringify(account))
+        expect(logSpy).toHaveBeenCalledWith(formatNdjson([account]))
+    })
+
+    it('does not invoke renderJson in human mode', async () => {
+        const renderJson = vi.fn(({ account: a }: { account: Account }) => ({ id: a.id }))
+        const { program } = build({ renderJson })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'status'])
+
+        expect(renderJson).not.toHaveBeenCalled()
     })
 
     it('runs fetchLive and uses its returned account for rendering', async () => {
@@ -121,10 +130,12 @@ describe('attachStatusCommand', () => {
             account,
             token: 'tok',
             view: { json: false, ndjson: false },
+            flags: {},
         })
         expect(renderText).toHaveBeenCalledWith({
             account: live,
             view: { json: false, ndjson: false },
+            flags: {},
         })
         expect(logSpy).toHaveBeenCalledWith('Signed in as live@b')
     })
@@ -151,14 +162,42 @@ describe('attachStatusCommand', () => {
         expect(logSpy).not.toHaveBeenCalled()
     })
 
-    it('invokes onNotAuthenticated when supplied instead of throwing', async () => {
-        const onNotAuthenticated = vi.fn()
+    it('awaits an async onNotAuthenticated when supplied instead of throwing', async () => {
+        const order: string[] = []
+        const onNotAuthenticated = vi.fn(async () => {
+            await Promise.resolve()
+            order.push('onNotAuthenticated')
+        })
         const { program, renderText } = build({ onNotAuthenticated }, buildStore(null).store)
 
         await program.parseAsync(['node', 'cli', 'auth', 'status'])
 
-        expect(onNotAuthenticated).toHaveBeenCalledWith({ json: false, ndjson: false })
+        expect(onNotAuthenticated).toHaveBeenCalledWith({
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+        expect(order).toEqual(['onNotAuthenticated'])
         expect(renderText).not.toHaveBeenCalled()
+    })
+
+    it('exposes consumer-attached options in flags but strips --json / --ndjson', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const renderText = vi.fn((ctx: { account: Account }) => `Signed in as ${ctx.account.email}`)
+        const status = attachStatusCommand<Account>(auth, {
+            store: buildStore().store,
+            renderText,
+        })
+        status.option('--full', 'Show extended fields')
+
+        await program.parseAsync(['node', 'cli', 'auth', 'status', '--full'])
+
+        expect(renderText).toHaveBeenCalledWith({
+            account,
+            view: { json: false, ndjson: false },
+            flags: { full: true },
+        })
     })
 
     it('returns the new Command so the consumer can chain', () => {

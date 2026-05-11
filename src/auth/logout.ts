@@ -7,6 +7,12 @@ export type AttachLogoutContext<TAccount extends AuthAccount> = {
     /** The account that was active immediately before `clear()` ran, or `null` if nothing was stored. */
     account: TAccount | null
     view: Required<ViewOptions>
+    /**
+     * Stripped per-CLI flags — the parsed options object with the standard
+     * registrar flags (`--json`, `--ndjson`) removed. Any consumer-attached
+     * `.option(...)` lands here (e.g. `--user <ref>` from a multi-user CLI).
+     */
+    flags: Record<string, unknown>
 }
 
 export type AttachLogoutCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -37,11 +43,13 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async (cmd: Record<string, unknown>) => {
+            const { json, ndjson, ...flags } = cmd
             const view: Required<ViewOptions> = {
-                json: Boolean(cmd.json),
-                ndjson: Boolean(cmd.ndjson),
+                json: Boolean(json),
+                ndjson: Boolean(ndjson),
             }
-            const snapshot = await options.store.active()
+            // Skip the keyring/file read when no callback consumes the snapshot.
+            const snapshot = options.onCleared ? await options.store.active() : null
             const account = snapshot?.account ?? null
             await options.store.clear()
             if (view.json) {
@@ -49,6 +57,6 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
             } else if (!view.ndjson) {
                 console.log('✓ Logged out')
             }
-            await options.onCleared?.({ account, view })
+            await options.onCleared?.({ account, view, flags })
         })
 }

@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { formatJson } from '../json.js'
 import { attachLogoutCommand } from './logout.js'
 import type { TokenStore } from './types.js'
 
@@ -69,6 +70,7 @@ describe('attachLogoutCommand', () => {
         expect(onCleared).toHaveBeenCalledWith({
             account,
             view: { json: false, ndjson: false },
+            flags: {},
         })
     })
 
@@ -77,10 +79,11 @@ describe('attachLogoutCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ ok: true }, null, 2))
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true }))
         expect(onCleared).toHaveBeenCalledWith({
             account,
             view: { json: true, ndjson: false },
+            flags: {},
         })
     })
 
@@ -93,6 +96,7 @@ describe('attachLogoutCommand', () => {
         expect(onCleared).toHaveBeenCalledWith({
             account,
             view: { json: false, ndjson: true },
+            flags: {},
         })
     })
 
@@ -106,6 +110,46 @@ describe('attachLogoutCommand', () => {
         expect(onCleared).toHaveBeenCalledWith({
             account: null,
             view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('skips store.active() when no onCleared callback is supplied', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const built = buildStore()
+        attachLogoutCommand<Account>(auth, { store: built.store })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout'])
+
+        expect(built.activeSpy).not.toHaveBeenCalled()
+        expect(built.clearSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('exposes consumer-attached options in flags but strips --json / --ndjson', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const built = buildStore()
+        const onCleared = vi.fn()
+        const logout = attachLogoutCommand<Account>(auth, { store: built.store, onCleared })
+        logout.option('--user <ref>', 'Multi-user selector')
+
+        await program.parseAsync([
+            'node',
+            'cli',
+            'auth',
+            'logout',
+            '--json',
+            '--user',
+            'me@example',
+        ])
+
+        expect(onCleared).toHaveBeenCalledWith({
+            account,
+            view: { json: true, ndjson: false },
+            flags: { user: 'me@example' },
         })
     })
 

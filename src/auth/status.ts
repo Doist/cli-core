@@ -7,6 +7,12 @@ import type { AuthAccount, TokenStore } from './types.js'
 export type AttachStatusContext<TAccount extends AuthAccount> = {
     account: TAccount
     view: Required<ViewOptions>
+    /**
+     * Stripped per-CLI flags — the parsed options object with the standard
+     * registrar flags (`--json`, `--ndjson`) removed. Any consumer-attached
+     * `.option(...)` lands here (e.g. `--full`, `--user <ref>`).
+     */
+    flags: Record<string, unknown>
 }
 
 export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -22,6 +28,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
         account: TAccount
         token: string
         view: Required<ViewOptions>
+        flags: Record<string, unknown>
     }): Promise<TAccount>
     /**
      * Human-mode renderer. May return a single string or an array of lines;
@@ -30,14 +37,18 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
     renderText(ctx: AttachStatusContext<TAccount>): string | readonly string[]
     /**
      * Machine-mode payload. Returned value is serialized as-is via
-     * `formatJson` / `formatNdjson`. Defaults to the account object.
+     * `formatJson` / `formatNdjson`. Defaults to the account object. Only
+     * invoked under `--json` / `--ndjson`.
      */
-    renderJson?(ctx: { account: TAccount }): unknown
+    renderJson?(ctx: { account: TAccount; flags: Record<string, unknown> }): unknown
     /**
      * Called when `store.active()` returns null. Default behaviour throws
      * `CliError('NOT_AUTHENTICATED', …)`.
      */
-    onNotAuthenticated?(view: Required<ViewOptions>): void
+    onNotAuthenticated?(ctx: {
+        view: Required<ViewOptions>
+        flags: Record<string, unknown>
+    }): void | Promise<void>
 }
 
 /**
@@ -55,38 +66,42 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async (cmd: Record<string, unknown>) => {
+            const { json, ndjson, ...flags } = cmd
             const view: Required<ViewOptions> = {
-                json: Boolean(cmd.json),
-                ndjson: Boolean(cmd.ndjson),
+                json: Boolean(json),
+                ndjson: Boolean(ndjson),
             }
             const snapshot = await options.store.active()
             if (!snapshot) {
                 if (options.onNotAuthenticated) {
-                    options.onNotAuthenticated(view)
+                    await options.onNotAuthenticated({ view, flags })
                     return
                 }
-                throw new CliError(
-                    'NOT_AUTHENTICATED',
-                    'Not authenticated. Run `auth login` to sign in.',
-                )
+                throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
             }
             const account = options.fetchLive
                 ? await options.fetchLive({
                       account: snapshot.account,
                       token: snapshot.token,
                       view,
+                      flags,
                   })
                 : snapshot.account
-            const payload = options.renderJson ? options.renderJson({ account }) : account
             if (view.json) {
+                const payload = options.renderJson
+                    ? options.renderJson({ account, flags })
+                    : account
                 console.log(formatJson(payload))
                 return
             }
             if (view.ndjson) {
+                const payload = options.renderJson
+                    ? options.renderJson({ account, flags })
+                    : account
                 console.log(formatNdjson([payload]))
                 return
             }
-            const text = options.renderText({ account, view })
+            const text = options.renderText({ account, view, flags })
             const lines = typeof text === 'string' ? [text] : text
             for (const line of lines) console.log(line)
         })

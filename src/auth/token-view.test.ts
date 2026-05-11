@@ -36,16 +36,27 @@ describe('attachTokenViewCommand', () => {
         vi.unstubAllEnvs()
     })
 
-    it('prints the bare stored token to stdout', async () => {
+    it('writes exactly the bare token (no trailing newline) when stdout is not a TTY', async () => {
         const program = new Command()
         program.exitOverride()
         const auth = program.command('auth')
         const { store } = buildStore()
         attachTokenViewCommand<Account>(auth, { store })
 
-        await program.parseAsync(['node', 'cli', 'auth', 'token'])
+        const originalTTY = process.stdout.isTTY
+        Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+        try {
+            await program.parseAsync(['node', 'cli', 'auth', 'token'])
+        } finally {
+            Object.defineProperty(process.stdout, 'isTTY', {
+                value: originalTTY,
+                configurable: true,
+            })
+        }
 
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        expect(emitted).toBe('tok-xyz')
+        expect(stdoutSpy).toHaveBeenCalledTimes(1)
     })
 
     it('appends a newline only when stdout is a TTY', async () => {
@@ -66,8 +77,8 @@ describe('attachTokenViewCommand', () => {
             })
         }
 
-        expect(stdoutSpy).toHaveBeenNthCalledWith(1, 'tok-xyz')
-        expect(stdoutSpy).toHaveBeenNthCalledWith(2, '\n')
+        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        expect(emitted).toBe('tok-xyz\n')
     })
 
     it('throws CliError(TOKEN_FROM_ENV) when envVarName is set and env is populated', async () => {

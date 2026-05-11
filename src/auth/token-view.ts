@@ -1,5 +1,6 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
+import { isStdoutTTY } from '../terminal.js'
 import type { AuthAccount, TokenStore } from './types.js'
 
 export type AttachTokenViewCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -45,12 +46,9 @@ export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccoun
             }
             const snapshot = await options.store.active()
             if (!snapshot) {
-                throw new CliError(
-                    'NOT_AUTHENTICATED',
-                    'Not authenticated. Run `auth login` to sign in.',
-                )
+                throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
             }
             process.stdout.write(snapshot.token)
-            if (process.stdout.isTTY) process.stdout.write('\n')
+            if (isStdoutTTY()) process.stdout.write('\n')
         })
 }

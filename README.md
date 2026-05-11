@@ -207,9 +207,11 @@ attachTokenViewCommand<Account>(auth, {
 })
 ```
 
-`attachLogoutCommand` snapshots `store.active()`, calls `store.clear()`, then emits `✓ Logged out` (human) or `{ "ok": true }` (`--json`, silent under `--ndjson`) before firing `onCleared({ account, view })`.
+`attachLogoutCommand` snapshots `store.active()` (only when `onCleared` is supplied — skipped otherwise to avoid keyring / file I/O), calls `store.clear()`, then emits `✓ Logged out` (human) or `{ "ok": true }` (`--json`, silent under `--ndjson`) before firing `onCleared({ account, view, flags })`.
 
-`attachStatusCommand` reads `store.active()`, optionally runs `fetchLive` (consumer translates 401 → `CliError('NO_TOKEN', …)`), then dispatches to `renderJson` (`--json` / `--ndjson` via `formatJson` / `formatNdjson`, defaults to the account itself) or `renderText` (human mode, string or array of lines). When the store is empty it throws `CliError('NOT_AUTHENTICATED', …)` unless `onNotAuthenticated` is supplied.
+`attachStatusCommand` reads `store.active()`, optionally runs `fetchLive` (consumer translates 401 → `CliError('NO_TOKEN', …)`), then dispatches to `renderJson` (`--json` / `--ndjson` via `formatJson` / `formatNdjson`, defaults to the account itself, **only invoked in machine-output mode**) or `renderText` (human mode, string or array of lines). When the store is empty it throws `CliError('NOT_AUTHENTICATED', 'Not signed in.')` unless `onNotAuthenticated` is supplied.
+
+Both attachers strip the standard `--json` / `--ndjson` registrar flags from the parsed options and pass the remainder to their callbacks as `flags` — same escape hatch `attachLoginCommand` uses, so a consumer can chain e.g. `.option('--user <ref>')` and read it in `onCleared` / `renderText` / `fetchLive` / `renderJson` / `onNotAuthenticated`.
 
 `attachTokenViewCommand` writes the bare stored token to stdout (no envelope, pipe-safe) and appends a trailing newline only when stdout is a TTY. When `envVarName` is set and the env var is populated, it throws `CliError('TOKEN_FROM_ENV', …)` to avoid disclosing a token the CLI did not manage. Defaults to subcommand name `token`; pass `name: 'view'` to nest under an existing `token` group.
 
@@ -297,15 +299,15 @@ The `handshake` is shared mutable state across hooks. `runOAuthFlow` folds the r
 
 Every failure in this subpath surfaces as a `CliError`:
 
-| Code                         | Cause                                                                                                                   |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `AUTH_OAUTH_FAILED`          | Provider returned `?error=...`, the flow was aborted via `signal`, or the callback server stopped before completion.    |
-| `AUTH_CALLBACK_TIMEOUT`      | No valid callback within `timeoutMs` (default 3 minutes).                                                               |
-| `AUTH_PORT_BIND_FAILED`      | Could not bind any port in `[preferredPort, preferredPort + portFallbackCount]`, or `--callback-port` was out of range. |
-| `AUTH_TOKEN_EXCHANGE_FAILED` | Token endpoint network error, non-2xx response, non-JSON body, or missing `access_token`.                               |
-| `AUTH_STORE_WRITE_FAILED`    | `TokenStore.set` threw a non-`CliError`. (`CliError`s thrown from `set` propagate unchanged.)                           |
-| `NOT_AUTHENTICATED`          | `status` / `token` ran with an empty `TokenStore` (and no `onNotAuthenticated` callback for `status`).                  |
-| `TOKEN_FROM_ENV`             | `attachTokenViewCommand` refused to print: `envVarName` was set and the env var is populated.                           |
+| Code                         | Cause                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_OAUTH_FAILED`          | Provider returned `?error=...`, the flow was aborted via `signal`, or the callback server stopped before completion.                        |
+| `AUTH_CALLBACK_TIMEOUT`      | No valid callback within `timeoutMs` (default 3 minutes).                                                                                   |
+| `AUTH_PORT_BIND_FAILED`      | Could not bind any port in `[preferredPort, preferredPort + portFallbackCount]`, or `--callback-port` was out of range.                     |
+| `AUTH_TOKEN_EXCHANGE_FAILED` | Token endpoint network error, non-2xx response, non-JSON body, or missing `access_token`.                                                   |
+| `AUTH_STORE_WRITE_FAILED`    | `TokenStore.set` threw a non-`CliError`. (`CliError`s thrown from `set` propagate unchanged.)                                               |
+| `NOT_AUTHENTICATED`          | `status` / `token` ran with an empty `TokenStore` (and no `onNotAuthenticated` callback for `status`). Default message: `'Not signed in.'`. |
+| `TOKEN_FROM_ENV`             | `attachTokenViewCommand` refused to print: `envVarName` was set and the env var is populated.                                               |
 
 The consumer's top-level error handler formats and exits.
 
