@@ -1,3 +1,9 @@
+## [0.10.0](https://github.com/Doist/cli-core/compare/v0.9.0...v0.10.0) (2026-05-12)
+
+### Features
+
+* **auth:** add logout/status/token-view Commander attachers ([#16](https://github.com/Doist/cli-core/issues/16)) ([b7e5385](https://github.com/Doist/cli-core/commit/b7e538543e11c667da6c13938a83eca00836fd88))
+
 ## [0.9.0](https://github.com/Doist/cli-core/compare/v0.8.0...v0.9.0) (2026-05-09)
 
 ### Features
