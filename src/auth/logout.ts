@@ -15,14 +15,14 @@ export type AttachLogoutContext<TAccount extends AuthAccount> = {
     flags: Record<string, unknown>
 }
 
-export type AttachLogoutRevokeContext<TAccount extends AuthAccount> = {
+export type AttachLogoutRevokeContext<TAccount extends AuthAccount> = Omit<
+    AttachLogoutContext<TAccount>,
+    'account'
+> & {
     /** Live token from the snapshot — pass to the server-side revocation endpoint. */
     token: string
-    /** The account the token belongs to. Non-null because the hook is skipped when nothing is stored. */
+    /** Non-null because the hook is skipped when nothing was stored. */
     account: TAccount
-    view: Required<ViewOptions>
-    /** Same shape as `AttachLogoutContext.flags`. */
-    flags: Record<string, unknown>
 }
 
 export type AttachLogoutCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -30,15 +30,15 @@ export type AttachLogoutCommandOptions<TAccount extends AuthAccount = AuthAccoun
     /** Override the subcommand description. */
     description?: string
     /**
-     * Fires before `store.clear()` runs, when a prior session is stored. Use
-     * to call a server-side token-revocation endpoint. Errors are swallowed
-     * so local logout always succeeds even when the server is unreachable;
-     * surface diagnostics via your own logging if needed. Skipped entirely
-     * when `store.active()` returns `null`.
+     * Fires after `store.clear()` resolves, when a prior session was stored.
+     * Use to call a server-side token-revocation endpoint. The hook is awaited,
+     * but errors are swallowed so local logout always succeeds even when the
+     * server is unreachable. Skipped when no session was stored or when
+     * `store.active()` itself fails.
      */
-    revokeToken?(ctx: AttachLogoutRevokeContext<TAccount>): Promise<void>
+    revokeToken?(ctx: AttachLogoutRevokeContext<TAccount>): void | Promise<void>
     /**
-     * Fires after `store.clear()` resolves. Use to surface keyring-fallback
+     * Fires after `revokeToken` settles. Use to surface keyring-fallback
      * warnings or other CLI-specific follow-ups. Consumers in machine-output
      * mode should route any extra prose to stderr to keep stdout parseable.
      */
@@ -46,10 +46,11 @@ export type AttachLogoutCommandOptions<TAccount extends AuthAccount = AuthAccoun
 }
 
 /**
- * Attach `logout` as a subcommand of `parent`. Snapshots the active account,
- * calls `store.clear()`, emits a sensible default success line gated on
- * `--json` / `--ndjson`, then invokes `onCleared` for follow-ups. Returns the
- * new `Command` so the consumer can chain.
+ * Attach `logout` as a subcommand of `parent`. Snapshots the active session
+ * (only when a hook needs it), calls `store.clear()`, optionally awaits
+ * `revokeToken` for best-effort server-side revocation, emits the success
+ * line gated on `--json` / `--ndjson`, then invokes `onCleared` for
+ * follow-ups. Returns the new `Command` so the consumer can chain.
  */
 export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -68,8 +69,16 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
             }
             // Skip the keyring/file read when no callback consumes the snapshot.
             const needsSnapshot = Boolean(options.revokeToken || options.onCleared)
-            const snapshot = needsSnapshot ? await options.store.active() : null
+            let snapshot: { token: string; account: TAccount } | null = null
+            if (needsSnapshot) {
+                try {
+                    snapshot = await options.store.active()
+                } catch {
+                    // Snapshot lookup failures must not block local clear.
+                }
+            }
             const account = snapshot?.account ?? null
+            await options.store.clear()
             if (options.revokeToken && snapshot) {
                 try {
                     await options.revokeToken({
@@ -79,10 +88,9 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
                         flags,
                     })
                 } catch {
-                    // Best-effort: server revoke failures must not block local clear.
+                    // Best-effort: server revoke failures must not surface to the user.
                 }
             }
-            await options.store.clear()
             if (view.json) {
                 console.log(formatJson({ ok: true }))
             } else if (!view.ndjson) {
