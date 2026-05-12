@@ -182,6 +182,12 @@ import {
 
 attachLogoutCommand<Account>(auth, {
     store,
+    revokeToken: async ({ token }) => {
+        // Optional pre-clear server-side revocation. Errors are swallowed so
+        // local logout always succeeds — surface diagnostics via your own
+        // logging if you need them.
+        await api.revokeToken(token)
+    },
     onCleared: ({ account, view }) => {
         // Optional follow-up — surface keyring-fallback warnings, etc.
         // Route extra prose to stderr in machine-output mode.
@@ -207,11 +213,11 @@ attachTokenViewCommand<Account>(auth, {
 })
 ```
 
-`attachLogoutCommand` snapshots `store.active()` (only when `onCleared` is supplied — skipped otherwise to avoid keyring / file I/O), calls `store.clear()`, then emits `✓ Logged out` (human) or `{ "ok": true }` (`--json`, silent under `--ndjson`) before firing `onCleared({ account, view, flags })`.
+`attachLogoutCommand` snapshots `store.active()` (only when `revokeToken` or `onCleared` is supplied — skipped otherwise to avoid keyring / file I/O), optionally awaits `revokeToken({ token, account, view, flags })` for server-side revocation, calls `store.clear()`, then emits `✓ Logged out` (human) or `{ "ok": true }` (`--json`, silent under `--ndjson`) before firing `onCleared({ account, view, flags })`. `revokeToken` is skipped when no session is stored and any error it throws is swallowed so local logout always succeeds.
 
 `attachStatusCommand` reads `store.active()`, optionally runs `fetchLive` (consumer translates 401 → `CliError('NO_TOKEN', …)`), then dispatches to `renderJson` (`--json` / `--ndjson` via `formatJson` / `formatNdjson`, defaults to the account itself, **only invoked in machine-output mode**) or `renderText` (human mode, string or array of lines). When the store is empty it throws `CliError('NOT_AUTHENTICATED', 'Not signed in.')` unless `onNotAuthenticated` is supplied.
 
-Both attachers strip the standard `--json` / `--ndjson` registrar flags from the parsed options and pass the remainder to their callbacks as `flags` — same escape hatch `attachLoginCommand` uses, so a consumer can chain e.g. `.option('--user <ref>')` and read it in `onCleared` / `renderText` / `fetchLive` / `renderJson` / `onNotAuthenticated`.
+Both attachers strip the standard `--json` / `--ndjson` registrar flags from the parsed options and pass the remainder to their callbacks as `flags` — same escape hatch `attachLoginCommand` uses, so a consumer can chain e.g. `.option('--user <ref>')` and read it in `revokeToken` / `onCleared` / `renderText` / `fetchLive` / `renderJson` / `onNotAuthenticated`.
 
 `attachTokenViewCommand` writes the bare stored token to stdout (no envelope, pipe-safe) and appends a trailing newline only when stdout is a TTY. When `envVarName` is set and the env var is populated, it throws `CliError('TOKEN_FROM_ENV', …)` to avoid disclosing a token the CLI did not manage. Defaults to subcommand name `token`; pass `name: 'view'` to nest under an existing `token` group.
 

@@ -15,10 +15,28 @@ export type AttachLogoutContext<TAccount extends AuthAccount> = {
     flags: Record<string, unknown>
 }
 
+export type AttachLogoutRevokeContext<TAccount extends AuthAccount> = {
+    /** Live token from the snapshot — pass to the server-side revocation endpoint. */
+    token: string
+    /** The account the token belongs to. Non-null because the hook is skipped when nothing is stored. */
+    account: TAccount
+    view: Required<ViewOptions>
+    /** Same shape as `AttachLogoutContext.flags`. */
+    flags: Record<string, unknown>
+}
+
 export type AttachLogoutCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
     store: TokenStore<TAccount>
     /** Override the subcommand description. */
     description?: string
+    /**
+     * Fires before `store.clear()` runs, when a prior session is stored. Use
+     * to call a server-side token-revocation endpoint. Errors are swallowed
+     * so local logout always succeeds even when the server is unreachable;
+     * surface diagnostics via your own logging if needed. Skipped entirely
+     * when `store.active()` returns `null`.
+     */
+    revokeToken?(ctx: AttachLogoutRevokeContext<TAccount>): Promise<void>
     /**
      * Fires after `store.clear()` resolves. Use to surface keyring-fallback
      * warnings or other CLI-specific follow-ups. Consumers in machine-output
@@ -49,8 +67,21 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
                 ndjson: Boolean(ndjson),
             }
             // Skip the keyring/file read when no callback consumes the snapshot.
-            const snapshot = options.onCleared ? await options.store.active() : null
+            const needsSnapshot = Boolean(options.revokeToken || options.onCleared)
+            const snapshot = needsSnapshot ? await options.store.active() : null
             const account = snapshot?.account ?? null
+            if (options.revokeToken && snapshot) {
+                try {
+                    await options.revokeToken({
+                        token: snapshot.token,
+                        account: snapshot.account,
+                        view,
+                        flags,
+                    })
+                } catch {
+                    // Best-effort: server revoke failures must not block local clear.
+                }
+            }
             await options.store.clear()
             if (view.json) {
                 console.log(formatJson({ ok: true }))

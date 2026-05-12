@@ -4,7 +4,11 @@ export type { RunOAuthFlowOptions, RunOAuthFlowResult } from './flow.js'
 export { attachLoginCommand } from './login.js'
 export type { AttachLoginCommandOptions, AttachLoginContext } from './login.js'
 export { attachLogoutCommand } from './logout.js'
-export type { AttachLogoutCommandOptions, AttachLogoutContext } from './logout.js'
+export type {
+    AttachLogoutCommandOptions,
+    AttachLogoutContext,
+    AttachLogoutRevokeContext,
+} from './logout.js'
 export { attachStatusCommand } from './status.js'
 export type { AttachStatusCommandOptions, AttachStatusContext } from './status.js'
 export { attachTokenViewCommand } from './token-view.js'

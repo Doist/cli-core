@@ -173,6 +173,116 @@ describe('attachLogoutCommand', () => {
         expect(order).toEqual(['active', 'clear', 'onCleared'])
     })
 
+    it('invokes revokeToken with the snapshot before clear() runs', async () => {
+        const built = buildStore()
+        const order: string[] = []
+        ;(built.store.active as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+            order.push('active')
+            return { token: 'tok', account }
+        })
+        ;(built.store.clear as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+            order.push('clear')
+        })
+        const revokeToken = vi.fn(async () => {
+            order.push('revoke')
+        })
+        const onCleared = vi.fn(() => {
+            order.push('onCleared')
+        })
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        attachLogoutCommand<Account>(auth, { store: built.store, revokeToken, onCleared })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout'])
+
+        expect(revokeToken).toHaveBeenCalledWith({
+            token: 'tok',
+            account,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+        expect(order).toEqual(['active', 'revoke', 'clear', 'onCleared'])
+    })
+
+    it('skips revokeToken when no prior session is stored but still clears', async () => {
+        const built = buildStore(null)
+        const revokeToken = vi.fn(async () => {})
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        attachLogoutCommand<Account>(auth, { store: built.store, revokeToken })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout'])
+
+        expect(revokeToken).not.toHaveBeenCalled()
+        expect(built.clearSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('swallows revokeToken failures and still clears and fires onCleared', async () => {
+        const built = buildStore()
+        const revokeToken = vi.fn(async () => {
+            throw new Error('network down')
+        })
+        const onCleared = vi.fn()
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        attachLogoutCommand<Account>(auth, { store: built.store, revokeToken, onCleared })
+
+        await expect(program.parseAsync(['node', 'cli', 'auth', 'logout'])).resolves.toBeDefined()
+
+        expect(revokeToken).toHaveBeenCalledTimes(1)
+        expect(built.clearSpy).toHaveBeenCalledTimes(1)
+        expect(onCleared).toHaveBeenCalledWith({
+            account,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('reads store.active() when only revokeToken is supplied', async () => {
+        const built = buildStore()
+        const revokeToken = vi.fn(async () => {})
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        attachLogoutCommand<Account>(auth, { store: built.store, revokeToken })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout'])
+
+        expect(built.activeSpy).toHaveBeenCalledTimes(1)
+        expect(revokeToken).toHaveBeenCalledTimes(1)
+        expect(built.clearSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('exposes consumer-attached options in revokeToken flags', async () => {
+        const built = buildStore()
+        const revokeToken = vi.fn(async () => {})
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const logout = attachLogoutCommand<Account>(auth, { store: built.store, revokeToken })
+        logout.option('--user <ref>', 'Multi-user selector')
+
+        await program.parseAsync([
+            'node',
+            'cli',
+            'auth',
+            'logout',
+            '--json',
+            '--user',
+            'me@example',
+        ])
+
+        expect(revokeToken).toHaveBeenCalledWith({
+            token: 'tok',
+            account,
+            view: { json: true, ndjson: false },
+            flags: { user: 'me@example' },
+        })
+    })
+
     it('works without an onCleared callback', async () => {
         const program = new Command()
         program.exitOverride()
