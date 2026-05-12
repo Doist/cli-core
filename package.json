@@ -81,7 +81,7 @@
     },
     "dependencies": {
         "chalk": "5.6.2",
-        "yocto-spinner": "1.1.0"
+        "yocto-spinner": "1.2.0"
     },
     "peerDependencies": {
         "commander": ">=14",
