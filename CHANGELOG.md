@@ -1,3 +1,13 @@
+## [0.11.0](https://github.com/Doist/cli-core/compare/v0.10.0...v0.11.0) (2026-05-12)
+
+### Features
+
+* **auth:** add revokeToken hook to attachLogoutCommand ([#21](https://github.com/Doist/cli-core/issues/21)) ([c7febdd](https://github.com/Doist/cli-core/commit/c7febdd85bbd766496df36d7c9b94eba0265d40e))
+
+### Bug Fixes
+
+* **deps:** update dependency yocto-spinner to v1.2.0 ([#20](https://github.com/Doist/cli-core/issues/20)) ([a15c2ed](https://github.com/Doist/cli-core/commit/a15c2edc8dc84e929ddb8fd19d836083528b10d7))
+
 ## [0.10.0](https://github.com/Doist/cli-core/compare/v0.9.0...v0.10.0) (2026-05-12)
 
 ### Features
