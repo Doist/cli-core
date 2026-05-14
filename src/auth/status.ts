@@ -7,6 +7,7 @@ import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-fl
 
 export type AttachStatusContext<TAccount extends AuthAccount> = {
     account: TAccount
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
     view: Required<ViewOptions>
     /** Consumer-attached options (e.g. `--full`). The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
     flags: Record<string, unknown>
@@ -24,6 +25,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
     fetchLive?(ctx: {
         account: TAccount
         token: string
+        /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
         view: Required<ViewOptions>
         flags: Record<string, unknown>
     }): Promise<TAccount>
@@ -43,6 +45,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
      * `CliError('NOT_AUTHENTICATED', …)`.
      */
     onNotAuthenticated?(ctx: {
+        /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
         view: Required<ViewOptions>
         flags: Record<string, unknown>
     }): void | Promise<void>

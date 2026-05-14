@@ -7,6 +7,7 @@ import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-fl
 export type AttachLogoutContext<TAccount extends AuthAccount> = {
     /** The account that was active immediately before `clear()` ran, or `null` if nothing was stored. */
     account: TAccount | null
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
     view: Required<ViewOptions>
     /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
     flags: Record<string, unknown>
