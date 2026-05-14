@@ -72,56 +72,23 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
     validateToken(input: ValidateInput): Promise<TAccount>
 }
 
-/**
- * Opaque selector for picking a specific account out of a store. cli-core
- * does not constrain the matching semantics — a store may match on id,
- * email, label, or anything else it persists. Single-user stores still
- * validate `ref` against their one stored account (match-or-throw via
- * `CliError('ACCOUNT_NOT_FOUND', …)`) rather than ignoring it, since the
- * attachers always attach `--user <ref>` and a silent ignore would make
- * `logout --user wrong` look successful.
- */
+/** Opaque account selector. Stores own the matching rule (id, email, label, …). */
 export type AccountRef = string
 
 /**
- * Persistent token + account storage. Consumers implement this against
- * whatever storage they need (config file, OS keychain, multi-account…).
- * cli-core does not ship a default implementation; the interface is small
- * enough that an inline implementation covers both the single-user and the
- * multi-user case.
- *
- * The contract is uniformly multi-user-shaped — single-user consumers
- * implement the enumeration methods trivially against their one stored
- * account (see the README example). The `--user <ref>` flag is always
- * attached by `attachLogoutCommand` / `attachStatusCommand` /
- * `attachTokenViewCommand`; single-user stores either match it against the
- * one account or throw `CliError('ACCOUNT_NOT_FOUND', …)`.
+ * Persistent token + account storage. Uniformly multi-user-shaped — single-user
+ * stores implement `list` / `setDefault` against their one stored account (see
+ * the README example).
  */
 export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
-    /**
-     * The currently signed-in identity, or `null` when nothing is stored.
-     * With `ref`, returns that specific account's snapshot; without, returns
-     * the default/only account. A `ref` that does not match any stored
-     * account returns `null` (consumers translate the miss into a typed error
-     * via their own resolver).
-     */
+    /** Active snapshot, or `null` when nothing matches (the attachers translate a ref miss into `ACCOUNT_NOT_FOUND`). */
     active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
-    /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` to surface a typed failure; any other thrown value is wrapped as `AUTH_STORE_WRITE_FAILED`. */
+    /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
-    /**
-     * Remove a stored credential. With `ref`, removes that specific account;
-     * without, removes the default/only account. No-op when nothing matches.
-     */
+    /** Remove a stored credential. No-op when `ref` doesn't match. */
     clear(ref?: AccountRef): Promise<void>
-    /**
-     * Enumerate every stored account with a default marker. Single-user
-     * stores return a one-element array (or empty when nothing is stored).
-     */
+    /** Every stored account with a default marker. */
     list(): Promise<ReadonlyArray<{ account: TAccount; isDefault: boolean }>>
-    /**
-     * Mark `ref` as the new default account. Single-user stores either
-     * match `ref` against the one stored account or throw
-     * `CliError('ACCOUNT_NOT_FOUND', …)`.
-     */
+    /** Mark `ref` as the new default. Throw `CliError('ACCOUNT_NOT_FOUND', …)` on miss. */
     setDefault(ref: AccountRef): Promise<void>
 }

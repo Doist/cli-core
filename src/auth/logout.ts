@@ -9,11 +9,7 @@ export type AttachLogoutContext<TAccount extends AuthAccount> = {
     /** The account that was active immediately before `clear()` ran, or `null` if nothing was stored. */
     account: TAccount | null
     view: Required<ViewOptions>
-    /**
-     * Stripped per-CLI flags — the parsed options object with the standard
-     * registrar flags (`--json`, `--ndjson`, `--user`) removed. Any
-     * consumer-attached `.option(...)` lands here.
-     */
+    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
     flags: Record<string, unknown>
 }
 
@@ -70,11 +66,9 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
             ndjson: Boolean(ndjson),
         }
         const ref = extractUserRef(cmd)
-        // Explicit `--user <ref>` must surface a typed miss before we
-        // touch `clear()` — the store contract permits `clear(ref)` and
-        // `active(ref)` to no-op / return null on miss, so without this
-        // probe `logout --user mistake` would print `✓ Logged out` after
-        // doing nothing.
+        // Explicit ref must surface a typed miss before `clear()` runs —
+        // `clear(ref)` is contractually a no-op on miss, so otherwise
+        // `logout --user mistake` would print `✓ Logged out`.
         const needsSnapshot = ref !== undefined || Boolean(options.revokeToken || options.onCleared)
         let snapshot: { token: string; account: TAccount } | null = null
         if (needsSnapshot) {

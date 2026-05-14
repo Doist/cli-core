@@ -8,11 +8,7 @@ import { attachUserFlag, extractUserRef } from './user-flag.js'
 export type AttachStatusContext<TAccount extends AuthAccount> = {
     account: TAccount
     view: Required<ViewOptions>
-    /**
-     * Stripped per-CLI flags — the parsed options object with the standard
-     * registrar flags (`--json`, `--ndjson`, `--user`) removed. Any
-     * consumer-attached `.option(...)` lands here (e.g. `--full`).
-     */
+    /** Consumer-attached options (e.g. `--full`). The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
     flags: Record<string, unknown>
 }
 
@@ -76,8 +72,7 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
         const snapshot = await options.store.active(ref)
         if (!snapshot) {
             if (ref !== undefined) {
-                // Explicit ref miss is a typed error, not "not signed in" —
-                // the user provided a selector we couldn't match.
+                // Explicit ref miss is `ACCOUNT_NOT_FOUND`, not `NOT_AUTHENTICATED`.
                 throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
             }
             if (options.onNotAuthenticated) {
