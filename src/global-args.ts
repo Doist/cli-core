@@ -23,6 +23,8 @@ export type GlobalArgs = Required<Pick<ViewOptions, 'json' | 'ndjson'>> & {
     noSpinner: boolean
     /** false = absent, true = present without path, string = path. */
     progressJsonl: string | true | false
+    /** Account selector from `--user <ref>` / `--user=<ref>`; `undefined` when absent or valueless. */
+    user?: string
 }
 
 const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
@@ -30,22 +32,46 @@ const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
     v: 'verbose',
 }
 
+/** Whether `token` is a usable value for a space-separated long option (not absent, not `--`, not another flag). */
+function isFlagValue(token: string | undefined): token is string {
+    return token !== undefined && token !== '--' && !token.startsWith('-')
+}
+
+/**
+ * If `argv[i]` is a `--user` token, return how to consume it; otherwise `null`.
+ * `consumed` is the number of argv slots the token occupies (2 for the
+ * space form, 1 for `--user=val` / valueless).
+ */
+function readUserFlagAt(
+    argv: string[],
+    i: number,
+): { value: string | undefined; consumed: 1 | 2 } | null {
+    const arg = argv[i]
+    if (arg === '--user') {
+        const next = argv[i + 1]
+        return isFlagValue(next) ? { value: next, consumed: 2 } : { value: undefined, consumed: 1 }
+    }
+    if (arg.startsWith('--user=')) {
+        const value = arg.slice('--user='.length)
+        return { value: value !== '' ? value : undefined, consumed: 1 }
+    }
+    return null
+}
+
 /**
  * Parse well-known global flags from `argv`. Pure — pass an explicit array
  * for testing, or omit to read `process.argv.slice(2)`.
  *
- * The parser scans the entire argv: a CLI-specific positional that happens
- * to look like a global short flag (`td comment add 123 -q`) will flip the
- * matching global state. Workaround: use the standard `--` terminator
- * (`td comment add 123 -- -q`) so the parser stops before the positional.
- * The trade-off is intentional — callers run this before Commander has
- * parsed argv, so we can't yet distinguish positionals from option values.
+ * Runs before Commander so it can't distinguish positionals from option
+ * values: a positional that looks like a global short flag
+ * (`td comment add 123 -q`) flips the matching state. Use the `--`
+ * terminator to stop the parser before a positional that needs protecting.
  *
- * `--progress-jsonl` accepts only the bare form (output to stderr) and the
- * `--progress-jsonl=path` form. The space-separated `--progress-jsonl path`
- * form is intentionally unsupported because it silently consumes the next
- * positional argument (e.g., `td task add --progress-jsonl "Buy milk"`
- * would treat `Buy milk` as a file path).
+ * `--progress-jsonl` accepts only the bare form and the `=path` form; the
+ * space-separated form would silently consume the next positional (e.g.
+ * `td task add --progress-jsonl "Buy milk"` would treat `Buy milk` as a
+ * file path). `--user` accepts both forms but never consumes a following
+ * flag — pair with `stripUserFlag` before forwarding argv to Commander.
  */
 export function parseGlobalArgs(argv?: string[]): GlobalArgs {
     const args = argv ?? process.argv.slice(2)
@@ -81,6 +107,12 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
             result.progressJsonl = true
         } else if (arg.startsWith('--progress-jsonl=')) {
             result.progressJsonl = arg.slice('--progress-jsonl='.length)
+        } else if (arg === '--user' || arg.startsWith('--user=')) {
+            const consumed = readUserFlagAt(args, i)
+            if (consumed) {
+                if (consumed.value !== undefined) result.user = consumed.value
+                i += consumed.consumed - 1
+            }
         } else if (arg.length > 1 && arg[0] === '-' && arg[1] !== '-') {
             // Short-flag group: -v, -vq, -vvv, etc. Unknown shorts are
             // silently ignored — they belong to Commander or subcommands.
@@ -95,6 +127,41 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
         }
     }
 
+    return result
+}
+
+/**
+ * Strip pre-subcommand `--user` tokens so a Commander program with no root
+ * `--user` option doesn't trip on the flag. Stops at the first non-flag
+ * token (including `--` and the empty string) so subcommand-level `--user`
+ * — attached by the auth attachers — still reaches Commander.
+ *
+ * Assumes `--user` is the only space-separated root option. CLIs that
+ * attach other root options taking values (e.g. `--profile <name>`) must
+ * either strip those first or attach `--user` on the root program directly
+ * — this helper only knows about `--user`.
+ *
+ * Pure; does not mutate `argv`.
+ */
+export function stripUserFlag(argv: string[]): string[] {
+    const result: string[] = []
+    let i = 0
+    while (i < argv.length) {
+        const arg = argv[i]
+        if (arg === '--' || isFlagValue(arg)) {
+            // First non-flag token (positional, `--`, or empty string) ends
+            // the scan; copy the rest verbatim for Commander.
+            for (let j = i; j < argv.length; j++) result.push(argv[j])
+            break
+        }
+        const consumed = readUserFlagAt(argv, i)
+        if (consumed) {
+            i += consumed.consumed
+            continue
+        }
+        result.push(arg)
+        i += 1
+    }
     return result
 }
 

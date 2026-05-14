@@ -20,6 +20,8 @@ function buildStore(
         active: activeSpy,
         set: vi.fn(),
         clear: vi.fn(),
+        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
+        setDefault: vi.fn(),
     }
     return { store, activeSpy }
 }
@@ -144,5 +146,47 @@ describe('attachTokenViewCommand', () => {
         const cmd = attachTokenViewCommand<Account>(auth, { store })
 
         expect(cmd.name()).toBe('token')
+    })
+
+    it('threads --user ref to store.active(ref) and prints the matched token', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const { store, activeSpy } = buildStore()
+        attachTokenViewCommand<Account>(auth, { store })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alice@example'])
+
+        expect(activeSpy).toHaveBeenCalledWith('alice@example')
+        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+    })
+
+    it('calls store.active(undefined) when --user is absent', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const { store, activeSpy } = buildStore()
+        attachTokenViewCommand<Account>(auth, { store })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'token'])
+
+        expect(activeSpy).toHaveBeenCalledWith(undefined)
+        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+    })
+
+    it('throws ACCOUNT_NOT_FOUND when --user does not match a stored account', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const { store } = buildStore(null)
+        attachTokenViewCommand<Account>(auth, { store })
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'ghost']),
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'ACCOUNT_NOT_FOUND',
+        })
+        expect(stdoutSpy).not.toHaveBeenCalled()
     })
 })

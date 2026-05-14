@@ -3,15 +3,13 @@ import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type { AuthAccount, TokenStore } from './types.js'
+import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
 export type AttachStatusContext<TAccount extends AuthAccount> = {
     account: TAccount
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
     view: Required<ViewOptions>
-    /**
-     * Stripped per-CLI flags — the parsed options object with the standard
-     * registrar flags (`--json`, `--ndjson`) removed. Any consumer-attached
-     * `.option(...)` lands here (e.g. `--full`, `--user <ref>`).
-     */
+    /** Consumer-attached options (e.g. `--full`). The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
     flags: Record<string, unknown>
 }
 
@@ -27,6 +25,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
     fetchLive?(ctx: {
         account: TAccount
         token: string
+        /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
         view: Required<ViewOptions>
         flags: Record<string, unknown>
     }): Promise<TAccount>
@@ -46,6 +45,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
      * `CliError('NOT_AUTHENTICATED', …)`.
      */
     onNotAuthenticated?(ctx: {
+        /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
         view: Required<ViewOptions>
         flags: Record<string, unknown>
     }): void | Promise<void>
@@ -60,49 +60,46 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
     options: AttachStatusCommandOptions<TAccount>,
 ): Command {
-    return parent
+    const command = parent
         .command('status')
         .description(options.description ?? 'Show the current authentication status')
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
-        .action(async (cmd: Record<string, unknown>) => {
-            const { json, ndjson, ...flags } = cmd
-            const view: Required<ViewOptions> = {
-                json: Boolean(json),
-                ndjson: Boolean(ndjson),
-            }
-            const snapshot = await options.store.active()
-            if (!snapshot) {
-                if (options.onNotAuthenticated) {
-                    await options.onNotAuthenticated({ view, flags })
-                    return
-                }
-                throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
-            }
-            const account = options.fetchLive
-                ? await options.fetchLive({
-                      account: snapshot.account,
-                      token: snapshot.token,
-                      view,
-                      flags,
-                  })
-                : snapshot.account
-            if (view.json) {
-                const payload = options.renderJson
-                    ? options.renderJson({ account, flags })
-                    : account
-                console.log(formatJson(payload))
+    return attachUserFlag(command).action(async (cmd: Record<string, unknown>) => {
+        const { json, ndjson, user: _user, ...flags } = cmd
+        const view: Required<ViewOptions> = {
+            json: Boolean(json),
+            ndjson: Boolean(ndjson),
+        }
+        const ref = extractUserRef(cmd)
+        const snapshot = await requireSnapshotForRef(options.store, ref)
+        if (!snapshot) {
+            if (options.onNotAuthenticated) {
+                await options.onNotAuthenticated({ view, flags })
                 return
             }
-            if (view.ndjson) {
-                const payload = options.renderJson
-                    ? options.renderJson({ account, flags })
-                    : account
-                console.log(formatNdjson([payload]))
-                return
-            }
-            const text = options.renderText({ account, view, flags })
-            const lines = typeof text === 'string' ? [text] : text
-            for (const line of lines) console.log(line)
-        })
+            throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
+        }
+        const account = options.fetchLive
+            ? await options.fetchLive({
+                  account: snapshot.account,
+                  token: snapshot.token,
+                  view,
+                  flags,
+              })
+            : snapshot.account
+        if (view.json) {
+            const payload = options.renderJson ? options.renderJson({ account, flags }) : account
+            console.log(formatJson(payload))
+            return
+        }
+        if (view.ndjson) {
+            const payload = options.renderJson ? options.renderJson({ account, flags }) : account
+            console.log(formatNdjson([payload]))
+            return
+        }
+        const text = options.renderText({ account, view, flags })
+        const lines = typeof text === 'string' ? [text] : text
+        for (const line of lines) console.log(line)
+    })
 }

@@ -72,18 +72,23 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
     validateToken(input: ValidateInput): Promise<TAccount>
 }
 
+/** Opaque account selector. Stores own the matching rule (id, email, label, …). */
+export type AccountRef = string
+
 /**
- * Persistent token + account storage. Consumers implement this against
- * whatever storage they need (config file, OS keychain, multi-account…).
- * cli-core does not ship a default implementation; it's a thin enough
- * interface that an inline ~30-line config-file version covers the
- * single-user case.
+ * Persistent token + account storage. Uniformly multi-user-shaped — single-user
+ * stores implement `list` / `setDefault` against their one stored account (see
+ * the README example).
  */
 export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
-    /** The currently signed-in identity, or `null` when nothing is stored. */
-    active(): Promise<{ token: string; account: TAccount } | null>
-    /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` to surface a typed failure; any other thrown value is wrapped as `AUTH_STORE_WRITE_FAILED`. */
+    /** Active snapshot, or `null` when nothing matches (the attachers translate a ref miss into `ACCOUNT_NOT_FOUND`). */
+    active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
+    /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
-    /** Remove the active credential. No-op when nothing is stored. */
-    clear(): Promise<void>
+    /** Remove a stored credential. No-op when `ref` doesn't match. */
+    clear(ref?: AccountRef): Promise<void>
+    /** Every stored account with a default marker. */
+    list(): Promise<ReadonlyArray<{ account: TAccount; isDefault: boolean }>>
+    /** Mark `ref` as the new default. Throw `CliError('ACCOUNT_NOT_FOUND', …)` on miss. */
+    setDefault(ref: AccountRef): Promise<void>
 }

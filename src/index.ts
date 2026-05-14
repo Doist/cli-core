@@ -25,6 +25,7 @@ export {
     getProgressJsonlPath,
     isProgressJsonlEnabled,
     parseGlobalArgs,
+    stripUserFlag,
 } from './global-args.js'
 export type {
     AccessibleGateOptions,

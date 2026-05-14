@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import { attachLogoutCommand } from './logout.js'
 import type { TokenStore } from './types.js'
@@ -23,6 +24,8 @@ function buildStore(
         active: activeSpy,
         set: vi.fn(),
         clear: clearSpy,
+        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
+        setDefault: vi.fn(),
     }
     return { store, activeSpy, clearSpy }
 }
@@ -66,8 +69,8 @@ describe('attachLogoutCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'logout'])
 
-        expect(built.activeSpy).toHaveBeenCalledTimes(1)
-        expect(built.clearSpy).toHaveBeenCalledTimes(1)
+        expect(built.activeSpy).toHaveBeenCalledWith(undefined)
+        expect(built.clearSpy).toHaveBeenCalledWith(undefined)
         expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
         expect(onCleared).toHaveBeenCalledWith({
             account,
@@ -126,10 +129,10 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('exposes consumer-attached options in flags but strips --json / --ndjson', async () => {
+    it('strips --json / --ndjson / --user from flags but exposes consumer-attached options', async () => {
         const built = buildStore()
         const { program, logout, onCleared } = build({}, built.store)
-        logout.option('--user <ref>', 'Multi-user selector')
+        logout.option('--full', 'Consumer-attached')
 
         await program.parseAsync([
             'node',
@@ -139,12 +142,15 @@ describe('attachLogoutCommand', () => {
             '--json',
             '--user',
             'me@example',
+            '--full',
         ])
 
+        expect(built.activeSpy).toHaveBeenCalledWith('me@example')
+        expect(built.clearSpy).toHaveBeenCalledWith('me@example')
         expect(onCleared).toHaveBeenCalledWith({
             account,
             view: { json: true, ndjson: false },
-            flags: { user: 'me@example' },
+            flags: { full: true },
         })
     })
 
@@ -270,11 +276,11 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('exposes consumer-attached options in revokeToken flags', async () => {
+    it('exposes consumer-attached options in revokeToken flags and strips --user', async () => {
         const built = buildStore()
         const revokeToken = vi.fn(async () => {})
         const { program, logout } = build({ revokeToken, onCleared: undefined }, built.store)
-        logout.option('--user <ref>', 'Multi-user selector')
+        logout.option('--full', 'Consumer-attached')
 
         await program.parseAsync([
             'node',
@@ -284,13 +290,15 @@ describe('attachLogoutCommand', () => {
             '--json',
             '--user',
             'me@example',
+            '--full',
         ])
 
+        expect(built.activeSpy).toHaveBeenCalledWith('me@example')
         expect(revokeToken).toHaveBeenCalledWith({
             token: 'tok',
             account,
             view: { json: true, ndjson: false },
-            flags: { user: 'me@example' },
+            flags: { full: true },
         })
     })
 
@@ -323,5 +331,37 @@ describe('attachLogoutCommand', () => {
         const { logout } = build({ description: 'Sign out of Todoist' })
 
         expect(logout.description()).toBe('Sign out of Todoist')
+    })
+
+    it('threads --user ref to store.active(ref) and store.clear(ref)', async () => {
+        const built = buildStore()
+        const { program, onCleared } = build({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'alice@example'])
+
+        expect(built.activeSpy).toHaveBeenCalledWith('alice@example')
+        expect(built.clearSpy).toHaveBeenCalledWith('alice@example')
+        expect(onCleared).toHaveBeenCalledWith({
+            account,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('throws ACCOUNT_NOT_FOUND on explicit --user miss before clearing', async () => {
+        // Store reports null for the requested ref (no match). Without the
+        // explicit-ref guard, `logout --user ghost` would silently print
+        // `✓ Logged out` after a no-op clear.
+        const built = buildStore(null)
+        const { program } = build({ onCleared: undefined }, built.store)
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'ghost']),
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'ACCOUNT_NOT_FOUND',
+        })
+        expect(built.clearSpy).not.toHaveBeenCalled()
+        expect(logSpy).not.toHaveBeenCalled()
     })
 })
