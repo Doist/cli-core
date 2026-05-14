@@ -38,6 +38,27 @@ function isFlagValue(token: string | undefined): token is string {
 }
 
 /**
+ * If `argv[i]` is a `--user` token, return how to consume it; otherwise `null`.
+ * `consumed` is the number of argv slots the token occupies (2 for the
+ * space form, 1 for `--user=val` / valueless).
+ */
+function readUserFlagAt(
+    argv: string[],
+    i: number,
+): { value: string | undefined; consumed: 1 | 2 } | null {
+    const arg = argv[i]
+    if (arg === '--user') {
+        const next = argv[i + 1]
+        return isFlagValue(next) ? { value: next, consumed: 2 } : { value: undefined, consumed: 1 }
+    }
+    if (arg.startsWith('--user=')) {
+        const value = arg.slice('--user='.length)
+        return { value: value !== '' ? value : undefined, consumed: 1 }
+    }
+    return null
+}
+
+/**
  * Parse well-known global flags from `argv`. Pure — pass an explicit array
  * for testing, or omit to read `process.argv.slice(2)`.
  *
@@ -86,15 +107,12 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
             result.progressJsonl = true
         } else if (arg.startsWith('--progress-jsonl=')) {
             result.progressJsonl = arg.slice('--progress-jsonl='.length)
-        } else if (arg === '--user') {
-            const next = args[i + 1]
-            if (isFlagValue(next)) {
-                result.user = next
-                i++
+        } else if (arg === '--user' || arg.startsWith('--user=')) {
+            const consumed = readUserFlagAt(args, i)
+            if (consumed) {
+                if (consumed.value !== undefined) result.user = consumed.value
+                i += consumed.consumed - 1
             }
-        } else if (arg.startsWith('--user=')) {
-            const value = arg.slice('--user='.length)
-            if (value !== '') result.user = value
         } else if (arg.length > 1 && arg[0] === '-' && arg[1] !== '-') {
             // Short-flag group: -v, -vq, -vvv, etc. Unknown shorts are
             // silently ignored — they belong to Commander or subcommands.
@@ -115,24 +133,30 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
 /**
  * Strip pre-subcommand `--user` tokens so a Commander program with no root
  * `--user` option doesn't trip on the flag. Stops at the first non-flag
- * positional or `--` so subcommand-level `--user` (attached by the auth
- * attachers) still reaches Commander. Pure; does not mutate `argv`.
+ * token (including `--` and the empty string) so subcommand-level `--user`
+ * — attached by the auth attachers — still reaches Commander.
+ *
+ * Assumes `--user` is the only space-separated root option. CLIs that
+ * attach other root options taking values (e.g. `--profile <name>`) must
+ * either strip those first or attach `--user` on the root program directly
+ * — this helper only knows about `--user`.
+ *
+ * Pure; does not mutate `argv`.
  */
 export function stripUserFlag(argv: string[]): string[] {
     const result: string[] = []
     let i = 0
     while (i < argv.length) {
         const arg = argv[i]
-        if (arg === '--' || (arg.length > 0 && arg[0] !== '-')) {
+        if (arg === '--' || isFlagValue(arg)) {
+            // First non-flag token (positional, `--`, or empty string) ends
+            // the scan; copy the rest verbatim for Commander.
             for (let j = i; j < argv.length; j++) result.push(argv[j])
             break
         }
-        if (arg === '--user') {
-            i += isFlagValue(argv[i + 1]) ? 2 : 1
-            continue
-        }
-        if (arg.startsWith('--user=')) {
-            i += 1
+        const consumed = readUserFlagAt(argv, i)
+        if (consumed) {
+            i += consumed.consumed
             continue
         }
         result.push(arg)

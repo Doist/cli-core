@@ -2,7 +2,7 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
 import type { AuthAccount, TokenStore } from './types.js'
-import { attachUserFlag, extractUserRef } from './user-flag.js'
+import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
 export type AttachTokenViewCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
     store: TokenStore<TAccount>
@@ -46,11 +46,8 @@ export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccoun
             )
         }
         const ref = extractUserRef(cmd)
-        const snapshot = await options.store.active(ref)
+        const snapshot = await requireSnapshotForRef(options.store, ref)
         if (!snapshot) {
-            if (ref !== undefined) {
-                throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
-            }
             throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
         }
         process.stdout.write(snapshot.token)

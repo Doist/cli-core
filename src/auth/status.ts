@@ -3,7 +3,7 @@ import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type { AuthAccount, TokenStore } from './types.js'
-import { attachUserFlag, extractUserRef } from './user-flag.js'
+import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
 export type AttachStatusContext<TAccount extends AuthAccount> = {
     account: TAccount
@@ -69,12 +69,8 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
             ndjson: Boolean(ndjson),
         }
         const ref = extractUserRef(cmd)
-        const snapshot = await options.store.active(ref)
+        const snapshot = await requireSnapshotForRef(options.store, ref)
         if (!snapshot) {
-            if (ref !== undefined) {
-                // Explicit ref miss is `ACCOUNT_NOT_FOUND`, not `NOT_AUTHENTICATED`.
-                throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
-            }
             if (options.onNotAuthenticated) {
                 await options.onNotAuthenticated({ view, flags })
                 return

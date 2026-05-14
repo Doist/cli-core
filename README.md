@@ -309,7 +309,7 @@ await program.parseAsync([
 
 Account-selection resolvers (env > `--user` > default > single-only > error), `account list`, and `account use` subcommands stay per-CLI for now — cli-core ships only the contract until at least one consumer has shipped these end-to-end.
 
-`NO_ACCOUNT_SELECTED` and `ACCOUNT_NOT_FOUND` are reserved error codes for consumer-thrown resolver failures; cli-core itself doesn't throw them.
+`ACCOUNT_NOT_FOUND` is thrown by the account-touching attachers when `--user <ref>` was supplied but `store.active(ref)` returned `null`. `NO_ACCOUNT_SELECTED` is reserved for consumer-thrown resolver failures (multiple accounts stored, no default, no `--user`); cli-core does not throw it itself.
 
 #### Custom `AuthProvider` (non-PKCE flows)
 
@@ -352,17 +352,17 @@ The `handshake` is shared mutable state across hooks. `runOAuthFlow` folds the r
 
 Every failure in this subpath surfaces as a `CliError`:
 
-| Code                         | Cause                                                                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH_OAUTH_FAILED`          | Provider returned `?error=...`, the flow was aborted via `signal`, or the callback server stopped before completion.                        |
-| `AUTH_CALLBACK_TIMEOUT`      | No valid callback within `timeoutMs` (default 3 minutes).                                                                                   |
-| `AUTH_PORT_BIND_FAILED`      | Could not bind any port in `[preferredPort, preferredPort + portFallbackCount]`, or `--callback-port` was out of range.                     |
-| `AUTH_TOKEN_EXCHANGE_FAILED` | Token endpoint network error, non-2xx response, non-JSON body, or missing `access_token`.                                                   |
-| `AUTH_STORE_WRITE_FAILED`    | `TokenStore.set` threw a non-`CliError`. (`CliError`s thrown from `set` propagate unchanged.)                                               |
-| `NOT_AUTHENTICATED`          | `status` / `token` ran with an empty `TokenStore` (and no `onNotAuthenticated` callback for `status`). Default message: `'Not signed in.'`. |
-| `TOKEN_FROM_ENV`             | `attachTokenViewCommand` refused to print: `envVarName` was set and the env var is populated.                                               |
-| `NO_ACCOUNT_SELECTED`        | Reserved for consumer-thrown resolver failures when multiple accounts are stored without a default and no `--user` was supplied.            |
-| `ACCOUNT_NOT_FOUND`          | Reserved for consumer-thrown resolver failures when `--user <ref>` does not match any stored account.                                       |
+| Code                         | Cause                                                                                                                                                                                     |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_OAUTH_FAILED`          | Provider returned `?error=...`, the flow was aborted via `signal`, or the callback server stopped before completion.                                                                      |
+| `AUTH_CALLBACK_TIMEOUT`      | No valid callback within `timeoutMs` (default 3 minutes).                                                                                                                                 |
+| `AUTH_PORT_BIND_FAILED`      | Could not bind any port in `[preferredPort, preferredPort + portFallbackCount]`, or `--callback-port` was out of range.                                                                   |
+| `AUTH_TOKEN_EXCHANGE_FAILED` | Token endpoint network error, non-2xx response, non-JSON body, or missing `access_token`.                                                                                                 |
+| `AUTH_STORE_WRITE_FAILED`    | `TokenStore.set` threw a non-`CliError`. (`CliError`s thrown from `set` propagate unchanged.)                                                                                             |
+| `NOT_AUTHENTICATED`          | `status` / `token` ran with an empty `TokenStore` (and no `onNotAuthenticated` callback for `status`). Default message: `'Not signed in.'`.                                               |
+| `TOKEN_FROM_ENV`             | `attachTokenViewCommand` refused to print: `envVarName` was set and the env var is populated.                                                                                             |
+| `NO_ACCOUNT_SELECTED`        | Reserved for consumer-thrown resolver failures when multiple accounts are stored without a default and no `--user` was supplied.                                                          |
+| `ACCOUNT_NOT_FOUND`          | `logout` / `status` / `token` were invoked with `--user <ref>` but `store.active(ref)` returned `null`. Also reserved for consumer resolvers when a ref doesn't match any stored account. |
 
 The consumer's top-level error handler formats and exits.
 

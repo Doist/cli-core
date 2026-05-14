@@ -1,9 +1,8 @@
 import type { Command } from 'commander'
-import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type { AuthAccount, TokenStore } from './types.js'
-import { attachUserFlag, extractUserRef } from './user-flag.js'
+import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
 export type AttachLogoutContext<TAccount extends AuthAccount> = {
     /** The account that was active immediately before `clear()` ran, or `null` if nothing was stored. */
@@ -73,10 +72,7 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
         let snapshot: { token: string; account: TAccount } | null = null
         if (needsSnapshot) {
             if (ref !== undefined) {
-                snapshot = await options.store.active(ref)
-                if (snapshot === null) {
-                    throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
-                }
+                snapshot = await requireSnapshotForRef(options.store, ref)
             } else {
                 try {
                     snapshot = await options.store.active(ref)
