@@ -23,6 +23,14 @@ export type GlobalArgs = Required<Pick<ViewOptions, 'json' | 'ndjson'>> & {
     noSpinner: boolean
     /** false = absent, true = present without path, string = path. */
     progressJsonl: string | true | false
+    /**
+     * Account selector parsed from `--user <ref>` / `--user=<ref>`.
+     * `undefined` when the flag was absent or supplied without a value.
+     * Single-user CLIs see the same field — their `TokenStore` either
+     * matches the ref against the one stored account or throws
+     * `CliError('ACCOUNT_NOT_FOUND', …)`.
+     */
+    user?: string
 }
 
 const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
@@ -46,6 +54,12 @@ const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
  * form is intentionally unsupported because it silently consumes the next
  * positional argument (e.g., `td task add --progress-jsonl "Buy milk"`
  * would treat `Buy milk` as a file path).
+ *
+ * `--user <ref>` (and `--user=<ref>`) is always recognised. The space form
+ * does NOT consume the following token if it begins with `-` (so
+ * `--user --json` leaves `user` undefined rather than swallowing `--json`)
+ * and is ignored after the `--` terminator. Pair with `stripUserFlag` when
+ * forwarding argv to Commander without an attached root `--user` option.
  */
 export function parseGlobalArgs(argv?: string[]): GlobalArgs {
     const args = argv ?? process.argv.slice(2)
@@ -81,6 +95,18 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
             result.progressJsonl = true
         } else if (arg.startsWith('--progress-jsonl=')) {
             result.progressJsonl = arg.slice('--progress-jsonl='.length)
+        } else if (arg === '--user') {
+            const next = args[i + 1]
+            // Skip when the next token is absent, another flag, or the `--`
+            // terminator — those are all "no value supplied" scenarios that
+            // we treat as no-ops rather than swallowing the following token.
+            if (next !== undefined && next !== '--' && !next.startsWith('-')) {
+                result.user = next
+                i++
+            }
+        } else if (arg.startsWith('--user=')) {
+            const value = arg.slice('--user='.length)
+            if (value !== '') result.user = value
         } else if (arg.length > 1 && arg[0] === '-' && arg[1] !== '-') {
             // Short-flag group: -v, -vq, -vvv, etc. Unknown shorts are
             // silently ignored — they belong to Commander or subcommands.
@@ -95,6 +121,40 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
         }
     }
 
+    return result
+}
+
+/**
+ * Remove every `--user <ref>` / `--user=<ref>` token from `argv` and return
+ * the cleaned array. Used when `--user` was parsed via `parseGlobalArgs` but
+ * Commander has no `--user` option attached at the root program (the common
+ * case for multi-user CLIs), so forwarding the raw argv would trip
+ * `unknown option` errors.
+ *
+ * Honours the `--` terminator: tokens after `--` are returned verbatim.
+ * Pure — does not mutate the input array.
+ */
+export function stripUserFlag(argv: string[]): string[] {
+    const result: string[] = []
+    let i = 0
+    while (i < argv.length) {
+        const arg = argv[i]
+        if (arg === '--') {
+            for (let j = i; j < argv.length; j++) result.push(argv[j])
+            break
+        }
+        if (arg === '--user') {
+            const next = argv[i + 1]
+            i += next !== undefined && next !== '--' && !next.startsWith('-') ? 2 : 1
+            continue
+        }
+        if (arg.startsWith('--user=')) {
+            i += 1
+            continue
+        }
+        result.push(arg)
+        i += 1
+    }
     return result
 }
 

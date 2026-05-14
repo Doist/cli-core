@@ -11,3 +11,5 @@ export type AuthErrorCode =
     | 'AUTH_STORE_WRITE_FAILED'
     | 'NOT_AUTHENTICATED'
     | 'TOKEN_FROM_ENV'
+    | 'NO_ACCOUNT_SELECTED'
+    | 'ACCOUNT_NOT_FOUND'

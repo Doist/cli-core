@@ -23,6 +23,7 @@ export type { GenerateVerifierOptions } from './pkce.js'
 export { createPkceProvider } from './providers/pkce.js'
 export type { PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
 export type {
+    AccountRef,
     AuthAccount,
     AuthorizeInput,
     AuthorizeResult,

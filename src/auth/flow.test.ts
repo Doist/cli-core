@@ -18,6 +18,10 @@ function fakeStore(): TokenStore<Account> & { last?: { account: Account; token: 
         async clear() {
             state.last = undefined
         },
+        async list() {
+            return state.last ? [{ account: state.last.account, isDefault: true }] : []
+        },
+        async setDefault() {},
         get last() {
             return state.last
         },
@@ -307,6 +311,10 @@ describe('runOAuthFlow', () => {
                 throw new Error('disk full')
             },
             async clear() {},
+            async list() {
+                return []
+            },
+            async setDefault() {},
         }
         await expect(
             runOAuthFlow<Account>({

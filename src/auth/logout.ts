@@ -9,8 +9,8 @@ export type AttachLogoutContext<TAccount extends AuthAccount> = {
     view: Required<ViewOptions>
     /**
      * Stripped per-CLI flags — the parsed options object with the standard
-     * registrar flags (`--json`, `--ndjson`) removed. Any consumer-attached
-     * `.option(...)` lands here (e.g. `--user <ref>` from a multi-user CLI).
+     * registrar flags (`--json`, `--ndjson`, `--user`) removed. Any
+     * consumer-attached `.option(...)` lands here.
      */
     flags: Record<string, unknown>
 }
@@ -61,24 +61,26 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
         .description(options.description ?? 'Remove the saved authentication token')
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
+        .option('--user <ref>', 'Target a specific stored account by id or label')
         .action(async (cmd: Record<string, unknown>) => {
-            const { json, ndjson, ...flags } = cmd
+            const { json, ndjson, user, ...flags } = cmd
             const view: Required<ViewOptions> = {
                 json: Boolean(json),
                 ndjson: Boolean(ndjson),
             }
+            const ref = typeof user === 'string' ? user : undefined
             // Skip the keyring/file read when no callback consumes the snapshot.
             const needsSnapshot = Boolean(options.revokeToken || options.onCleared)
             let snapshot: { token: string; account: TAccount } | null = null
             if (needsSnapshot) {
                 try {
-                    snapshot = await options.store.active()
+                    snapshot = await options.store.active(ref)
                 } catch {
                     // Snapshot lookup failures must not block local clear.
                 }
             }
             const account = snapshot?.account ?? null
-            await options.store.clear()
+            await options.store.clear(ref)
             if (options.revokeToken && snapshot) {
                 try {
                     await options.revokeToken({

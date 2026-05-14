@@ -20,6 +20,8 @@ function buildStore(
         active: activeSpy,
         set: vi.fn(),
         clear: vi.fn(),
+        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
+        setDefault: vi.fn(),
     }
     return { store, activeSpy }
 }
@@ -144,5 +146,28 @@ describe('attachTokenViewCommand', () => {
         const cmd = attachTokenViewCommand<Account>(auth, { store })
 
         expect(cmd.name()).toBe('token')
+    })
+
+    it('threads --user ref to store.active(ref) and prints the matched token', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const { store, activeSpy } = buildStore()
+        attachTokenViewCommand<Account>(auth, { store })
+
+        const originalTTY = process.stdout.isTTY
+        Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
+        try {
+            await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alice@example'])
+        } finally {
+            Object.defineProperty(process.stdout, 'isTTY', {
+                value: originalTTY,
+                configurable: true,
+            })
+        }
+
+        expect(activeSpy).toHaveBeenCalledWith('alice@example')
+        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        expect(emitted).toBe('tok-xyz')
     })
 })

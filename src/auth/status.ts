@@ -9,8 +9,8 @@ export type AttachStatusContext<TAccount extends AuthAccount> = {
     view: Required<ViewOptions>
     /**
      * Stripped per-CLI flags — the parsed options object with the standard
-     * registrar flags (`--json`, `--ndjson`) removed. Any consumer-attached
-     * `.option(...)` lands here (e.g. `--full`, `--user <ref>`).
+     * registrar flags (`--json`, `--ndjson`, `--user`) removed. Any
+     * consumer-attached `.option(...)` lands here (e.g. `--full`).
      */
     flags: Record<string, unknown>
 }
@@ -65,13 +65,15 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
         .description(options.description ?? 'Show the current authentication status')
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
+        .option('--user <ref>', 'Target a specific stored account by id or label')
         .action(async (cmd: Record<string, unknown>) => {
-            const { json, ndjson, ...flags } = cmd
+            const { json, ndjson, user, ...flags } = cmd
             const view: Required<ViewOptions> = {
                 json: Boolean(json),
                 ndjson: Boolean(ndjson),
             }
-            const snapshot = await options.store.active()
+            const ref = typeof user === 'string' ? user : undefined
+            const snapshot = await options.store.active(ref)
             if (!snapshot) {
                 if (options.onNotAuthenticated) {
                     await options.onNotAuthenticated({ view, flags })

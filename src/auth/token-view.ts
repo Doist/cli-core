@@ -31,7 +31,8 @@ export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccoun
     return parent
         .command(options.name ?? 'token')
         .description(options.description ?? 'Print the saved authentication token')
-        .action(async () => {
+        .option('--user <ref>', 'Target a specific stored account by id or label')
+        .action(async (cmd: Record<string, unknown>) => {
             if (options.envVarName && process.env[options.envVarName]) {
                 throw new CliError(
                     'TOKEN_FROM_ENV',
@@ -44,7 +45,8 @@ export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccoun
                     },
                 )
             }
-            const snapshot = await options.store.active()
+            const ref = typeof cmd.user === 'string' ? cmd.user : undefined
+            const snapshot = await options.store.active(ref)
             if (!snapshot) {
                 throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
             }

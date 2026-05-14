@@ -8,6 +8,7 @@ import {
     getProgressJsonlPath,
     isProgressJsonlEnabled,
     parseGlobalArgs,
+    stripUserFlag,
 } from './global-args.js'
 
 describe('parseGlobalArgs', () => {
@@ -80,6 +81,89 @@ describe('parseGlobalArgs', () => {
 
     it('reads global flags regardless of position relative to positionals', () => {
         expect(parseGlobalArgs(['task', 'add', '--quiet', 'Buy milk']).quiet).toBe(true)
+    })
+})
+
+describe('parseGlobalArgs --user', () => {
+    it.each([
+        [['--user', 'alice'], 'alice'],
+        [['--user=alice'], 'alice'],
+        [['task', 'list', '--user', 'alice'], 'alice'],
+        [['--user', 'alice@example.com'], 'alice@example.com'],
+        [['--user=alice@example.com'], 'alice@example.com'],
+    ] as const)('parses %j -> %j', (argv, expected) => {
+        expect(parseGlobalArgs([...argv]).user).toBe(expected)
+    })
+
+    it.each([
+        // absent
+        [[] as readonly string[]],
+        // bare at end of argv
+        [['--user']],
+        // followed by another long flag
+        [['--user', '--json']],
+        // followed by another short flag
+        [['--user', '-v']],
+        // followed by -- terminator
+        [['--user', '--']],
+        // empty equals form
+        [['--user=']],
+    ] as const)('leaves user undefined for %j', (argv) => {
+        expect(parseGlobalArgs([...argv]).user).toBeUndefined()
+    })
+
+    it('does not consume --user after the -- terminator', () => {
+        expect(parseGlobalArgs(['--', '--user', 'alice']).user).toBeUndefined()
+    })
+
+    it('coexists with other global flags', () => {
+        expect(parseGlobalArgs(['--json', '--user', 'alice'])).toMatchObject({
+            json: true,
+            user: 'alice',
+        })
+    })
+})
+
+describe('stripUserFlag', () => {
+    it.each([
+        [['--user', 'alice'], []],
+        [['--user=alice'], []],
+        [
+            ['task', 'list', '--user', 'alice'],
+            ['task', 'list'],
+        ],
+        [
+            ['task', 'list', '--user=alice'],
+            ['task', 'list'],
+        ],
+        [
+            ['--json', '--user', 'alice', '--ndjson'],
+            ['--json', '--ndjson'],
+        ],
+        // bare --user at end (no value to consume)
+        [
+            ['task', 'list', '--user'],
+            ['task', 'list'],
+        ],
+        // bare --user followed by another flag (don't consume the flag)
+        [['--user', '--json'], ['--json']],
+    ] as const)('strips %j -> %j', (argv, expected) => {
+        expect(stripUserFlag([...argv])).toEqual(expected)
+    })
+
+    it('preserves everything after the -- terminator verbatim', () => {
+        expect(stripUserFlag(['--user', 'alice', '--', '--user', 'literal'])).toEqual([
+            '--',
+            '--user',
+            'literal',
+        ])
+    })
+
+    it('does not mutate the input array', () => {
+        const argv = ['task', '--user', 'alice', 'list']
+        const snapshot = [...argv]
+        stripUserFlag(argv)
+        expect(argv).toEqual(snapshot)
     })
 })
 

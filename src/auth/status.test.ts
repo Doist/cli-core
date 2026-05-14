@@ -21,6 +21,8 @@ function buildStore(
         active: activeSpy,
         set: vi.fn(),
         clear: vi.fn(),
+        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
+        setDefault: vi.fn(),
     }
     return { store, activeSpy }
 }
@@ -209,5 +211,28 @@ describe('attachStatusCommand', () => {
         })
 
         expect(status.name()).toBe('status')
+    })
+
+    it('threads --user ref to store.active(ref) and strips it from flags', async () => {
+        const built = buildStore()
+        const { program, renderText } = build({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'status', '--user', 'alice@example'])
+
+        expect(built.activeSpy).toHaveBeenCalledWith('alice@example')
+        expect(renderText).toHaveBeenCalledWith({
+            account,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('calls store.active(undefined) when --user is absent', async () => {
+        const built = buildStore()
+        const { program } = build({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'status'])
+
+        expect(built.activeSpy).toHaveBeenCalledWith(undefined)
     })
 })
