@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import { attachLogoutCommand } from './logout.js'
 import type { TokenStore } from './types.js'
@@ -330,5 +331,37 @@ describe('attachLogoutCommand', () => {
         const { logout } = build({ description: 'Sign out of Todoist' })
 
         expect(logout.description()).toBe('Sign out of Todoist')
+    })
+
+    it('threads --user ref to store.active(ref) and store.clear(ref)', async () => {
+        const built = buildStore()
+        const { program, onCleared } = build({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'alice@example'])
+
+        expect(built.activeSpy).toHaveBeenCalledWith('alice@example')
+        expect(built.clearSpy).toHaveBeenCalledWith('alice@example')
+        expect(onCleared).toHaveBeenCalledWith({
+            account,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('throws ACCOUNT_NOT_FOUND on explicit --user miss before clearing', async () => {
+        // Store reports null for the requested ref (no match). Without the
+        // explicit-ref guard, `logout --user ghost` would silently print
+        // `✓ Logged out` after a no-op clear.
+        const built = buildStore(null)
+        const { program } = build({ onCleared: undefined }, built.store)
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'ghost']),
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'ACCOUNT_NOT_FOUND',
+        })
+        expect(built.clearSpy).not.toHaveBeenCalled()
+        expect(logSpy).not.toHaveBeenCalled()
     })
 })

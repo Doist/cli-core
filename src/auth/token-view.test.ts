@@ -155,19 +155,38 @@ describe('attachTokenViewCommand', () => {
         const { store, activeSpy } = buildStore()
         attachTokenViewCommand<Account>(auth, { store })
 
-        const originalTTY = process.stdout.isTTY
-        Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true })
-        try {
-            await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alice@example'])
-        } finally {
-            Object.defineProperty(process.stdout, 'isTTY', {
-                value: originalTTY,
-                configurable: true,
-            })
-        }
+        await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alice@example'])
 
         expect(activeSpy).toHaveBeenCalledWith('alice@example')
-        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
-        expect(emitted).toBe('tok-xyz')
+        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+    })
+
+    it('calls store.active(undefined) when --user is absent', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const { store, activeSpy } = buildStore()
+        attachTokenViewCommand<Account>(auth, { store })
+
+        await program.parseAsync(['node', 'cli', 'auth', 'token'])
+
+        expect(activeSpy).toHaveBeenCalledWith(undefined)
+        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+    })
+
+    it('throws ACCOUNT_NOT_FOUND when --user does not match a stored account', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const { store } = buildStore(null)
+        attachTokenViewCommand<Account>(auth, { store })
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'ghost']),
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'ACCOUNT_NOT_FOUND',
+        })
+        expect(stdoutSpy).not.toHaveBeenCalled()
     })
 })

@@ -73,10 +73,13 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
 }
 
 /**
- * Opaque selector for picking a specific account out of a multi-user store.
- * cli-core does not constrain the matching semantics — a store may match on
- * id, email, label, or anything else it persists. Single-user stores ignore
- * `ref` entirely.
+ * Opaque selector for picking a specific account out of a store. cli-core
+ * does not constrain the matching semantics — a store may match on id,
+ * email, label, or anything else it persists. Single-user stores still
+ * validate `ref` against their one stored account (match-or-throw via
+ * `CliError('ACCOUNT_NOT_FOUND', …)`) rather than ignoring it, since the
+ * attachers always attach `--user <ref>` and a silent ignore would make
+ * `logout --user wrong` look successful.
  */
 export type AccountRef = string
 

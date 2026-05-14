@@ -39,6 +39,16 @@ const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
 }
 
 /**
+ * Whether `token` qualifies as the value for a space-separated long option
+ * (e.g. `--user me`). Treats `undefined`, the `--` terminator, and anything
+ * starting with `-` as "no value" so the parser doesn't swallow a following
+ * flag or positional separator.
+ */
+function isFlagValue(token: string | undefined): token is string {
+    return token !== undefined && token !== '--' && !token.startsWith('-')
+}
+
+/**
  * Parse well-known global flags from `argv`. Pure — pass an explicit array
  * for testing, or omit to read `process.argv.slice(2)`.
  *
@@ -96,11 +106,11 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
         } else if (arg.startsWith('--progress-jsonl=')) {
             result.progressJsonl = arg.slice('--progress-jsonl='.length)
         } else if (arg === '--user') {
-            const next = args[i + 1]
             // Skip when the next token is absent, another flag, or the `--`
             // terminator — those are all "no value supplied" scenarios that
             // we treat as no-ops rather than swallowing the following token.
-            if (next !== undefined && next !== '--' && !next.startsWith('-')) {
+            const next = args[i + 1]
+            if (isFlagValue(next)) {
                 result.user = next
                 i++
             }
@@ -125,27 +135,31 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
 }
 
 /**
- * Remove every `--user <ref>` / `--user=<ref>` token from `argv` and return
- * the cleaned array. Used when `--user` was parsed via `parseGlobalArgs` but
- * Commander has no `--user` option attached at the root program (the common
- * case for multi-user CLIs), so forwarding the raw argv would trip
- * `unknown option` errors.
+ * Remove pre-subcommand `--user <ref>` / `--user=<ref>` tokens from `argv`
+ * and return the cleaned array. Used when `--user` was parsed via
+ * `parseGlobalArgs` but Commander has no `--user` option attached at the
+ * root program (the common case for multi-user CLIs), so forwarding the raw
+ * argv would trip `unknown option` errors.
  *
- * Honours the `--` terminator: tokens after `--` are returned verbatim.
- * Pure — does not mutate the input array.
+ * Stripping stops at the first non-flag positional (the subcommand name) or
+ * the `--` terminator — everything from that point onwards is copied
+ * verbatim so subcommand-level `--user` attached by the auth attachers
+ * still reaches Commander. Pure — does not mutate the input array.
  */
 export function stripUserFlag(argv: string[]): string[] {
     const result: string[] = []
     let i = 0
     while (i < argv.length) {
         const arg = argv[i]
-        if (arg === '--') {
+        // First non-flag positional ends the global-args region; subcommand
+        // arguments — including subcommand-level `--user` parsed by the
+        // attacher itself — must reach Commander untouched.
+        if (arg === '--' || (arg.length > 0 && arg[0] !== '-')) {
             for (let j = i; j < argv.length; j++) result.push(argv[j])
             break
         }
         if (arg === '--user') {
-            const next = argv[i + 1]
-            i += next !== undefined && next !== '--' && !next.startsWith('-') ? 2 : 1
+            i += isFlagValue(argv[i + 1]) ? 2 : 1
             continue
         }
         if (arg.startsWith('--user=')) {

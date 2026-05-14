@@ -235,4 +235,15 @@ describe('attachStatusCommand', () => {
 
         expect(built.activeSpy).toHaveBeenCalledWith(undefined)
     })
+
+    it('throws ACCOUNT_NOT_FOUND on explicit --user miss (not NOT_AUTHENTICATED)', async () => {
+        const { program } = build({}, buildStore(null).store)
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'status', '--user', 'ghost']),
+        ).rejects.toMatchObject({
+            constructor: CliError,
+            code: 'ACCOUNT_NOT_FOUND',
+        })
+    })
 })

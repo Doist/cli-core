@@ -1,7 +1,9 @@
 import type { Command } from 'commander'
+import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type { AuthAccount, TokenStore } from './types.js'
+import { attachUserFlag, extractUserRef } from './user-flag.js'
 
 export type AttachLogoutContext<TAccount extends AuthAccount> = {
     /** The account that was active immediately before `clear()` ran, or `null` if nothing was stored. */
@@ -56,48 +58,58 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
     options: AttachLogoutCommandOptions<TAccount>,
 ): Command {
-    return parent
+    const command = parent
         .command('logout')
         .description(options.description ?? 'Remove the saved authentication token')
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
-        .option('--user <ref>', 'Target a specific stored account by id or label')
-        .action(async (cmd: Record<string, unknown>) => {
-            const { json, ndjson, user, ...flags } = cmd
-            const view: Required<ViewOptions> = {
-                json: Boolean(json),
-                ndjson: Boolean(ndjson),
-            }
-            const ref = typeof user === 'string' ? user : undefined
-            // Skip the keyring/file read when no callback consumes the snapshot.
-            const needsSnapshot = Boolean(options.revokeToken || options.onCleared)
-            let snapshot: { token: string; account: TAccount } | null = null
-            if (needsSnapshot) {
+    return attachUserFlag(command).action(async (cmd: Record<string, unknown>) => {
+        const { json, ndjson, user: _user, ...flags } = cmd
+        const view: Required<ViewOptions> = {
+            json: Boolean(json),
+            ndjson: Boolean(ndjson),
+        }
+        const ref = extractUserRef(cmd)
+        // Explicit `--user <ref>` must surface a typed miss before we
+        // touch `clear()` — the store contract permits `clear(ref)` and
+        // `active(ref)` to no-op / return null on miss, so without this
+        // probe `logout --user mistake` would print `✓ Logged out` after
+        // doing nothing.
+        const needsSnapshot = ref !== undefined || Boolean(options.revokeToken || options.onCleared)
+        let snapshot: { token: string; account: TAccount } | null = null
+        if (needsSnapshot) {
+            if (ref !== undefined) {
+                snapshot = await options.store.active(ref)
+                if (snapshot === null) {
+                    throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
+                }
+            } else {
                 try {
                     snapshot = await options.store.active(ref)
                 } catch {
                     // Snapshot lookup failures must not block local clear.
                 }
             }
-            const account = snapshot?.account ?? null
-            await options.store.clear(ref)
-            if (options.revokeToken && snapshot) {
-                try {
-                    await options.revokeToken({
-                        token: snapshot.token,
-                        account: snapshot.account,
-                        view,
-                        flags,
-                    })
-                } catch {
-                    // Best-effort: server revoke failures must not surface to the user.
-                }
+        }
+        const account = snapshot?.account ?? null
+        await options.store.clear(ref)
+        if (options.revokeToken && snapshot) {
+            try {
+                await options.revokeToken({
+                    token: snapshot.token,
+                    account: snapshot.account,
+                    view,
+                    flags,
+                })
+            } catch {
+                // Best-effort: server revoke failures must not surface to the user.
             }
-            if (view.json) {
-                console.log(formatJson({ ok: true }))
-            } else if (!view.ndjson) {
-                console.log('✓ Logged out')
-            }
-            await options.onCleared?.({ account, view, flags })
-        })
+        }
+        if (view.json) {
+            console.log(formatJson({ ok: true }))
+        } else if (!view.ndjson) {
+            console.log('✓ Logged out')
+        }
+        await options.onCleared?.({ account, view, flags })
+    })
 }

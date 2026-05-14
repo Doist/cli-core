@@ -126,29 +126,50 @@ describe('parseGlobalArgs --user', () => {
 
 describe('stripUserFlag', () => {
     it.each([
+        // pre-subcommand --user is stripped
         [['--user', 'alice'], []],
         [['--user=alice'], []],
-        [
-            ['task', 'list', '--user', 'alice'],
-            ['task', 'list'],
-        ],
-        [
-            ['task', 'list', '--user=alice'],
-            ['task', 'list'],
-        ],
         [
             ['--json', '--user', 'alice', '--ndjson'],
             ['--json', '--ndjson'],
         ],
-        // bare --user at end (no value to consume)
-        [
-            ['task', 'list', '--user'],
-            ['task', 'list'],
-        ],
         // bare --user followed by another flag (don't consume the flag)
         [['--user', '--json'], ['--json']],
-    ] as const)('strips %j -> %j', (argv, expected) => {
+        // bare --user at end (no value to consume)
+        [['--user'], []],
+    ] as const)('strips pre-subcommand %j -> %j', (argv, expected) => {
         expect(stripUserFlag([...argv])).toEqual(expected)
+    })
+
+    it.each([
+        // Subcommand-level --user is left alone — the auth attachers parse it
+        // there. Stripping it would route every `<sub> --user alice` to the
+        // default account.
+        [
+            ['task', 'list', '--user', 'alice'],
+            ['task', 'list', '--user', 'alice'],
+        ],
+        [
+            ['task', 'list', '--user=alice'],
+            ['task', 'list', '--user=alice'],
+        ],
+        [
+            ['auth', 'status', '--user', 'alice'],
+            ['auth', 'status', '--user', 'alice'],
+        ],
+        // bare --user at end of subcommand args
+        [
+            ['task', 'list', '--user'],
+            ['task', 'list', '--user'],
+        ],
+    ] as const)('preserves subcommand-level --user verbatim: %j', (argv, expected) => {
+        expect(stripUserFlag([...argv])).toEqual(expected)
+    })
+
+    it('strips pre-subcommand --user but keeps the subcommand-level one', () => {
+        expect(
+            stripUserFlag(['--json', '--user', 'alice', 'auth', 'status', '--user', 'bob']),
+        ).toEqual(['--json', 'auth', 'status', '--user', 'bob'])
     })
 
     it('preserves everything after the -- terminator verbatim', () => {
@@ -160,7 +181,7 @@ describe('stripUserFlag', () => {
     })
 
     it('does not mutate the input array', () => {
-        const argv = ['task', '--user', 'alice', 'list']
+        const argv = ['--user', 'alice', 'task', 'list']
         const snapshot = [...argv]
         stripUserFlag(argv)
         expect(argv).toEqual(snapshot)
