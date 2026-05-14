@@ -1,3 +1,9 @@
+## [0.12.0](https://github.com/Doist/cli-core/compare/v0.11.0...v0.12.0) (2026-05-14)
+
+### Features
+
+* **auth:** multi-user TokenStore contract ([#23](https://github.com/Doist/cli-core/issues/23)) ([f83310a](https://github.com/Doist/cli-core/commit/f83310a3dec62636884dab6bea2aed3c89aab502))
+
 ## [0.11.0](https://github.com/Doist/cli-core/compare/v0.10.0...v0.11.0) (2026-05-12)
 
 ### Features
