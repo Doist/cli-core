@@ -1,3 +1,9 @@
+## [0.14.0](https://github.com/Doist/cli-core/compare/v0.13.0...v0.14.0) (2026-05-16)
+
+### Features
+
+* **auth:** tolerate AUTH_STORE_READ_FAILED in logout --user ([#26](https://github.com/Doist/cli-core/issues/26)) ([23652bc](https://github.com/Doist/cli-core/commit/23652bcb436fda917bc10aba99918ce1503786b6))
+
 ## [0.13.0](https://github.com/Doist/cli-core/compare/v0.12.0...v0.13.0) (2026-05-16)
 
 ### Features
