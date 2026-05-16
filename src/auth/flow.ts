@@ -486,12 +486,17 @@ async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | n
 }
 
 // `start ""` — the empty title arg is mandatory; otherwise `start` consumes
-// the URL as a window title and never launches a browser. The URL is passed
-// as an `execFile` arg (not interpolated into a shell string), so URLs with
-// special characters can't escape into command-injection territory.
+// the URL as a window title and never launches a browser. The URL itself is
+// wrapped in literal double quotes because `cmd.exe /c` is a shell: WSL
+// interop reconstructs the command line and only auto-quotes args that
+// contain spaces, so an OAuth URL (no spaces, plenty of `&`s) would
+// otherwise be re-parsed by `cmd.exe` with `&` acting as a statement
+// separator — only the prefix up to the first `&` reaches `start`. The
+// embedded quotes keep the URL one token. (`execFile`'s no-shell guarantee
+// doesn't apply when the target is itself a shell.)
 async function openViaCmdExe(url: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-        execFile('cmd.exe', ['/c', 'start', '""', url], { windowsHide: true }, (error) => {
+        execFile('cmd.exe', ['/c', 'start', '""', `"${url}"`], { windowsHide: true }, (error) => {
             if (error) reject(error)
             else resolve()
         })

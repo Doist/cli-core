@@ -132,7 +132,7 @@ Wire `<cli> [auth] login` and the supporting OAuth runtime. cli-core ships the s
 npm install commander open
 ```
 
-`commander` is required when using `attachLoginCommand`. `open` is optional — when it's missing or `open()` throws, the authorize URL is surfaced via `onAuthorizeUrl` (or printed to stdout in human mode, stderr in `--json` / `--ndjson` mode) so the user can complete the flow manually.
+`commander` is required when using `attachLoginCommand`. `open` is optional. The authorize URL is **always** surfaced via `onAuthorizeUrl` (or printed to stdout in human mode, stderr in `--json` / `--ndjson` mode) — even when the browser launch succeeds — because the launch can resolve cleanly yet open no actual browser (WSL silent no-op, headless Linux, locked-down corporate envs). WSL hosts get routed through `cmd.exe` directly so the user's real Windows browser opens. Headless Linux skips the launch entirely and relies on the URL print.
 
 #### Quick start (PKCE)
 
@@ -229,10 +229,10 @@ Both attachers strip the standard `--json` / `--ndjson` / `--user` registrar fla
 | ------------------------ | -------------------------------------------------------------------------------------- |
 | `--read-only`            | Threaded through to `resolveScopes` and the provider hooks via `readOnly`.             |
 | `--callback-port <port>` | Override `preferredPort` per invocation. Validated as `[0..65535]`; `0` = OS-assigned. |
-| `--json`                 | Machine-output mode. Authorize-URL fallback is routed to stderr.                       |
-| `--ndjson`               | Machine-output mode. Same fallback routing.                                            |
+| `--json`                 | Machine-output mode. Authorize-URL print is routed to stderr.                          |
+| `--ndjson`               | Machine-output mode. Same print routing.                                               |
 
-Under `--json` / `--ndjson`, the authorize-URL fallback (printed when `open` is missing or `open()` throws) goes to stderr so the JSON / NDJSON envelope on stdout stays clean. Pass `onAuthorizeUrl` to override the destination. The success / error HTML returned by `renderSuccess` / `renderError` is a render hook — every CLI brings its own template (no shared layout enforced).
+Under `--json` / `--ndjson`, the always-printed authorize URL goes to stderr so the JSON / NDJSON envelope on stdout stays clean. Pass `onAuthorizeUrl` to override the destination. The success / error HTML returned by `renderSuccess` / `renderError` is a render hook — every CLI brings its own template (no shared layout enforced).
 
 #### Implementing `TokenStore`
 

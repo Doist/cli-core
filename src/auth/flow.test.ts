@@ -1,5 +1,20 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+// Partial-mock both modules so the default-opener branches (WSL → `cmd.exe`,
+// headless Linux → no opener) can be exercised end-to-end through
+// `runOAuthFlow`'s public surface. Tests that inject `openBrowser` never
+// touch either mock, so the rest of the suite is unaffected.
+vi.mock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs')>()
+    return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
+})
+vi.mock('node:child_process', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:child_process')>()
+    return { ...actual, execFile: vi.fn(actual.execFile) }
+})
+
+import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenStore } from './types.js'
 
@@ -313,5 +328,105 @@ describe('runOAuthFlow', () => {
                 }),
             ),
         ).rejects.toMatchObject({ code: 'AUTH_STORE_WRITE_FAILED' })
+    })
+})
+
+describe('runOAuthFlow default opener selection', () => {
+    const originalPlatform = process.platform
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', {
+            value: originalPlatform,
+            configurable: true,
+        })
+        vi.unstubAllEnvs()
+        vi.mocked(readFileSync).mockReset()
+        vi.mocked(execFile).mockReset()
+    })
+
+    function stubPlatform(value: NodeJS.Platform): void {
+        Object.defineProperty(process, 'platform', { value, configurable: true })
+    }
+
+    it('routes WSL via cmd.exe with the URL wrapped in literal quotes', async () => {
+        // Quoting the URL is load-bearing: `cmd.exe /c` re-parses the
+        // command line, and WSL interop only auto-quotes args containing
+        // spaces. An unquoted OAuth URL would let `&` split the line into
+        // separate commands and `start` would only see the prefix.
+        stubPlatform('linux')
+        vi.mocked(readFileSync).mockReturnValue('Linux 5.15 #1 SMP microsoft-WSL2')
+        const execFileMock = vi.mocked(execFile)
+        // The opener wraps execFile in a Promise that resolves on the
+        // callback; invoke it synchronously with `null` to mimic a clean
+        // spawn. The 4th arg's exact shape doesn't matter to us.
+        execFileMock.mockImplementation(((
+            _cmd: string,
+            _args: readonly string[],
+            _opts: unknown,
+            cb: unknown,
+        ) => {
+            ;(cb as (err: Error | null) => void)(null)
+            return {} as never
+        }) as never)
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+
+        await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
+
+        expect(execFileMock).toHaveBeenCalledTimes(1)
+        const [cmd, args] = execFileMock.mock.calls[0]
+        const url = onAuthorizeUrl.mock.calls[0][0] as string
+        expect(cmd).toBe('cmd.exe')
+        expect(args).toEqual(['/c', 'start', '""', `"${url}"`])
+    })
+
+    it('skips the default opener entirely on headless Linux', async () => {
+        // No DISPLAY / WAYLAND_DISPLAY / BROWSER + non-WSL Linux → there's
+        // no working browser launch path. Don't pay the spawn cost; the URL
+        // print is the only surface.
+        stubPlatform('linux')
+        vi.mocked(readFileSync).mockImplementation(() => {
+            throw new Error('no /proc/version in this test env')
+        })
+        vi.stubEnv('DISPLAY', '')
+        vi.stubEnv('WAYLAND_DISPLAY', '')
+        vi.stubEnv('BROWSER', '')
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+
+        const result = await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
+
+        expect(result.token).toBe('tok-1')
+        expect(execFile).not.toHaveBeenCalled()
+    })
+
+    it('honours $BROWSER on Linux: routes through the `open` peer-dep path', async () => {
+        // $BROWSER is the explicit user override Codespaces / custom
+        // remote-bridge setups use to point `open` at their own helper.
+        // When set, the headless short-circuit must not fire — let `open`
+        // (or its absence) handle it. We can't load the real `open` here
+        // without a display, so just assert that the cmd.exe / no-op
+        // branches are *not* taken; the flow falls through and either
+        // imports `open` or returns null on import failure.
+        stubPlatform('linux')
+        vi.mocked(readFileSync).mockImplementation(() => {
+            throw new Error('not wsl')
+        })
+        vi.stubEnv('DISPLAY', '')
+        vi.stubEnv('WAYLAND_DISPLAY', '')
+        vi.stubEnv('BROWSER', '/usr/local/bin/my-browser')
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+
+        const result = await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
+
+        expect(result.token).toBe('tok-1')
+        expect(execFile).not.toHaveBeenCalled() // cmd.exe path not taken
     })
 })
