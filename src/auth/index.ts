@@ -35,3 +35,22 @@ export type {
     TokenStore,
     ValidateInput,
 } from './types.js'
+export {
+    SECURE_STORE_DESCRIPTION,
+    SecureStoreUnavailableError,
+    createKeyringTokenStore,
+    createSecureStore,
+    migrateLegacyAuth,
+} from './keyring/index.js'
+export type {
+    CreateKeyringTokenStoreOptions,
+    CreateSecureStoreOptions,
+    KeyringTokenStore,
+    MigrateAuthResult,
+    MigrateLegacyAuthOptions,
+    SecureStore,
+    TokenStorageLocation,
+    TokenStorageResult,
+    UserRecord,
+    UserRecordStore,
+} from './keyring/index.js'
