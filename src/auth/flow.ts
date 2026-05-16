@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http'
+import { promisify } from 'node:util'
 import { CliError, getErrorMessage } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
 import { generateState } from './pkce.js'
@@ -55,8 +56,15 @@ export type RunOAuthFlowOptions<TAccount extends AuthAccount = AuthAccount> = {
     renderError: (message: string) => string
     /** Override the browser opener (tests). When omitted, dynamically imports `open`. */
     openBrowser?: (url: string) => Promise<void>
-    /** Print the authorize URL to stdout as a fallback when the browser can't open it. */
-    onAuthorizeUrl?: (url: string) => void
+    /**
+     * Receives the authorize URL on every login attempt — not only when the
+     * browser launch fails — because the launch can resolve cleanly yet
+     * open no browser (WSL no-op, headless Linux, locked-down hosts).
+     * Treat as a fire-and-forget output channel: a sync hook is awaited,
+     * an async hook is awaited too, and any throw / rejection is swallowed
+     * so a buggy logger can never abort an otherwise-working login.
+     */
+    onAuthorizeUrl?: (url: string) => void | Promise<void>
     /** Callback timeout in ms. Default 3 minutes. */
     timeoutMs?: number
     /** Cancellation signal (Ctrl-C wiring). */
@@ -457,8 +465,15 @@ async function openOrFallback(
     // headless Linux, locked-down corporate envs, missing `open` peer), and
     // we have no reliable signal that the user actually landed on the page
     // — so printing here guarantees a copy-pasteable path on every platform.
-    if (options.onAuthorizeUrl) options.onAuthorizeUrl(url)
-    else if (isStdoutTTY()) console.log(`Open this URL in your browser:\n  ${url}`)
+    // The hook is purely an output channel: isolate its failures so a buggy
+    // logger can't abort the login that the user is actually here to do.
+    if (options.onAuthorizeUrl) {
+        try {
+            await options.onAuthorizeUrl(url)
+        } catch {
+            // Hook errors don't propagate.
+        }
+    } else if (isStdoutTTY()) console.log(`Open this URL in your browser:\n  ${url}`)
 
     const opener = options.openBrowser ?? (await loadDefaultOpener())
     if (!opener) return
@@ -485,20 +500,22 @@ async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | n
     }
 }
 
+const execFileAsync = promisify(execFile)
+
+// Two layers of escaping are needed because `cmd.exe /c` is a shell:
+//   1. Wrap the URL in literal double quotes. WSL interop only auto-quotes
+//      args that contain spaces; an OAuth URL (no spaces, plenty of `&`s)
+//      would otherwise be re-parsed by cmd.exe with `&` acting as a
+//      statement separator, so only the prefix up to the first `&` would
+//      reach `start`.
+//   2. Double every `%` to `%%`. cmd.exe expands `%NAME%` even inside
+//      quoted strings; OAuth URLs are full of percent-encoded bytes
+//      (`%3A`, `%2F`, …) and a chance match against a defined env var
+//      (`%PATH%`, `%TEMP%`, …) would silently mangle the URL.
 // `start ""` — the empty title arg is mandatory; otherwise `start` consumes
-// the URL as a window title and never launches a browser. The URL itself is
-// wrapped in literal double quotes because `cmd.exe /c` is a shell: WSL
-// interop reconstructs the command line and only auto-quotes args that
-// contain spaces, so an OAuth URL (no spaces, plenty of `&`s) would
-// otherwise be re-parsed by `cmd.exe` with `&` acting as a statement
-// separator — only the prefix up to the first `&` reaches `start`. The
-// embedded quotes keep the URL one token. (`execFile`'s no-shell guarantee
-// doesn't apply when the target is itself a shell.)
+// the URL as a window title and never launches a browser. (`execFile`'s
+// no-shell guarantee doesn't apply when the target is itself a shell.)
 async function openViaCmdExe(url: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-        execFile('cmd.exe', ['/c', 'start', '""', `"${url}"`], { windowsHide: true }, (error) => {
-            if (error) reject(error)
-            else resolve()
-        })
-    })
+    const escaped = url.replaceAll('%', '%%')
+    await execFileAsync('cmd.exe', ['/c', 'start', '""', `"${escaped}"`], { windowsHide: true })
 }

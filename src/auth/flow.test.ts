@@ -92,12 +92,13 @@ function instrument(provider: Partial<AuthProvider<Account>> = {}): {
 /**
  * Fill in the boilerplate fields every test would otherwise repeat
  * (`scopes`, `readOnly`, `flags`, `preferredPort`, `renderSuccess`,
- * `renderError`, `timeoutMs`). Caller supplies the variants — `provider`,
- * `store`, `openBrowser` are required; anything else overrides a default.
+ * `renderError`, `timeoutMs`). Caller supplies the variants — only
+ * `provider` and `store` are required; `openBrowser`, `onAuthorizeUrl`,
+ * etc. all stay optional, matching `RunOAuthFlowOptions`.
  */
 function flowOptions(
     overrides: Partial<RunOAuthFlowOptions<Account>> &
-        Pick<RunOAuthFlowOptions<Account>, 'provider' | 'store' | 'openBrowser'>,
+        Pick<RunOAuthFlowOptions<Account>, 'provider' | 'store'>,
 ): RunOAuthFlowOptions<Account> {
     return {
         scopes: [],
@@ -290,6 +291,56 @@ describe('runOAuthFlow', () => {
         expect(result.token).toBe('tok-1')
     })
 
+    it('prints the authorize URL to stdout when no onAuthorizeUrl hook is supplied (TTY)', async () => {
+        // No-hook default surface: when the consumer doesn't pass
+        // `onAuthorizeUrl`, the URL still has to land somewhere — under a
+        // TTY we fall back to `console.log`. Pin this so a regression in
+        // the default path can't hide behind the hook-driven tests above.
+        const originalIsTTY = process.stdout.isTTY
+        Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+
+        try {
+            const result = await runOAuthFlow<Account>(
+                flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+            )
+            expect(result.token).toBe('tok-1')
+            expect(logSpy).toHaveBeenCalledTimes(1)
+            expect(logSpy.mock.calls[0][0]).toMatch(
+                /^Open this URL in your browser:\n {2}https:\/\/example\.com\/oauth\/authorize/,
+            )
+        } finally {
+            logSpy.mockRestore()
+            Object.defineProperty(process.stdout, 'isTTY', {
+                value: originalIsTTY,
+                configurable: true,
+            })
+        }
+    })
+
+    it('isolates onAuthorizeUrl hook failures — a throwing hook does not abort login', async () => {
+        // The hook is purely an output channel. A buggy logger shouldn't
+        // be able to kill the auth flow.
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn((_url: string) => {
+            throw new Error('logger boom')
+        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: driveCallback(getRedirect),
+                onAuthorizeUrl,
+            }),
+        )
+        expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
+        expect(result.token).toBe('tok-1')
+    })
+
     it('falls back to onAuthorizeUrl when the openBrowser opener throws', async () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
@@ -346,26 +397,30 @@ describe('runOAuthFlow default opener selection', () => {
             configurable: true,
         })
         vi.unstubAllEnvs()
-        vi.mocked(readFileSync).mockReset()
-        vi.mocked(execFile).mockReset()
-        vi.mocked(openBrowserModule).mockReset()
+        // `mockRestore` reverts to the factory impl (`actual.readFileSync`,
+        // `actual.execFile`, the empty `open` mock). `mockReset` would
+        // strip the factory wrap and leave the next call returning
+        // undefined, which would silently break any test that forgets to
+        // set its own implementation.
+        vi.mocked(readFileSync).mockRestore()
+        vi.mocked(execFile).mockRestore()
+        vi.mocked(openBrowserModule).mockRestore()
     })
 
     function stubPlatform(value: NodeJS.Platform): void {
         Object.defineProperty(process, 'platform', { value, configurable: true })
     }
 
-    it('routes WSL via cmd.exe with the URL wrapped in literal quotes', async () => {
-        // Quoting the URL is load-bearing: `cmd.exe /c` re-parses the
-        // command line, and WSL interop only auto-quotes args containing
-        // spaces. An unquoted OAuth URL would let `&` split the line into
-        // separate commands and `start` would only see the prefix.
+    it('routes WSL via cmd.exe with the URL quoted and `%` doubled', async () => {
+        // Two escapes are load-bearing for cmd.exe:
+        //   1. quote the URL so `&` doesn't split the command line
+        //   2. double `%` so cmd.exe doesn't try to expand percent-encoded
+        //      OAuth params (`%3A`, `%2F`, …) as env-var references.
+        // Use an authorize URL with both `&` and `%` so the assertion
+        // exercises both escapes.
         stubPlatform('linux')
         vi.mocked(readFileSync).mockReturnValue('Linux 5.15 #1 SMP microsoft-WSL2')
         const execFileMock = vi.mocked(execFile)
-        // The opener wraps execFile in a Promise that resolves on the
-        // callback; invoke it synchronously with `null` to mimic a clean
-        // spawn. The 4th arg's exact shape doesn't matter to us.
         execFileMock.mockImplementation(((
             _cmd: string,
             _args: readonly string[],
@@ -376,7 +431,12 @@ describe('runOAuthFlow default opener selection', () => {
             return {} as never
         }) as never)
 
-        const { provider, getRedirect } = instrument()
+        const { provider, getRedirect } = instrument({
+            authorize: async (input) => ({
+                authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}&redirect_uri=http%3A%2F%2Flocalhost%3A8080`,
+                handshake: { codeVerifier: 'v1' },
+            }),
+        })
         const store = fakeStore()
         const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
 
@@ -386,7 +446,10 @@ describe('runOAuthFlow default opener selection', () => {
         const [cmd, args] = execFileMock.mock.calls[0]
         const url = onAuthorizeUrl.mock.calls[0][0] as string
         expect(cmd).toBe('cmd.exe')
-        expect(args).toEqual(['/c', 'start', '""', `"${url}"`])
+        expect(args).toEqual(['/c', 'start', '""', `"${url.replaceAll('%', '%%')}"`])
+        // Sanity: the URL we built does contain both special chars.
+        expect(url).toMatch(/&/)
+        expect(url).toMatch(/%/)
     })
 
     it('skips the default opener entirely on headless Linux', async () => {
@@ -409,6 +472,10 @@ describe('runOAuthFlow default opener selection', () => {
 
         expect(result.token).toBe('tok-1')
         expect(execFile).not.toHaveBeenCalled()
+        // Lock down "no opener taken": without this, an accidental fall-through
+        // to the `open` peer-dep would still pass since `onAuthorizeUrl` is
+        // driving the callback anyway.
+        expect(openBrowserModule).not.toHaveBeenCalled()
     })
 
     it('honours $BROWSER on Linux: routes through the `open` peer-dep, not cmd.exe', async () => {
