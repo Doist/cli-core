@@ -1,3 +1,9 @@
+## [0.16.1](https://github.com/Doist/cli-core/compare/v0.16.0...v0.16.1) (2026-05-16)
+
+### Bug Fixes
+
+* **auth:** open browser on WSL via cmd.exe; always surface URL ([#29](https://github.com/Doist/cli-core/issues/29)) ([4ac2824](https://github.com/Doist/cli-core/commit/4ac282474ca8a5f5cde1fe690b1a2bca7fcd5be1))
+
 ## [0.16.0](https://github.com/Doist/cli-core/compare/v0.15.0...v0.16.0) (2026-05-16)
 
 ### Features
