@@ -12,9 +12,15 @@ vi.mock('node:child_process', async (importOriginal) => {
     const actual = await importOriginal<typeof import('node:child_process')>()
     return { ...actual, execFile: vi.fn(actual.execFile) }
 })
+// Mock the `open` peer-dep too, otherwise the `$BROWSER` test below falls
+// through to the real `open` package, which captures `process.platform` at
+// module-load (before our runtime stub) and on macOS spawns the real `open`
+// command — launching live browser tabs from the test runner.
+vi.mock('open', () => ({ default: vi.fn(async () => undefined) }))
 
 import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import openBrowserModule from 'open'
 import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenStore } from './types.js'
 
@@ -342,6 +348,7 @@ describe('runOAuthFlow default opener selection', () => {
         vi.unstubAllEnvs()
         vi.mocked(readFileSync).mockReset()
         vi.mocked(execFile).mockReset()
+        vi.mocked(openBrowserModule).mockReset()
     })
 
     function stubPlatform(value: NodeJS.Platform): void {
@@ -404,14 +411,14 @@ describe('runOAuthFlow default opener selection', () => {
         expect(execFile).not.toHaveBeenCalled()
     })
 
-    it('honours $BROWSER on Linux: routes through the `open` peer-dep path', async () => {
+    it('honours $BROWSER on Linux: routes through the `open` peer-dep, not cmd.exe', async () => {
         // $BROWSER is the explicit user override Codespaces / custom
         // remote-bridge setups use to point `open` at their own helper.
         // When set, the headless short-circuit must not fire — let `open`
-        // (or its absence) handle it. We can't load the real `open` here
-        // without a display, so just assert that the cmd.exe / no-op
-        // branches are *not* taken; the flow falls through and either
-        // imports `open` or returns null on import failure.
+        // handle it. The `open` package is mocked at module scope so the
+        // real binary never spawns (which would launch live browser tabs
+        // on macOS dev machines, since `open` captures `process.platform`
+        // at import time and ignores our runtime stub).
         stubPlatform('linux')
         vi.mocked(readFileSync).mockImplementation(() => {
             throw new Error('not wsl')
@@ -427,6 +434,8 @@ describe('runOAuthFlow default opener selection', () => {
         const result = await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
 
         expect(result.token).toBe('tok-1')
-        expect(execFile).not.toHaveBeenCalled() // cmd.exe path not taken
+        expect(execFile).not.toHaveBeenCalled()
+        expect(openBrowserModule).toHaveBeenCalledTimes(1)
+        expect(openBrowserModule).toHaveBeenCalledWith(onAuthorizeUrl.mock.calls[0][0])
     })
 })
