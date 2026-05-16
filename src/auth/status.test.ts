@@ -246,4 +246,19 @@ describe('attachStatusCommand', () => {
             code: 'ACCOUNT_NOT_FOUND',
         })
     })
+
+    it('surfaces AUTH_STORE_READ_FAILED end-to-end (does not collapse to ACCOUNT_NOT_FOUND)', async () => {
+        const thrown = new CliError('AUTH_STORE_READ_FAILED', 'keyring offline')
+        const built = buildStore()
+        built.activeSpy.mockRejectedValueOnce(thrown)
+        const { program } = build({}, built.store)
+
+        // Assert the exact thrown instance bubbles through unchanged — a
+        // future refactor that recreates the error with the same code
+        // (losing the original `cause` / stack) would still satisfy an
+        // `objectContaining({ code })` check.
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'status', '--user', 'me']),
+        ).rejects.toBe(thrown)
+    })
 })

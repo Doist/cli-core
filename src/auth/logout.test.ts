@@ -74,6 +74,7 @@ describe('attachLogoutCommand', () => {
         expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
         expect(onCleared).toHaveBeenCalledWith({
             account,
+            ref: undefined,
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -87,6 +88,7 @@ describe('attachLogoutCommand', () => {
         expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true }))
         expect(onCleared).toHaveBeenCalledWith({
             account,
+            ref: undefined,
             view: { json: true, ndjson: false },
             flags: {},
         })
@@ -100,6 +102,7 @@ describe('attachLogoutCommand', () => {
         expect(logSpy).not.toHaveBeenCalled()
         expect(onCleared).toHaveBeenCalledWith({
             account,
+            ref: undefined,
             view: { json: false, ndjson: true },
             flags: {},
         })
@@ -114,6 +117,7 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).toHaveBeenCalledTimes(1)
         expect(onCleared).toHaveBeenCalledWith({
             account: null,
+            ref: undefined,
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -149,6 +153,7 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).toHaveBeenCalledWith('me@example')
         expect(onCleared).toHaveBeenCalledWith({
             account,
+            ref: 'me@example',
             view: { json: true, ndjson: false },
             flags: { full: true },
         })
@@ -188,6 +193,7 @@ describe('attachLogoutCommand', () => {
         expect(revokeToken).toHaveBeenCalledWith({
             token: 'tok',
             account,
+            ref: undefined,
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -242,6 +248,7 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).toHaveBeenCalledTimes(1)
         expect(onCleared).toHaveBeenCalledWith({
             account,
+            ref: undefined,
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -259,6 +266,7 @@ describe('attachLogoutCommand', () => {
         expect(revokeToken).not.toHaveBeenCalled()
         expect(onCleared).toHaveBeenCalledWith({
             account: null,
+            ref: undefined,
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -297,6 +305,7 @@ describe('attachLogoutCommand', () => {
         expect(revokeToken).toHaveBeenCalledWith({
             token: 'tok',
             account,
+            ref: 'me@example',
             view: { json: true, ndjson: false },
             flags: { full: true },
         })
@@ -343,6 +352,7 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).toHaveBeenCalledWith('alice@example')
         expect(onCleared).toHaveBeenCalledWith({
             account,
+            ref: 'alice@example',
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -363,5 +373,65 @@ describe('attachLogoutCommand', () => {
         })
         expect(built.clearSpy).not.toHaveBeenCalled()
         expect(logSpy).not.toHaveBeenCalled()
+    })
+
+    it('proceeds with clear(ref) when active(ref) throws AUTH_STORE_READ_FAILED', async () => {
+        // A matching record exists but the keyring is offline, so the
+        // pre-flight can't return a snapshot. `logout --user me` should
+        // still clear the record (it doesn't need the token); only the
+        // optional `revokeToken` is skipped because there's no token to
+        // send to the server.
+        const built = buildStore()
+        built.activeSpy.mockRejectedValueOnce(
+            new CliError('AUTH_STORE_READ_FAILED', 'keyring offline'),
+        )
+        const revokeSpy = vi.fn()
+        const { program, onCleared } = build({ revokeToken: revokeSpy }, built.store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me'])
+
+        expect(built.clearSpy).toHaveBeenCalledWith('me')
+        expect(revokeSpy).not.toHaveBeenCalled()
+        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
+        // `account` is null (no readable snapshot) but `ref` is populated, so
+        // consumers can distinguish "nothing was stored" from "cleared an
+        // unreadable record".
+        expect(onCleared).toHaveBeenCalledWith({
+            account: null,
+            ref: 'me',
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('tolerates AUTH_STORE_READ_FAILED when --user alone triggers the pre-flight (no hooks)', async () => {
+        // With neither `revokeToken` nor `onCleared` set, the snapshot only
+        // runs because `--user <ref>` was supplied. The recovery branch must
+        // still kick in there — otherwise `logout --user me` would abort with
+        // `AUTH_STORE_READ_FAILED` in the bare-config case.
+        const built = buildStore()
+        built.activeSpy.mockRejectedValueOnce(
+            new CliError('AUTH_STORE_READ_FAILED', 'keyring offline'),
+        )
+        const { program } = build({ onCleared: undefined }, built.store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me'])
+
+        expect(built.clearSpy).toHaveBeenCalledWith('me')
+        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
+    })
+
+    it('still propagates non-read errors from the snapshot pre-flight', async () => {
+        const thrown = new CliError('AUTH_STORE_WRITE_FAILED', 'something else')
+        const built = buildStore()
+        built.activeSpy.mockRejectedValueOnce(thrown)
+        const { program } = build({ onCleared: undefined }, built.store)
+
+        // Exact-instance match (`toBe`) — a wrap-and-rethrow with the same
+        // code would otherwise pass.
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me']),
+        ).rejects.toBe(thrown)
+        expect(built.clearSpy).not.toHaveBeenCalled()
     })
 })

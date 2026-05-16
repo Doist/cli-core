@@ -81,7 +81,15 @@ export type AccountRef = string
  * the README example).
  */
 export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
-    /** Active snapshot, or `null` when nothing matches (the attachers translate a ref miss into `ACCOUNT_NOT_FOUND`). */
+    /**
+     * Active snapshot, or `null` when nothing matches (the attachers translate
+     * a ref miss into `ACCOUNT_NOT_FOUND`). A store MAY throw
+     * `CliError('AUTH_STORE_READ_FAILED', …)` when a matching record exists
+     * but the token itself can't be read (e.g. an OS keyring backing the
+     * store is offline) — `attachLogoutCommand` catches that code on the
+     * explicit-ref path and proceeds with `clear(ref)`; `attachStatusCommand`
+     * and `attachTokenViewCommand` propagate it.
+     */
     active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
     /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
