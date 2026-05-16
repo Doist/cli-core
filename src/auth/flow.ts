@@ -1,8 +1,36 @@
+import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http'
 import { CliError, getErrorMessage } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
 import { generateState } from './pkce.js'
 import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
+
+// WSL's `open` package routes through `xdg-open` / `wslview`, both of which
+// silently no-op on headless WSL installs — the spawn resolves cleanly but no
+// browser ever appears, so the OAuth callback wait runs to its 3-minute
+// timeout. Detect at call time and route WSL through `cmd.exe` directly.
+// Non-Linux platforms short-circuit before the fs read.
+function isWsl(): boolean {
+    if (process.platform !== 'linux') return false
+    try {
+        return /microsoft/i.test(readFileSync('/proc/version', 'utf8'))
+    } catch {
+        return false
+    }
+}
+
+// SSH sessions, containers, CI runners, headless servers — same failure mode
+// as WSL but with no Windows side to bounce through. With no DISPLAY /
+// WAYLAND_DISPLAY (and no $BROWSER override for Codespaces-style setups
+// that route through a remote bridge), `xdg-open` will either error or
+// no-op, so the spawn is pure noise — skip it and let the URL print do the
+// work.
+function isHeadlessLinux(): boolean {
+    if (process.platform !== 'linux') return false
+    if (process.env.BROWSER) return false
+    return !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY
+}
 
 export type RunOAuthFlowOptions<TAccount extends AuthAccount = AuthAccount> = {
     provider: AuthProvider<TAccount>
@@ -424,22 +452,29 @@ async function openOrFallback(
     url: string,
     options: RunOAuthFlowOptions<AuthAccount>,
 ): Promise<void> {
-    const opener = options.openBrowser ?? (await loadDefaultOpener())
-    if (opener) {
-        try {
-            await opener(url)
-            return
-        } catch {
-            // Fall through to the URL print below.
-        }
-    }
-    // No opener available, or the opener threw. Surface the URL so the user
-    // can finish the flow manually.
+    // Surface the URL up-front, before attempting the browser spawn. The
+    // spawn can succeed yet open no browser (WSL without working interop,
+    // headless Linux, locked-down corporate envs, missing `open` peer), and
+    // we have no reliable signal that the user actually landed on the page
+    // — so printing here guarantees a copy-pasteable path on every platform.
     if (options.onAuthorizeUrl) options.onAuthorizeUrl(url)
     else if (isStdoutTTY()) console.log(`Open this URL in your browser:\n  ${url}`)
+
+    const opener = options.openBrowser ?? (await loadDefaultOpener())
+    if (!opener) return
+    try {
+        await opener(url)
+    } catch {
+        // URL is already surfaced above.
+    }
 }
 
 async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | null> {
+    // WSL check must run before the headless check: WSL is `platform === 'linux'`
+    // and often has no DISPLAY, but `cmd.exe` does work and reaches the user's
+    // real Windows browser, so it's worth the spawn.
+    if (isWsl()) return openViaCmdExe
+    if (isHeadlessLinux()) return null
     try {
         const mod = (await import('open')) as { default: (url: string) => Promise<unknown> }
         return async (url) => {
@@ -448,4 +483,17 @@ async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | n
     } catch {
         return null
     }
+}
+
+// `start ""` — the empty title arg is mandatory; otherwise `start` consumes
+// the URL as a window title and never launches a browser. The URL is passed
+// as an `execFile` arg (not interpolated into a shell string), so URLs with
+// special characters can't escape into command-injection territory.
+async function openViaCmdExe(url: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        execFile('cmd.exe', ['/c', 'start', '""', url], { windowsHide: true }, (error) => {
+            if (error) reject(error)
+            else resolve()
+        })
+    })
 }

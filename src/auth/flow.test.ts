@@ -273,6 +273,36 @@ describe('runOAuthFlow', () => {
         expect(setSpy).not.toHaveBeenCalled()
     })
 
+    it('always surfaces the authorize URL via onAuthorizeUrl, even when openBrowser succeeds', async () => {
+        // The browser spawn can resolve cleanly yet open no actual browser
+        // (WSL no-op, headless Linux, etc.), so the URL must reach the user
+        // on every successful run — not only on opener failure.
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn((_url: string) => undefined)
+        const openBrowser = vi.fn(async (url: string) => {
+            const state = new URL(url).searchParams.get('state') ?? ''
+            await fetch(`${getRedirect()}?code=abc&state=${state}`)
+        })
+        const result = await runOAuthFlow<Account>({
+            provider,
+            store,
+            scopes: [],
+            readOnly: false,
+            flags: {},
+            preferredPort: 0,
+            renderSuccess,
+            renderError,
+            openBrowser,
+            onAuthorizeUrl,
+            timeoutMs: 5000,
+        })
+        expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
+        expect(onAuthorizeUrl.mock.calls[0][0]).toMatch(/^https:\/\/example\.com\/oauth\/authorize/)
+        expect(openBrowser).toHaveBeenCalledTimes(1)
+        expect(result.token).toBe('tok-1')
+    })
+
     it('falls back to onAuthorizeUrl when the openBrowser opener throws', async () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
