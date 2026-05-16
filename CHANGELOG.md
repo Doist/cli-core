@@ -1,3 +1,9 @@
+## [0.13.0](https://github.com/Doist/cli-core/compare/v0.12.0...v0.13.0) (2026-05-16)
+
+### Features
+
+* **auth:** add createSecureStore keyring primitive (1/4) ([#25](https://github.com/Doist/cli-core/issues/25)) ([30bcbd7](https://github.com/Doist/cli-core/commit/30bcbd7e49aede98d0777424169324af03f56eaf))
+
 ## [0.12.0](https://github.com/Doist/cli-core/compare/v0.11.0...v0.12.0) (2026-05-14)
 
 ### Features
