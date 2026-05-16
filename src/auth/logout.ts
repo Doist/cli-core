@@ -1,12 +1,20 @@
 import type { Command } from 'commander'
+import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import type { ViewOptions } from '../options.js'
-import type { AuthAccount, TokenStore } from './types.js'
+import type { AccountRef, AuthAccount, TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
 export type AttachLogoutContext<TAccount extends AuthAccount> = {
-    /** The account that was active immediately before `clear()` ran, or `null` if nothing was stored. */
+    /**
+     * The account that was active immediately before `clear()` ran, or
+     * `null` if nothing was stored. Also `null` on the `AUTH_STORE_READ_FAILED`
+     * recovery path (matching record existed but the token wasn't readable);
+     * `ref` is still populated in that case so consumers can distinguish.
+     */
     account: TAccount | null
+    /** The `--user <ref>` value, or `undefined` when not supplied. Always present so consumers can tell "no stored account" from "cleared an unreadable account by ref". */
+    ref: AccountRef | undefined
     /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
     view: Required<ViewOptions>
     /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
@@ -66,19 +74,31 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
             ndjson: Boolean(ndjson),
         }
         const ref = extractUserRef(cmd)
-        // Explicit ref must surface a typed miss before `clear()` runs —
-        // `clear(ref)` is contractually a no-op on miss, so otherwise
-        // `logout --user mistake` would print `✓ Logged out`.
+        // Snapshot only when something downstream needs it:
+        //   - an explicit `--user <ref>` must surface a typed miss before
+        //     `clear()` runs (otherwise `logout --user mistake` would print
+        //     `✓ Logged out` after a no-op clear);
+        //   - either consumer hook is supplied and wants the prior account.
+        // `requireSnapshotForRef` handles both `ref === undefined` (returns
+        // the snapshot directly) and the explicit-ref path (throws
+        // `ACCOUNT_NOT_FOUND` on a null snapshot), so one call covers both.
         const needsSnapshot = ref !== undefined || Boolean(options.revokeToken || options.onCleared)
         let snapshot: { token: string; account: TAccount } | null = null
         if (needsSnapshot) {
-            if (ref !== undefined) {
+            try {
                 snapshot = await requireSnapshotForRef(options.store, ref)
-            } else {
-                try {
-                    snapshot = await options.store.active(ref)
-                } catch {
-                    // Snapshot lookup failures must not block local clear.
+            } catch (error) {
+                // Without an explicit ref, any snapshot read failure must
+                // not block local clear (we just lose the hooks' account
+                // context). With an explicit ref, `AUTH_STORE_READ_FAILED`
+                // is the only recoverable case — clear can still run
+                // without the token. Everything else (notably
+                // `ACCOUNT_NOT_FOUND` from a genuine ref miss) propagates.
+                if (
+                    ref !== undefined &&
+                    !(error instanceof CliError && error.code === 'AUTH_STORE_READ_FAILED')
+                ) {
+                    throw error
                 }
             }
         }
@@ -89,6 +109,7 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
                 await options.revokeToken({
                     token: snapshot.token,
                     account: snapshot.account,
+                    ref,
                     view,
                     flags,
                 })
@@ -101,6 +122,6 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
         } else if (!view.ndjson) {
             console.log('✓ Logged out')
         }
-        await options.onCleared?.({ account, view, flags })
+        await options.onCleared?.({ account, ref, view, flags })
     })
 }
