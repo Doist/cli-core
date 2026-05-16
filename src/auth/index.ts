@@ -39,11 +39,15 @@ export {
     SecureStoreUnavailableError,
     createKeyringTokenStore,
     createSecureStore,
+    migrateLegacyAuth,
 } from './keyring/index.js'
 export type {
     CreateKeyringTokenStoreOptions,
     CreateSecureStoreOptions,
     KeyringTokenStore,
+    MigrateAuthResult,
+    MigrateLegacyAuthOptions,
+    MigrateSkipReason,
     SecureStore,
     TokenStorageLocation,
     TokenStorageResult,

@@ -4,6 +4,9 @@ export type { CreateSecureStoreOptions, SecureStore } from './secure-store.js'
 export { createKeyringTokenStore } from './token-store.js'
 export type { CreateKeyringTokenStoreOptions, KeyringTokenStore } from './token-store.js'
 
+export { migrateLegacyAuth } from './migrate.js'
+export type { MigrateAuthResult, MigrateLegacyAuthOptions, MigrateSkipReason } from './migrate.js'
+
 export type {
     TokenStorageLocation,
     TokenStorageResult,
