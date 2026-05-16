@@ -1,6 +1,21 @@
 import { getErrorMessage } from '../../errors.js'
 
 /**
+ * User-facing label for the OS credential manager. Used by the keyring
+ * `TokenStore`'s fallback-warning composition; internal to the keyring
+ * module until a public caller asks for it.
+ */
+export const SECURE_STORE_DESCRIPTION = 'system credential manager'
+
+/**
+ * Default keyring `account` slug for a stored user. Lives here so every
+ * caller that derives a per-user slot name agrees on the wire format — a
+ * future rename can't silently park tokens in a slot the runtime no longer
+ * reads from.
+ */
+export const DEFAULT_ACCOUNT_FOR_USER = (id: string): string => `user-${id}`
+
+/**
  * Thrown when the OS credential manager cannot be reached — missing native
  * binary for the current architecture, libsecret/D-Bus unavailable
  * (common in WSL / headless Linux / containers / CI), Keychain locked, or

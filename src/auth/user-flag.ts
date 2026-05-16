@@ -18,6 +18,11 @@ export function extractUserRef(cmd: Record<string, unknown>): AccountRef | undef
     return typeof cmd.user === 'string' ? cmd.user : undefined
 }
 
+/** Shared constructor so multiple call sites can't drift on the `ACCOUNT_NOT_FOUND` wording. */
+export function accountNotFoundError(ref: AccountRef): CliError {
+    return new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
+}
+
 /**
  * Read `store.active(ref)` and throw `ACCOUNT_NOT_FOUND` if the explicit
  * `ref` doesn't match. With `ref === undefined` returns the snapshot
@@ -29,7 +34,7 @@ export async function requireSnapshotForRef<TAccount extends AuthAccount>(
 ): Promise<{ token: string; account: TAccount } | null> {
     const snapshot = await store.active(ref)
     if (ref !== undefined && snapshot === null) {
-        throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
+        throw accountNotFoundError(ref)
     }
     return snapshot
 }

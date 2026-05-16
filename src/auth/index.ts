@@ -35,5 +35,18 @@ export type {
     TokenStore,
     ValidateInput,
 } from './types.js'
-export { SecureStoreUnavailableError, createSecureStore } from './keyring/index.js'
-export type { CreateSecureStoreOptions, SecureStore } from './keyring/index.js'
+export {
+    SecureStoreUnavailableError,
+    createKeyringTokenStore,
+    createSecureStore,
+} from './keyring/index.js'
+export type {
+    CreateKeyringTokenStoreOptions,
+    CreateSecureStoreOptions,
+    KeyringTokenStore,
+    SecureStore,
+    TokenStorageLocation,
+    TokenStorageResult,
+    UserRecord,
+    UserRecordStore,
+} from './keyring/index.js'
