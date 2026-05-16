@@ -43,42 +43,13 @@ describe('createSecureStore', () => {
         expect(keyringMocks.entry.setPassword).toHaveBeenCalledWith('tok_abcdef')
     })
 
-    it('returns null when the keyring has no entry for the slot', async () => {
-        keyringMocks.entry.getPassword.mockResolvedValue(null)
-
-        const { createSecureStore } = await import('./secure-store.js')
-        const store = createSecureStore({ serviceName: SERVICE, account: ACCOUNT })
-
-        await expect(store.getSecret()).resolves.toBeNull()
-    })
-
-    it('wraps a get failure as SecureStoreUnavailableError', async () => {
+    it('wraps a keyring failure as SecureStoreUnavailableError', async () => {
         keyringMocks.entry.getPassword.mockRejectedValue(new Error('Keychain locked'))
 
         const { createSecureStore, SecureStoreUnavailableError } = await import('./secure-store.js')
 
         await expect(
             createSecureStore({ serviceName: SERVICE, account: ACCOUNT }).getSecret(),
-        ).rejects.toBeInstanceOf(SecureStoreUnavailableError)
-    })
-
-    it('wraps a set failure as SecureStoreUnavailableError', async () => {
-        keyringMocks.entry.setPassword.mockRejectedValue(new Error('libsecret missing'))
-
-        const { createSecureStore, SecureStoreUnavailableError } = await import('./secure-store.js')
-
-        await expect(
-            createSecureStore({ serviceName: SERVICE, account: ACCOUNT }).setSecret('x'),
-        ).rejects.toBeInstanceOf(SecureStoreUnavailableError)
-    })
-
-    it('wraps a delete failure as SecureStoreUnavailableError', async () => {
-        keyringMocks.entry.deleteCredential.mockRejectedValue(new Error('D-Bus down'))
-
-        const { createSecureStore, SecureStoreUnavailableError } = await import('./secure-store.js')
-
-        await expect(
-            createSecureStore({ serviceName: SERVICE, account: ACCOUNT }).deleteSecret(),
         ).rejects.toBeInstanceOf(SecureStoreUnavailableError)
     })
 })

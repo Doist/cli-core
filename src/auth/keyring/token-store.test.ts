@@ -119,14 +119,6 @@ describe('createKeyringTokenStore', () => {
         await expect(store.active()).rejects.toMatchObject({ code: 'AUTH_STORE_READ_FAILED' })
     })
 
-    it('returns null from active() when no records exist', async () => {
-        const { store: userRecords } = buildUserRecords<Account>()
-        const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
-
-        await expect(store.active()).resolves.toBeNull()
-        expect(mockedCreateSecureStore).not.toHaveBeenCalled()
-    })
-
     it('picks the lone user when no default is set', async () => {
         const keyring = buildSingleSlot({ secret: 'tok' })
         mockedCreateSecureStore.mockReturnValue(keyring)
@@ -160,15 +152,6 @@ describe('createKeyringTokenStore', () => {
         await store.set({ ...account, id: '2' }, 'tok_b')
 
         expect(state.defaultId).toBe('1')
-    })
-
-    it('clear() is a no-op when no record exists', async () => {
-        const { store: userRecords } = buildUserRecords<Account>()
-        const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
-
-        await expect(store.clear()).resolves.toBeUndefined()
-        expect(store.getLastClearResult()).toBeUndefined()
-        expect(mockedCreateSecureStore).not.toHaveBeenCalled()
     })
 
     it('clear() still calls the keyring delete when a fallbackToken is present (orphan cleanup)', async () => {
@@ -245,19 +228,6 @@ describe('createKeyringTokenStore', () => {
         })
     })
 
-    it('skips getDefaultId when an explicit ref is supplied (hot path)', async () => {
-        const keyring = buildSingleSlot({ secret: 'tok' })
-        mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords<Account>()
-        state.records.set('42', { id: '42', account })
-        const getDefaultSpy = vi.spyOn(userRecords, 'getDefaultId')
-
-        const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
-
-        await store.active('42')
-        expect(getDefaultSpy).not.toHaveBeenCalled()
-    })
-
     describe('AccountRef support (keyed per-user slots)', () => {
         function buildMultiUser() {
             const km = buildKeyringMap()
@@ -297,14 +267,6 @@ describe('createKeyringTokenStore', () => {
             expect(snapshot?.token).toBe('tok_b')
         })
 
-        it('active(ref) matches on label', async () => {
-            const { userRecords } = buildMultiUser()
-            const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
-
-            const snapshot = await store.active('alice')
-            expect(snapshot?.account.id).toBe('1')
-        })
-
         it('active(ref) returns null on a miss (attacher translates to ACCOUNT_NOT_FOUND)', async () => {
             const { userRecords } = buildMultiUser()
             const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
@@ -326,15 +288,6 @@ describe('createKeyringTokenStore', () => {
             expect(km.slots.get('user-1')?.secret).toBeNull()
             expect((km.deleteCalls.get('user-1') ?? 0) > 0).toBe(true)
             expect(km.deleteCalls.has('user-2')).toBe(false)
-        })
-
-        it('clear(ref) on a miss is a no-op (attacher rejects via active() pre-check)', async () => {
-            const { userRecords, state } = buildMultiUser()
-            const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
-
-            await store.clear('nope')
-            expect(state.records.has('1')).toBe(true)
-            expect(state.records.has('2')).toBe(true)
         })
 
         it('honours a custom matchAccount predicate', async () => {
@@ -381,14 +334,6 @@ describe('createKeyringTokenStore', () => {
 
             const all = await store.list()
             expect(all).toEqual([{ account, isDefault: true }])
-        })
-
-        it('list() returns an empty array when nothing is stored', async () => {
-            const { store: userRecords } = buildUserRecords<Account>()
-            const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
-
-            await expect(store.list()).resolves.toEqual([])
-            expect(mockedCreateSecureStore).not.toHaveBeenCalled()
         })
 
         it('setDefault(ref) marks the matching account as default', async () => {

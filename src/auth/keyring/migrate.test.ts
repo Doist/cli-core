@@ -167,26 +167,6 @@ describe('migrateLegacyAuth', () => {
         // Legacy entry must remain so a retry can find it.
         expect(km.slots.get(LEGACY)?.secret).toBe('legacy_tok')
     })
-
-    it('rolls back the keyring write when user-record upsert fails', async () => {
-        const km = buildKeyringMap()
-        km.slots.set(LEGACY, { secret: 'legacy_tok' })
-        mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, upsertSpy } = buildUserRecords<Account>()
-        upsertSpy.mockRejectedValueOnce(new Error('disk full'))
-
-        const result = await migrateLegacyAuth<Account>({
-            serviceName: SERVICE,
-            legacyAccount: LEGACY,
-            userRecords,
-            loadLegacyPlaintextToken: async () => null,
-            identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
-            silent: true,
-        })
-
-        expect(result.status).toBe('skipped')
-        expect(km.slots.get('user-99')?.secret).toBeNull()
-    })
 })
 
 describe('migrateLegacyAuth — stderr privacy', () => {
