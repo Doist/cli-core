@@ -1,6 +1,27 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { runOAuthFlow } from './flow.js'
+// Partial-mock both modules so the default-opener branches (WSL → `cmd.exe`,
+// headless Linux → no opener) can be exercised end-to-end through
+// `runOAuthFlow`'s public surface. Tests that inject `openBrowser` never
+// touch either mock, so the rest of the suite is unaffected.
+vi.mock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs')>()
+    return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
+})
+vi.mock('node:child_process', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:child_process')>()
+    return { ...actual, execFile: vi.fn(actual.execFile) }
+})
+// Mock the `open` peer-dep too, otherwise the `$BROWSER` test below falls
+// through to the real `open` package, which captures `process.platform` at
+// module-load (before our runtime stub) and on macOS spawns the real `open`
+// command — launching live browser tabs from the test runner.
+vi.mock('open', () => ({ default: vi.fn(async () => undefined) }))
+
+import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import openBrowserModule from 'open'
+import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenStore } from './types.js'
 
 type Account = { id: string; label?: string; email: string }
@@ -68,6 +89,41 @@ function instrument(provider: Partial<AuthProvider<Account>> = {}): {
     return { provider: wrapped, getRedirect: () => redirectUri }
 }
 
+/**
+ * Fill in the boilerplate fields every test would otherwise repeat
+ * (`scopes`, `readOnly`, `flags`, `preferredPort`, `renderSuccess`,
+ * `renderError`, `timeoutMs`). Caller supplies the variants — only
+ * `provider` and `store` are required; `openBrowser`, `onAuthorizeUrl`,
+ * etc. all stay optional, matching `RunOAuthFlowOptions`.
+ */
+function flowOptions(
+    overrides: Partial<RunOAuthFlowOptions<Account>> &
+        Pick<RunOAuthFlowOptions<Account>, 'provider' | 'store'>,
+): RunOAuthFlowOptions<Account> {
+    return {
+        scopes: [],
+        readOnly: false,
+        flags: {},
+        preferredPort: 0,
+        renderSuccess,
+        renderError,
+        timeoutMs: 5000,
+        ...overrides,
+    }
+}
+
+/**
+ * Drive the local callback server with a valid `code` + the `state` lifted
+ * from the authorize URL. Used as both an `openBrowser` and an
+ * `onAuthorizeUrl` stand-in across the suite.
+ */
+function driveCallback(getRedirect: () => string): (url: string) => Promise<void> {
+    return async (url) => {
+        const state = new URL(url).searchParams.get('state') ?? ''
+        await fetch(`${getRedirect()}?code=abc&state=${state}`)
+    }
+}
+
 describe('runOAuthFlow', () => {
     it('drives prepare → authorize → exchange → validate → store and returns the result', async () => {
         const prepare = vi.fn(async () => ({ handshake: { dcrSecret: 'shh' } }))
@@ -75,25 +131,17 @@ describe('runOAuthFlow', () => {
         const validateToken = vi.fn(async () => ({ id: '1', email: 'a@b' }))
         const { provider, getRedirect } = instrument({ prepare, exchangeCode, validateToken })
         const store = fakeStore()
+        const openBrowser = vi.fn(driveCallback(getRedirect))
 
-        const openBrowser = vi.fn(async (url: string) => {
-            const state = new URL(url).searchParams.get('state') ?? ''
-            await fetch(`${getRedirect()}?code=abc&state=${state}`)
-        })
-
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: ['read'],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser,
-            onAuthorizeUrl: () => undefined,
-            timeoutMs: 5000,
-        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                scopes: ['read'],
+                openBrowser,
+                onAuthorizeUrl: () => undefined,
+            }),
+        )
 
         expect(result.token).toBe('tok-1')
         expect(result.account).toEqual({ id: '1', email: 'a@b' })
@@ -118,21 +166,9 @@ describe('runOAuthFlow', () => {
         })
         const store = fakeStore()
 
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async (url) => {
-                const state = new URL(url).searchParams.get('state') ?? ''
-                await fetch(`${getRedirect()}?code=abc&state=${state}`)
-            },
-            timeoutMs: 5000,
-        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+        )
         expect(result.account.id).toBe('99')
         expect(validateToken).not.toHaveBeenCalled()
     })
@@ -154,21 +190,9 @@ describe('runOAuthFlow', () => {
         })
         const store = fakeStore()
 
-        await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async (url) => {
-                const state = new URL(url).searchParams.get('state') ?? ''
-                await fetch(`${getRedirect()}?code=abc&state=${state}`)
-            },
-            timeoutMs: 5000,
-        })
+        await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+        )
         expect(validateToken).toHaveBeenCalledTimes(1)
     })
 
@@ -176,18 +200,14 @@ describe('runOAuthFlow', () => {
         const { provider } = instrument()
         const store = fakeStore()
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 0,
-                renderSuccess,
-                renderError,
-                openBrowser: async () => {}, // never triggers a callback
-                timeoutMs: 50,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({
+                    provider,
+                    store,
+                    openBrowser: async () => {}, // never triggers a callback
+                    timeoutMs: 50,
+                }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_CALLBACK_TIMEOUT' })
     })
 
@@ -195,30 +215,25 @@ describe('runOAuthFlow', () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
 
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async (url) => {
-                const state = new URL(url).searchParams.get('state') ?? ''
-                // Spurious requests (browser-extension prefetch, accidental
-                // reload) that don't match the expected state should leave the
-                // server listening rather than killing the in-flight flow.
-                const bad1 = await fetch(`${getRedirect()}?code=abc&state=wrong`)
-                expect(bad1.status).toBe(400)
-                const bad2 = await fetch(`${getRedirect()}?code=abc`)
-                expect(bad2.status).toBe(400)
-                // The legitimate redirect arriving after the noise should still
-                // settle the wait.
-                await fetch(`${getRedirect()}?code=abc&state=${state}`)
-            },
-            timeoutMs: 5000,
-        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: async (url) => {
+                    const state = new URL(url).searchParams.get('state') ?? ''
+                    // Spurious requests (browser-extension prefetch, accidental
+                    // reload) that don't match the expected state should leave the
+                    // server listening rather than killing the in-flight flow.
+                    const bad1 = await fetch(`${getRedirect()}?code=abc&state=wrong`)
+                    expect(bad1.status).toBe(400)
+                    const bad2 = await fetch(`${getRedirect()}?code=abc`)
+                    expect(bad2.status).toBe(400)
+                    // The legitimate redirect arriving after the noise should still
+                    // settle the wait.
+                    await fetch(`${getRedirect()}?code=abc&state=${state}`)
+                },
+            }),
+        )
         expect(result.token).toBe('tok-1')
     })
 
@@ -227,18 +242,9 @@ describe('runOAuthFlow', () => {
         const { provider } = instrument()
         const store = fakeStore()
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 70_000,
-                renderSuccess,
-                renderError,
-                openBrowser,
-                timeoutMs: 5000,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({ provider, store, openBrowser, preferredPort: 70_000 }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_PORT_BIND_FAILED' })
         expect(openBrowser).not.toHaveBeenCalled()
     })
@@ -250,52 +256,105 @@ describe('runOAuthFlow', () => {
         const setSpy = vi.spyOn(store, 'set')
 
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 0,
-                renderSuccess,
-                renderError,
-                openBrowser: async () => {
-                    // Abort before the callback arrives — flow should reject
-                    // with AUTH_OAUTH_FAILED rather than continue waiting.
-                    controller.abort()
-                    void getRedirect() // touch to silence unused-fn lint
-                },
-                onAuthorizeUrl: () => undefined,
-                signal: controller.signal,
-                timeoutMs: 5000,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({
+                    provider,
+                    store,
+                    openBrowser: async () => {
+                        // Abort before the callback arrives — flow should reject
+                        // with AUTH_OAUTH_FAILED rather than continue waiting.
+                        controller.abort()
+                        void getRedirect() // touch to silence unused-fn lint
+                    },
+                    onAuthorizeUrl: () => undefined,
+                    signal: controller.signal,
+                }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_OAUTH_FAILED' })
         expect(setSpy).not.toHaveBeenCalled()
+    })
+
+    it('always surfaces the authorize URL via onAuthorizeUrl, even when openBrowser succeeds', async () => {
+        // The browser spawn can resolve cleanly yet open no actual browser
+        // (WSL no-op, headless Linux, etc.), so the URL must reach the user
+        // on every successful run — not only on opener failure.
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn((_url: string) => undefined)
+        const openBrowser = vi.fn(driveCallback(getRedirect))
+        const result = await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser, onAuthorizeUrl }),
+        )
+        expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
+        expect(onAuthorizeUrl.mock.calls[0][0]).toMatch(/^https:\/\/example\.com\/oauth\/authorize/)
+        expect(openBrowser).toHaveBeenCalledTimes(1)
+        expect(result.token).toBe('tok-1')
+    })
+
+    it('prints the authorize URL to stdout when no onAuthorizeUrl hook is supplied (TTY)', async () => {
+        // No-hook default surface: when the consumer doesn't pass
+        // `onAuthorizeUrl`, the URL still has to land somewhere — under a
+        // TTY we fall back to `console.log`. Pin this so a regression in
+        // the default path can't hide behind the hook-driven tests above.
+        const originalIsTTY = process.stdout.isTTY
+        Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true })
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+
+        try {
+            const result = await runOAuthFlow<Account>(
+                flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+            )
+            expect(result.token).toBe('tok-1')
+            expect(logSpy).toHaveBeenCalledTimes(1)
+            expect(logSpy.mock.calls[0][0]).toMatch(
+                /^Open this URL in your browser:\n {2}https:\/\/example\.com\/oauth\/authorize/,
+            )
+        } finally {
+            logSpy.mockRestore()
+            Object.defineProperty(process.stdout, 'isTTY', {
+                value: originalIsTTY,
+                configurable: true,
+            })
+        }
+    })
+
+    it('isolates onAuthorizeUrl hook failures — a throwing hook does not abort login', async () => {
+        // The hook is purely an output channel. A buggy logger shouldn't
+        // be able to kill the auth flow.
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn((_url: string) => {
+            throw new Error('logger boom')
+        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: driveCallback(getRedirect),
+                onAuthorizeUrl,
+            }),
+        )
+        expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
+        expect(result.token).toBe('tok-1')
     })
 
     it('falls back to onAuthorizeUrl when the openBrowser opener throws', async () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
-        const onAuthorizeUrl = vi.fn(async (url: string) => {
-            // Drive the callback off the URL we received via the fallback path.
-            const state = new URL(url).searchParams.get('state') ?? ''
-            await fetch(`${getRedirect()}?code=abc&state=${state}`)
-        })
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async () => {
-                throw new Error('opener boom')
-            },
-            onAuthorizeUrl,
-            timeoutMs: 5000,
-        })
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: async () => {
+                    throw new Error('opener boom')
+                },
+                onAuthorizeUrl,
+            }),
+        )
         expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
         expect(onAuthorizeUrl.mock.calls[0][0]).toMatch(/^https:\/\/example\.com\/oauth\/authorize/)
         expect(result.token).toBe('tok-1')
@@ -317,22 +376,133 @@ describe('runOAuthFlow', () => {
             async setDefault() {},
         }
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 0,
-                renderSuccess,
-                renderError,
-                openBrowser: async (url) => {
-                    const state = new URL(url).searchParams.get('state') ?? ''
-                    await fetch(`${getRedirect()}?code=abc&state=${state}`)
-                },
-                onAuthorizeUrl: () => undefined,
-                timeoutMs: 5000,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({
+                    provider,
+                    store,
+                    openBrowser: driveCallback(getRedirect),
+                    onAuthorizeUrl: () => undefined,
+                }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_STORE_WRITE_FAILED' })
+    })
+})
+
+describe('runOAuthFlow default opener selection', () => {
+    const originalPlatform = process.platform
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', {
+            value: originalPlatform,
+            configurable: true,
+        })
+        vi.unstubAllEnvs()
+        // `mockRestore` reverts to the factory impl (`actual.readFileSync`,
+        // `actual.execFile`, the empty `open` mock). `mockReset` would
+        // strip the factory wrap and leave the next call returning
+        // undefined, which would silently break any test that forgets to
+        // set its own implementation.
+        vi.mocked(readFileSync).mockRestore()
+        vi.mocked(execFile).mockRestore()
+        vi.mocked(openBrowserModule).mockRestore()
+    })
+
+    function stubPlatform(value: NodeJS.Platform): void {
+        Object.defineProperty(process, 'platform', { value, configurable: true })
+    }
+
+    it('routes WSL via cmd.exe with the URL quoted and `%` doubled', async () => {
+        // Two escapes are load-bearing for cmd.exe:
+        //   1. quote the URL so `&` doesn't split the command line
+        //   2. double `%` so cmd.exe doesn't try to expand percent-encoded
+        //      OAuth params (`%3A`, `%2F`, …) as env-var references.
+        // Use an authorize URL with both `&` and `%` so the assertion
+        // exercises both escapes.
+        stubPlatform('linux')
+        vi.mocked(readFileSync).mockReturnValue('Linux 5.15 #1 SMP microsoft-WSL2')
+        const execFileMock = vi.mocked(execFile)
+        execFileMock.mockImplementation(((
+            _cmd: string,
+            _args: readonly string[],
+            _opts: unknown,
+            cb: unknown,
+        ) => {
+            ;(cb as (err: Error | null) => void)(null)
+            return {} as never
+        }) as never)
+
+        const { provider, getRedirect } = instrument({
+            authorize: async (input) => ({
+                authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}&redirect_uri=http%3A%2F%2Flocalhost%3A8080`,
+                handshake: { codeVerifier: 'v1' },
+            }),
+        })
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+
+        await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
+
+        expect(execFileMock).toHaveBeenCalledTimes(1)
+        const [cmd, args] = execFileMock.mock.calls[0]
+        const url = onAuthorizeUrl.mock.calls[0][0] as string
+        expect(cmd).toBe('cmd.exe')
+        expect(args).toEqual(['/c', 'start', '""', `"${url.replaceAll('%', '%%')}"`])
+        // Sanity: the URL we built does contain both special chars.
+        expect(url).toMatch(/&/)
+        expect(url).toMatch(/%/)
+    })
+
+    it('skips the default opener entirely on headless Linux', async () => {
+        // No DISPLAY / WAYLAND_DISPLAY / BROWSER + non-WSL Linux → there's
+        // no working browser launch path. Don't pay the spawn cost; the URL
+        // print is the only surface.
+        stubPlatform('linux')
+        vi.mocked(readFileSync).mockImplementation(() => {
+            throw new Error('no /proc/version in this test env')
+        })
+        vi.stubEnv('DISPLAY', '')
+        vi.stubEnv('WAYLAND_DISPLAY', '')
+        vi.stubEnv('BROWSER', '')
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+
+        const result = await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
+
+        expect(result.token).toBe('tok-1')
+        expect(execFile).not.toHaveBeenCalled()
+        // Lock down "no opener taken": without this, an accidental fall-through
+        // to the `open` peer-dep would still pass since `onAuthorizeUrl` is
+        // driving the callback anyway.
+        expect(openBrowserModule).not.toHaveBeenCalled()
+    })
+
+    it('honours $BROWSER on Linux: routes through the `open` peer-dep, not cmd.exe', async () => {
+        // $BROWSER is the explicit user override Codespaces / custom
+        // remote-bridge setups use to point `open` at their own helper.
+        // When set, the headless short-circuit must not fire — let `open`
+        // handle it. The `open` package is mocked at module scope so the
+        // real binary never spawns (which would launch live browser tabs
+        // on macOS dev machines, since `open` captures `process.platform`
+        // at import time and ignores our runtime stub).
+        stubPlatform('linux')
+        vi.mocked(readFileSync).mockImplementation(() => {
+            throw new Error('not wsl')
+        })
+        vi.stubEnv('DISPLAY', '')
+        vi.stubEnv('WAYLAND_DISPLAY', '')
+        vi.stubEnv('BROWSER', '/usr/local/bin/my-browser')
+
+        const { provider, getRedirect } = instrument()
+        const store = fakeStore()
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+
+        const result = await runOAuthFlow<Account>(flowOptions({ provider, store, onAuthorizeUrl }))
+
+        expect(result.token).toBe('tok-1')
+        expect(execFile).not.toHaveBeenCalled()
+        expect(openBrowserModule).toHaveBeenCalledTimes(1)
+        expect(openBrowserModule).toHaveBeenCalledWith(onAuthorizeUrl.mock.calls[0][0])
     })
 })

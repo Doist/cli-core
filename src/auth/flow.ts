@@ -1,8 +1,37 @@
+import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http'
+import { promisify } from 'node:util'
 import { CliError, getErrorMessage } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
 import { generateState } from './pkce.js'
 import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
+
+// WSL's `open` package routes through `xdg-open` / `wslview`, both of which
+// silently no-op on headless WSL installs — the spawn resolves cleanly but no
+// browser ever appears, so the OAuth callback wait runs to its 3-minute
+// timeout. Detect at call time and route WSL through `cmd.exe` directly.
+// Non-Linux platforms short-circuit before the fs read.
+function isWsl(): boolean {
+    if (process.platform !== 'linux') return false
+    try {
+        return /microsoft/i.test(readFileSync('/proc/version', 'utf8'))
+    } catch {
+        return false
+    }
+}
+
+// SSH sessions, containers, CI runners, headless servers — same failure mode
+// as WSL but with no Windows side to bounce through. With no DISPLAY /
+// WAYLAND_DISPLAY (and no $BROWSER override for Codespaces-style setups
+// that route through a remote bridge), `xdg-open` will either error or
+// no-op, so the spawn is pure noise — skip it and let the URL print do the
+// work.
+function isHeadlessLinux(): boolean {
+    if (process.platform !== 'linux') return false
+    if (process.env.BROWSER) return false
+    return !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY
+}
 
 export type RunOAuthFlowOptions<TAccount extends AuthAccount = AuthAccount> = {
     provider: AuthProvider<TAccount>
@@ -27,8 +56,15 @@ export type RunOAuthFlowOptions<TAccount extends AuthAccount = AuthAccount> = {
     renderError: (message: string) => string
     /** Override the browser opener (tests). When omitted, dynamically imports `open`. */
     openBrowser?: (url: string) => Promise<void>
-    /** Print the authorize URL to stdout as a fallback when the browser can't open it. */
-    onAuthorizeUrl?: (url: string) => void
+    /**
+     * Receives the authorize URL on every login attempt — not only when the
+     * browser launch fails — because the launch can resolve cleanly yet
+     * open no browser (WSL no-op, headless Linux, locked-down hosts).
+     * Treat as a fire-and-forget output channel: a sync hook is awaited,
+     * an async hook is awaited too, and any throw / rejection is swallowed
+     * so a buggy logger can never abort an otherwise-working login.
+     */
+    onAuthorizeUrl?: (url: string) => void | Promise<void>
     /** Callback timeout in ms. Default 3 minutes. */
     timeoutMs?: number
     /** Cancellation signal (Ctrl-C wiring). */
@@ -424,22 +460,36 @@ async function openOrFallback(
     url: string,
     options: RunOAuthFlowOptions<AuthAccount>,
 ): Promise<void> {
-    const opener = options.openBrowser ?? (await loadDefaultOpener())
-    if (opener) {
+    // Surface the URL up-front, before attempting the browser spawn. The
+    // spawn can succeed yet open no browser (WSL without working interop,
+    // headless Linux, locked-down corporate envs, missing `open` peer), and
+    // we have no reliable signal that the user actually landed on the page
+    // — so printing here guarantees a copy-pasteable path on every platform.
+    // The hook is purely an output channel: isolate its failures so a buggy
+    // logger can't abort the login that the user is actually here to do.
+    if (options.onAuthorizeUrl) {
         try {
-            await opener(url)
-            return
+            await options.onAuthorizeUrl(url)
         } catch {
-            // Fall through to the URL print below.
+            // Hook errors don't propagate.
         }
+    } else if (isStdoutTTY()) console.log(`Open this URL in your browser:\n  ${url}`)
+
+    const opener = options.openBrowser ?? (await loadDefaultOpener())
+    if (!opener) return
+    try {
+        await opener(url)
+    } catch {
+        // URL is already surfaced above.
     }
-    // No opener available, or the opener threw. Surface the URL so the user
-    // can finish the flow manually.
-    if (options.onAuthorizeUrl) options.onAuthorizeUrl(url)
-    else if (isStdoutTTY()) console.log(`Open this URL in your browser:\n  ${url}`)
 }
 
 async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | null> {
+    // WSL check must run before the headless check: WSL is `platform === 'linux'`
+    // and often has no DISPLAY, but `cmd.exe` does work and reaches the user's
+    // real Windows browser, so it's worth the spawn.
+    if (isWsl()) return openViaCmdExe
+    if (isHeadlessLinux()) return null
     try {
         const mod = (await import('open')) as { default: (url: string) => Promise<unknown> }
         return async (url) => {
@@ -448,4 +498,24 @@ async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | n
     } catch {
         return null
     }
+}
+
+const execFileAsync = promisify(execFile)
+
+// Two layers of escaping are needed because `cmd.exe /c` is a shell:
+//   1. Wrap the URL in literal double quotes. WSL interop only auto-quotes
+//      args that contain spaces; an OAuth URL (no spaces, plenty of `&`s)
+//      would otherwise be re-parsed by cmd.exe with `&` acting as a
+//      statement separator, so only the prefix up to the first `&` would
+//      reach `start`.
+//   2. Double every `%` to `%%`. cmd.exe expands `%NAME%` even inside
+//      quoted strings; OAuth URLs are full of percent-encoded bytes
+//      (`%3A`, `%2F`, …) and a chance match against a defined env var
+//      (`%PATH%`, `%TEMP%`, …) would silently mangle the URL.
+// `start ""` — the empty title arg is mandatory; otherwise `start` consumes
+// the URL as a window title and never launches a browser. (`execFile`'s
+// no-shell guarantee doesn't apply when the target is itself a shell.)
+async function openViaCmdExe(url: string): Promise<void> {
+    const escaped = url.replaceAll('%', '%%')
+    await execFileAsync('cmd.exe', ['/c', 'start', '""', `"${escaped}"`], { windowsHide: true })
 }
