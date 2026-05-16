@@ -1,4 +1,5 @@
 import type { Command } from 'commander'
+import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type { AuthAccount, TokenStore } from './types.js'
@@ -73,7 +74,19 @@ export function attachLogoutCommand<TAccount extends AuthAccount = AuthAccount>(
         let snapshot: { token: string; account: TAccount } | null = null
         if (needsSnapshot) {
             if (ref !== undefined) {
-                snapshot = await requireSnapshotForRef(options.store, ref)
+                try {
+                    snapshot = await requireSnapshotForRef(options.store, ref)
+                } catch (error) {
+                    // `AUTH_STORE_READ_FAILED` means the ref matched a stored
+                    // record but the token couldn't be read (e.g. keyring
+                    // offline). Local clear can still proceed without the
+                    // token; we just skip the revoke and continue. Any other
+                    // typed failure (notably `ACCOUNT_NOT_FOUND` from a
+                    // genuine miss) propagates as before.
+                    if (!(error instanceof CliError && error.code === 'AUTH_STORE_READ_FAILED')) {
+                        throw error
+                    }
+                }
             } else {
                 try {
                     snapshot = await options.store.active(ref)

@@ -189,4 +189,25 @@ describe('attachTokenViewCommand', () => {
         })
         expect(stdoutSpy).not.toHaveBeenCalled()
     })
+
+    it('surfaces AUTH_STORE_READ_FAILED end-to-end (does not collapse to ACCOUNT_NOT_FOUND)', async () => {
+        const program = new Command()
+        program.exitOverride()
+        const auth = program.command('auth')
+        const store: TokenStore<Account> = {
+            active: vi.fn(async () => {
+                throw new CliError('AUTH_STORE_READ_FAILED', 'keyring offline')
+            }),
+            set: vi.fn(),
+            clear: vi.fn(),
+            list: vi.fn(async () => [{ account, isDefault: true }]),
+            setDefault: vi.fn(),
+        }
+        attachTokenViewCommand<Account>(auth, { store })
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'me']),
+        ).rejects.toMatchObject({ code: 'AUTH_STORE_READ_FAILED' })
+        expect(stdoutSpy).not.toHaveBeenCalled()
+    })
 })

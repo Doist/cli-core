@@ -1,8 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { buildKeyringMap, buildUserRecords } from '../../test-support/keyring-mocks.js'
 import { migrateLegacyAuth } from './migrate.js'
-import { SecureStoreUnavailableError, type SecureStore } from './secure-store.js'
-import type { UserRecord, UserRecordStore } from './types.js'
+import { SecureStoreUnavailableError } from './secure-store.js'
 
 vi.mock('./secure-store.js', async () => {
     const actual = await vi.importActual<typeof import('./secure-store.js')>('./secure-store.js')
@@ -21,95 +21,6 @@ type Account = {
     email: string
 }
 
-function buildKeyringMap(): {
-    create: (args: { serviceName: string; account: string }) => SecureStore
-    slots: Map<
-        string,
-        { secret: string | null; getErr?: unknown; setErr?: unknown; delErr?: unknown }
-    >
-} {
-    const slots = new Map<
-        string,
-        {
-            secret: string | null
-            getErr?: unknown
-            setErr?: unknown
-            delErr?: unknown
-        }
-    >()
-    function getSlot(account: string) {
-        let slot = slots.get(account)
-        if (!slot) {
-            slot = { secret: null }
-            slots.set(account, slot)
-        }
-        return slot
-    }
-    return {
-        slots,
-        create({ account }) {
-            return {
-                async getSecret() {
-                    const slot = getSlot(account)
-                    if (slot.getErr) throw slot.getErr
-                    return slot.secret
-                },
-                async setSecret(secret) {
-                    const slot = getSlot(account)
-                    if (slot.setErr) throw slot.setErr
-                    slot.secret = secret
-                },
-                async deleteSecret() {
-                    const slot = getSlot(account)
-                    if (slot.delErr) throw slot.delErr
-                    const had = slot.secret !== null
-                    slot.secret = null
-                    return had
-                },
-            }
-        },
-    }
-}
-
-function buildUserRecords(): {
-    store: UserRecordStore<Account>
-    state: {
-        records: Map<string, UserRecord<Account>>
-        defaultId: string | null
-    }
-    upsertSpy: ReturnType<typeof vi.fn>
-} {
-    const state = {
-        records: new Map<string, UserRecord<Account>>(),
-        defaultId: null as string | null,
-    }
-    const upsertSpy = vi.fn(async (record: UserRecord<Account>) => {
-        state.records.set(record.id, record)
-    })
-    const store: UserRecordStore<Account> = {
-        async list() {
-            return [...state.records.values()]
-        },
-        async getById(id) {
-            return state.records.get(id) ?? null
-        },
-        upsert: upsertSpy,
-        async remove(id) {
-            state.records.delete(id)
-        },
-        async getDefaultId() {
-            return state.defaultId
-        },
-        async setDefaultId(id) {
-            state.defaultId = id
-        },
-        describeLocation() {
-            return '/tmp/fake/config.json'
-        },
-    }
-    return { store, state, upsertSpy }
-}
-
 const SERVICE = 'cli-core-test'
 const LEGACY = 'api-token'
 
@@ -119,10 +30,8 @@ describe('migrateLegacyAuth', () => {
     })
 
     it('returns already-migrated when user records already exist', async () => {
-        mockedCreateSecureStore.mockReturnValue(
-            buildKeyringMap().create({ serviceName: SERVICE, account: LEGACY }),
-        )
-        const { store: userRecords, state } = buildUserRecords()
+        // No keyring mock needed — `migrateLegacyAuth` returns before ever calling `createSecureStore`.
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.records.set('1', { id: '1', account: { id: '1', email: 'a@b' } })
 
         const result = await migrateLegacyAuth<Account>({
@@ -135,12 +44,13 @@ describe('migrateLegacyAuth', () => {
         })
 
         expect(result.status).toBe('already-migrated')
+        expect(mockedCreateSecureStore).not.toHaveBeenCalled()
     })
 
     it('returns no-legacy-state when neither slot has a token', async () => {
         const km = buildKeyringMap()
         mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords } = buildUserRecords()
+        const { store: userRecords } = buildUserRecords<Account>()
 
         const result = await migrateLegacyAuth<Account>({
             serviceName: SERVICE,
@@ -158,7 +68,7 @@ describe('migrateLegacyAuth', () => {
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })
         mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, state, upsertSpy } = buildUserRecords()
+        const { store: userRecords, state, upsertSpy } = buildUserRecords<Account>()
         const cleanup = vi.fn(async () => undefined)
 
         const result = await migrateLegacyAuth<Account>({
@@ -187,7 +97,7 @@ describe('migrateLegacyAuth', () => {
     it('falls back to loadLegacyPlaintextToken when the legacy keyring slot is empty', async () => {
         const km = buildKeyringMap()
         mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
 
         const result = await migrateLegacyAuth<Account>({
             serviceName: SERVICE,
@@ -218,7 +128,7 @@ describe('migrateLegacyAuth', () => {
             setErr: new SecureStoreUnavailableError('no dbus'),
         })
         mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
 
         const result = await migrateLegacyAuth<Account>({
             serviceName: SERVICE,
@@ -234,34 +144,11 @@ describe('migrateLegacyAuth', () => {
         expect(state.defaultId).toBe('7')
     })
 
-    it('stores fallbackToken on the record when the per-user keyring write fails', async () => {
-        const km = buildKeyringMap()
-        km.slots.set(LEGACY, { secret: 'legacy_tok' })
-        km.slots.set('user-99', {
-            secret: null,
-            setErr: new SecureStoreUnavailableError('offline'),
-        })
-        mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, state } = buildUserRecords()
-
-        const result = await migrateLegacyAuth<Account>({
-            serviceName: SERVICE,
-            legacyAccount: LEGACY,
-            userRecords,
-            loadLegacyPlaintextToken: async () => null,
-            identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
-            silent: true,
-        })
-
-        expect(result.status).toBe('migrated')
-        expect(state.records.get('99')?.fallbackToken).toBe('legacy_tok')
-    })
-
     it('returns skipped when identifyAccount throws', async () => {
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })
         mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
 
         const result = await migrateLegacyAuth<Account>({
             serviceName: SERVICE,
@@ -285,7 +172,7 @@ describe('migrateLegacyAuth', () => {
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })
         mockedCreateSecureStore.mockImplementation(km.create)
-        const { store: userRecords, upsertSpy } = buildUserRecords()
+        const { store: userRecords, upsertSpy } = buildUserRecords<Account>()
         upsertSpy.mockRejectedValueOnce(new Error('disk full'))
 
         const result = await migrateLegacyAuth<Account>({
@@ -299,5 +186,68 @@ describe('migrateLegacyAuth', () => {
 
         expect(result.status).toBe('skipped')
         expect(km.slots.get('user-99')?.secret).toBeNull()
+    })
+})
+
+describe('migrateLegacyAuth — stderr privacy', () => {
+    let consoleError: ReturnType<typeof vi.spyOn>
+    beforeEach(() => {
+        mockedCreateSecureStore.mockReset()
+        consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    })
+    afterEach(() => {
+        consoleError.mockRestore()
+    })
+
+    it('the success line carries only account.id (no label/email)', async () => {
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        mockedCreateSecureStore.mockImplementation(km.create)
+        const { store: userRecords } = buildUserRecords<Account>()
+
+        await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords,
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => ({
+                id: 'user-99',
+                label: 'sensitive@email.example',
+                email: 'sensitive@email.example',
+            }),
+            silent: false,
+            logPrefix: 'td',
+        })
+
+        const lines = consoleError.mock.calls.flat().join('\n')
+        expect(lines).toContain('user-99')
+        expect(lines).not.toContain('sensitive@email.example')
+    })
+
+    it('the skip line is generic and does not echo the raw exception text', async () => {
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        mockedCreateSecureStore.mockImplementation(km.create)
+        const { store: userRecords } = buildUserRecords<Account>()
+
+        const result = await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords,
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => {
+                throw new Error('email leak: sensitive@email.example at /Users/me/.config/x')
+            },
+            silent: false,
+            logPrefix: 'td',
+        })
+
+        expect(result.status).toBe('skipped')
+        const lines = consoleError.mock.calls.flat().join('\n')
+        expect(lines).toContain('could not identify user')
+        expect(lines).not.toContain('sensitive@email.example')
+        expect(lines).not.toContain('/Users/me/.config/x')
+        // The raw detail is preserved on the result for in-process callers.
+        expect(result.reason).toContain('sensitive@email.example')
     })
 })

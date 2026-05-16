@@ -364,4 +364,56 @@ describe('attachLogoutCommand', () => {
         expect(built.clearSpy).not.toHaveBeenCalled()
         expect(logSpy).not.toHaveBeenCalled()
     })
+
+    it('proceeds with clear(ref) when active(ref) throws AUTH_STORE_READ_FAILED', async () => {
+        // A matching record exists but the keyring is offline, so the
+        // pre-flight can't return a snapshot. `logout --user me` should
+        // still clear the record (it doesn't need the token); only the
+        // optional `revokeToken` is skipped because there's no token to
+        // send to the server.
+        const activeSpy = vi.fn(async () => {
+            throw new CliError('AUTH_STORE_READ_FAILED', 'keyring offline')
+        })
+        const clearSpy = vi.fn(async () => undefined)
+        const revokeSpy = vi.fn()
+        const store: TokenStore<Account> = {
+            active: activeSpy,
+            set: vi.fn(),
+            clear: clearSpy,
+            list: vi.fn(async () => [{ account, isDefault: true }]),
+            setDefault: vi.fn(),
+        }
+        const { program, onCleared } = build({ revokeToken: revokeSpy }, store)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me'])
+
+        expect(clearSpy).toHaveBeenCalledWith('me')
+        expect(revokeSpy).not.toHaveBeenCalled()
+        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
+        expect(onCleared).toHaveBeenCalledWith({
+            account: null,
+            view: { json: false, ndjson: false },
+            flags: {},
+        })
+    })
+
+    it('still propagates non-read errors from the snapshot pre-flight', async () => {
+        const activeSpy = vi.fn(async () => {
+            throw new CliError('AUTH_STORE_WRITE_FAILED', 'something else')
+        })
+        const clearSpy = vi.fn(async () => undefined)
+        const store: TokenStore<Account> = {
+            active: activeSpy,
+            set: vi.fn(),
+            clear: clearSpy,
+            list: vi.fn(async () => []),
+            setDefault: vi.fn(),
+        }
+        const { program } = build({ onCleared: undefined }, store)
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me']),
+        ).rejects.toMatchObject({ code: 'AUTH_STORE_WRITE_FAILED' })
+        expect(clearSpy).not.toHaveBeenCalled()
+    })
 })

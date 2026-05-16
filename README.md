@@ -302,11 +302,8 @@ const userRecords: UserRecordStore<Account> = {
     async list() {
         /* read from config */
     },
-    async getById(id) {
-        /* … */
-    },
     async upsert(record) {
-        /* … */
+        /* replace, do not merge — see UserRecordStore docs */
     },
     async remove(id) {
         /* … */

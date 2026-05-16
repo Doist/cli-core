@@ -18,9 +18,12 @@ export type UserRecord<TAccount extends AuthAccount> = {
     account: TAccount
     /**
      * Plaintext token, present only when the keyring was unavailable at write
-     * time. cli-core prefers a keyring read over this field; consumers should
-     * surface its presence as a security-relevant fact (it is the same
-     * material that would otherwise live in the OS credential manager).
+     * time. The runtime reads it in preference to the keyring slot, so a
+     * stale fallback would mask a fresh keyring-backed write — consumers
+     * implementing `upsert` as replace-not-merge (per the contract below)
+     * guarantees the field is cleared on every successful keyring write.
+     * Surface its presence as security-relevant: it is the same material
+     * that would otherwise live in the OS credential manager.
      */
     fallbackToken?: string
 }
@@ -33,7 +36,6 @@ export type UserRecord<TAccount extends AuthAccount> = {
  */
 export type UserRecordStore<TAccount extends AuthAccount> = {
     list(): Promise<UserRecord<TAccount>[]>
-    getById(id: string): Promise<UserRecord<TAccount> | null>
     /**
      * **Replace**, do not merge. The persisted record must equal `record` field
      * for field — an absent `fallbackToken` means "no plaintext token", and a

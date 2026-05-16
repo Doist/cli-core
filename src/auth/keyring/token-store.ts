@@ -1,6 +1,7 @@
 import { CliError } from '../../errors.js'
 import type { AccountRef, AuthAccount, TokenStore } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
+import { writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
     DEFAULT_ACCOUNT_FOR_USER,
@@ -47,10 +48,16 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
  * without D-Bus, missing native binary, locked Keychain, …) so the CLI keeps
  * working at the cost of a visible warning.
  *
- * Write order is deliberate: keyring first, then `userRecords.upsert`. If the
- * upsert fails after a successful keyring write, the keyring entry is rolled
- * back via `deleteSecret()` to avoid orphan credentials for a user that
- * cli-core never managed to record.
+ * Read order in `active()` is `fallbackToken` first, then the keyring. That
+ * matches the write semantics in `writeRecordWithKeyringFallback`: when the
+ * keyring is online the record is written with no `fallbackToken`, so the
+ * keyring read is the only path. When the keyring is offline the token is
+ * parked on the record and must be reachable on every subsequent read.
+ *
+ * Write order is keyring first, then `userRecords.upsert`. If the upsert
+ * fails after a successful keyring write, the keyring entry is rolled back
+ * via `deleteSecret()` to avoid orphan credentials for a user that cli-core
+ * never managed to record.
  *
  * Clear order is the inverse: record removal first (the source of truth that
  * the rest of the CLI reads), then keyring delete. A keyring delete failure
@@ -72,12 +79,19 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     }
 
     type Snapshot = { records: UserRecord<TAccount>[]; defaultId: string | null }
-    async function readSnapshot(): Promise<Snapshot> {
-        const [records, defaultId] = await Promise.all([
-            userRecords.list(),
-            userRecords.getDefaultId(),
-        ])
-        return { records, defaultId }
+
+    // `getDefaultId` is only needed when no ref is supplied — every
+    // authenticated command sits on `active()`, so skipping the extra config
+    // read on the `--user <ref>` path matters for latency.
+    async function readSnapshot(needsDefault: boolean): Promise<Snapshot> {
+        if (needsDefault) {
+            const [records, defaultId] = await Promise.all([
+                userRecords.list(),
+                userRecords.getDefaultId(),
+            ])
+            return { records, defaultId }
+        }
+        return { records: await userRecords.list(), defaultId: null }
     }
 
     function findByRef(snapshot: Snapshot, ref: AccountRef): UserRecord<TAccount> | null {
@@ -92,9 +106,16 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         return snapshot.records.length === 1 ? snapshot.records[0] : null
     }
 
+    function fallbackResult(action: string): TokenStorageResult {
+        return {
+            storage: 'config-file',
+            warning: buildFallbackWarning(action, userRecords.describeLocation()),
+        }
+    }
+
     return {
         async active(ref) {
-            const snapshot = await readSnapshot()
+            const snapshot = await readSnapshot(ref === undefined)
             const record = ref === undefined ? resolveDefault(snapshot) : findByRef(snapshot, ref)
             if (!record) return null
 
@@ -113,6 +134,9 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 // Surface a typed failure instead of returning `null`, which
                 // would otherwise be indistinguishable from "no stored
                 // account" and trigger `ACCOUNT_NOT_FOUND` on `--user <ref>`.
+                // `attachLogoutCommand` catches this specific code so an
+                // explicit `logout --user <ref>` can still clear the matching
+                // record without needing the unreadable token.
                 if (error instanceof SecureStoreUnavailableError) {
                     throw new CliError(
                         'AUTH_STORE_READ_FAILED',
@@ -124,37 +148,13 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async set(account, token) {
-            const trimmed = token.trim()
-            const secureStore = secureStoreFor(account.id)
-
-            let storedSecurely = false
-            try {
-                await secureStore.setSecret(trimmed)
-                storedSecurely = true
-            } catch (error) {
-                if (!(error instanceof SecureStoreUnavailableError)) throw error
-            }
-
-            const record: UserRecord<TAccount> = storedSecurely
-                ? { id: account.id, account }
-                : { id: account.id, account, fallbackToken: trimmed }
-
-            try {
-                await userRecords.upsert(record)
-            } catch (error) {
-                // The user record is the source of truth. If we can't write it,
-                // a stranded keyring entry would leak credentials for an account
-                // cli-core never managed to register. Best-effort rollback, then
-                // re-raise the original error so the caller sees the real cause.
-                if (storedSecurely) {
-                    try {
-                        await secureStore.deleteSecret()
-                    } catch {
-                        // ignore — the user record failure is what matters
-                    }
-                }
-                throw error
-            }
+            const { storedSecurely } = await writeRecordWithKeyringFallback({
+                serviceName,
+                accountForUser,
+                userRecords,
+                account,
+                token,
+            })
 
             // Best-effort default promotion: the record is already persisted,
             // so a failure here must not turn into `AUTH_STORE_WRITE_FAILED`
@@ -170,17 +170,11 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             lastStorageResult = storedSecurely
                 ? { storage: 'secure-store' }
-                : {
-                      storage: 'config-file',
-                      warning: buildFallbackWarning(
-                          'token saved as plaintext in',
-                          userRecords.describeLocation(),
-                      ),
-                  }
+                : fallbackResult('token saved as plaintext in')
         },
 
         async clear(ref) {
-            const snapshot = await readSnapshot()
+            const snapshot = await readSnapshot(ref === undefined)
             const record = ref === undefined ? resolveDefault(snapshot) : findByRef(snapshot, ref)
             if (!record) {
                 lastClearResult = undefined
@@ -189,9 +183,19 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             await userRecords.remove(record.id)
 
-            if (snapshot.defaultId === record.id) {
-                await userRecords.setDefaultId(null)
+            // Default un-pinning is best-effort: a failure here must not
+            // skip the keyring delete below, otherwise we leave an
+            // unreachable orphan secret behind for the just-removed record.
+            const wasDefault = await readWasDefault(userRecords, record.id, snapshot)
+            if (wasDefault) {
+                try {
+                    await userRecords.setDefaultId(null)
+                } catch {
+                    // best-effort
+                }
             }
+
+            const fallbackClear = fallbackResult('local auth state cleared in')
 
             // Always attempt the keyring delete. Even when the record carried
             // a `fallbackToken`, an older keyring entry may still be parked
@@ -201,32 +205,19 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             try {
                 await secureStoreFor(record.id).deleteSecret()
                 lastClearResult =
-                    record.fallbackToken !== undefined
-                        ? {
-                              storage: 'config-file',
-                              warning: buildFallbackWarning(
-                                  'local auth state cleared in',
-                                  userRecords.describeLocation(),
-                              ),
-                          }
-                        : { storage: 'secure-store' }
+                    record.fallbackToken !== undefined ? fallbackClear : { storage: 'secure-store' }
             } catch (error) {
                 if (!(error instanceof SecureStoreUnavailableError)) throw error
-                lastClearResult = {
-                    storage: 'config-file',
-                    warning: buildFallbackWarning(
-                        'local auth state cleared in',
-                        userRecords.describeLocation(),
-                    ),
-                }
+                lastClearResult = fallbackClear
             }
         },
 
         async list() {
-            const { records, defaultId } = await readSnapshot()
-            return records.map((record) => ({
+            const snapshot = await readSnapshot(true)
+            const implicitDefault = resolveDefault(snapshot)
+            return snapshot.records.map((record) => ({
                 account: record.account,
-                isDefault: record.id === defaultId,
+                isDefault: record.id === implicitDefault?.id,
             }))
         },
 
@@ -247,6 +238,17 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             return lastClearResult
         },
     }
+}
+
+async function readWasDefault<TAccount extends AuthAccount>(
+    userRecords: UserRecordStore<TAccount>,
+    id: string,
+    snapshot: { defaultId: string | null },
+): Promise<boolean> {
+    // `clear(ref)` skipped the default read in `readSnapshot`, so check now.
+    if (snapshot.defaultId !== null) return snapshot.defaultId === id
+    const current = await userRecords.getDefaultId()
+    return current === id
 }
 
 function buildFallbackWarning(action: string, location: string): string {

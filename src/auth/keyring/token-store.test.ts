@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { SecureStoreUnavailableError, type SecureStore } from './secure-store.js'
+import {
+    buildKeyringMap,
+    buildSingleSlot,
+    buildUserRecords,
+} from '../../test-support/keyring-mocks.js'
+import { SecureStoreUnavailableError } from './secure-store.js'
 import { createKeyringTokenStore } from './token-store.js'
-import type { UserRecord, UserRecordStore } from './types.js'
 
 vi.mock('./secure-store.js', async () => {
     const actual = await vi.importActual<typeof import('./secure-store.js')>('./secure-store.js')
@@ -21,130 +25,6 @@ type Account = {
     email: string
 }
 
-type Slot = {
-    secret: string | null
-    getErr?: unknown
-    setErr?: unknown
-    delErr?: unknown
-}
-
-function buildKeyringMap(): {
-    create: (args: { serviceName: string; account: string }) => SecureStore
-    slots: Map<string, Slot>
-    deleteCalls: Map<string, number>
-} {
-    const slots = new Map<string, Slot>()
-    const deleteCalls = new Map<string, number>()
-    function getSlot(account: string): Slot {
-        let slot = slots.get(account)
-        if (!slot) {
-            slot = { secret: null }
-            slots.set(account, slot)
-        }
-        return slot
-    }
-    return {
-        slots,
-        deleteCalls,
-        create({ account }) {
-            return {
-                async getSecret() {
-                    const slot = getSlot(account)
-                    if (slot.getErr) throw slot.getErr
-                    return slot.secret
-                },
-                async setSecret(secret) {
-                    const slot = getSlot(account)
-                    if (slot.setErr) throw slot.setErr
-                    slot.secret = secret
-                },
-                async deleteSecret() {
-                    deleteCalls.set(account, (deleteCalls.get(account) ?? 0) + 1)
-                    const slot = getSlot(account)
-                    if (slot.delErr) throw slot.delErr
-                    const had = slot.secret !== null
-                    slot.secret = null
-                    return had
-                },
-            }
-        },
-    }
-}
-
-function buildSingleSlot(initial: { secret?: string | null } = {}): SecureStore & {
-    getSpy: ReturnType<typeof vi.fn>
-    setSpy: ReturnType<typeof vi.fn>
-    deleteSpy: ReturnType<typeof vi.fn>
-} {
-    const state = { secret: initial.secret ?? null }
-    const getSpy = vi.fn(async () => state.secret)
-    const setSpy = vi.fn(async (secret: string) => {
-        state.secret = secret
-    })
-    const deleteSpy = vi.fn(async () => {
-        const had = state.secret !== null
-        state.secret = null
-        return had
-    })
-    return {
-        getSpy,
-        setSpy,
-        deleteSpy,
-        async getSecret() {
-            return getSpy()
-        },
-        async setSecret(secret: string) {
-            return setSpy(secret)
-        },
-        async deleteSecret() {
-            return deleteSpy()
-        },
-    }
-}
-
-function buildUserRecords(): {
-    store: UserRecordStore<Account>
-    state: {
-        records: Map<string, UserRecord<Account>>
-        defaultId: string | null
-    }
-    upsertSpy: ReturnType<typeof vi.fn>
-    removeSpy: ReturnType<typeof vi.fn>
-    setDefaultSpy: ReturnType<typeof vi.fn>
-} {
-    const state = {
-        records: new Map<string, UserRecord<Account>>(),
-        defaultId: null as string | null,
-    }
-    const upsertSpy = vi.fn(async (record: UserRecord<Account>) => {
-        state.records.set(record.id, record)
-    })
-    const removeSpy = vi.fn(async (id: string) => {
-        state.records.delete(id)
-    })
-    const setDefaultSpy = vi.fn(async (id: string | null) => {
-        state.defaultId = id
-    })
-    const store: UserRecordStore<Account> = {
-        async list() {
-            return [...state.records.values()]
-        },
-        async getById(id) {
-            return state.records.get(id) ?? null
-        },
-        upsert: upsertSpy,
-        remove: removeSpy,
-        async getDefaultId() {
-            return state.defaultId
-        },
-        setDefaultId: setDefaultSpy,
-        describeLocation() {
-            return '/tmp/fake/config.json'
-        },
-    }
-    return { store, state, upsertSpy, removeSpy, setDefaultSpy }
-}
-
 const SERVICE = 'cli-core-test'
 const account: Account = { id: '42', label: 'me', email: 'a@b.c' }
 
@@ -156,7 +36,7 @@ describe('createKeyringTokenStore', () => {
     it('round-trips set → active → clear when the keyring is online', async () => {
         const keyring = buildSingleSlot()
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state, upsertSpy } = buildUserRecords()
+        const { store: userRecords, state, upsertSpy } = buildUserRecords<Account>()
 
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
 
@@ -180,7 +60,7 @@ describe('createKeyringTokenStore', () => {
         const keyring = buildSingleSlot()
         keyring.setSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no dbus'))
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
 
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
 
@@ -202,7 +82,7 @@ describe('createKeyringTokenStore', () => {
     it('rolls back the keyring write when the user record upsert fails', async () => {
         const keyring = buildSingleSlot()
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, upsertSpy } = buildUserRecords()
+        const { store: userRecords, upsertSpy } = buildUserRecords<Account>()
         upsertSpy.mockRejectedValueOnce(new Error('disk full'))
 
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
@@ -215,7 +95,7 @@ describe('createKeyringTokenStore', () => {
     it('set() still succeeds when the best-effort default promotion fails', async () => {
         const keyring = buildSingleSlot()
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state, setDefaultSpy } = buildUserRecords()
+        const { store: userRecords, state, setDefaultSpy } = buildUserRecords<Account>()
         setDefaultSpy.mockRejectedValueOnce(new Error('default-write blew up'))
 
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
@@ -230,7 +110,7 @@ describe('createKeyringTokenStore', () => {
         const keyring = buildSingleSlot({ secret: 'tok' })
         keyring.getSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('locked'))
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.records.set('42', { id: '42', account })
         state.defaultId = '42'
 
@@ -240,18 +120,17 @@ describe('createKeyringTokenStore', () => {
     })
 
     it('returns null from active() when no records exist', async () => {
-        mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-        const { store: userRecords } = buildUserRecords()
-
+        const { store: userRecords } = buildUserRecords<Account>()
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
 
         await expect(store.active()).resolves.toBeNull()
+        expect(mockedCreateSecureStore).not.toHaveBeenCalled()
     })
 
     it('picks the lone user when no default is set', async () => {
         const keyring = buildSingleSlot({ secret: 'tok' })
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.records.set('42', { id: '42', account })
 
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
@@ -260,8 +139,7 @@ describe('createKeyringTokenStore', () => {
     })
 
     it('returns null when multiple users exist and no default is set', async () => {
-        mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.records.set('1', { id: '1', account: { ...account, id: '1' } })
         state.records.set('2', { id: '2', account: { ...account, id: '2' } })
 
@@ -273,7 +151,7 @@ describe('createKeyringTokenStore', () => {
     it('does not overwrite an existing default when a second user is added', async () => {
         const keyring = buildSingleSlot()
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.defaultId = '1'
         state.records.set('1', { id: '1', account: { ...account, id: '1' } })
 
@@ -285,19 +163,18 @@ describe('createKeyringTokenStore', () => {
     })
 
     it('clear() is a no-op when no record exists', async () => {
-        mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-        const { store: userRecords } = buildUserRecords()
-
+        const { store: userRecords } = buildUserRecords<Account>()
         const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
 
         await expect(store.clear()).resolves.toBeUndefined()
         expect(store.getLastClearResult()).toBeUndefined()
+        expect(mockedCreateSecureStore).not.toHaveBeenCalled()
     })
 
     it('clear() still calls the keyring delete when a fallbackToken is present (orphan cleanup)', async () => {
         const keyring = buildSingleSlot({ secret: 'orphan_from_earlier_write' })
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.records.set('42', { id: '42', account, fallbackToken: 'tok_plain' })
         state.defaultId = '42'
 
@@ -318,7 +195,7 @@ describe('createKeyringTokenStore', () => {
         const keyring = buildSingleSlot({ secret: 'tok' })
         keyring.deleteSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('offline'))
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords, state } = buildUserRecords()
+        const { store: userRecords, state } = buildUserRecords<Account>()
         state.records.set('42', { id: '42', account })
         state.defaultId = '42'
 
@@ -330,10 +207,29 @@ describe('createKeyringTokenStore', () => {
         expect(store.getLastClearResult()).toMatchObject({ storage: 'config-file' })
     })
 
+    it('clear() still deletes the keyring slot even when setDefaultId(null) throws', async () => {
+        const keyring = buildSingleSlot({ secret: 'tok' })
+        mockedCreateSecureStore.mockReturnValue(keyring)
+        const { store: userRecords, state, setDefaultSpy } = buildUserRecords<Account>()
+        state.records.set('42', { id: '42', account })
+        state.defaultId = '42'
+        setDefaultSpy.mockRejectedValueOnce(new Error('disk full'))
+
+        const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
+
+        await store.clear()
+
+        // Default pointer write blew up, but the keyring entry was still
+        // cleaned up — otherwise the record's old credential would become
+        // an unreachable orphan.
+        expect(keyring.deleteSpy).toHaveBeenCalledTimes(1)
+        expect(state.records.size).toBe(0)
+    })
+
     it('uses a custom accountForUser slug when provided', async () => {
         const keyring = buildSingleSlot()
         mockedCreateSecureStore.mockReturnValue(keyring)
-        const { store: userRecords } = buildUserRecords()
+        const { store: userRecords } = buildUserRecords<Account>()
 
         const store = createKeyringTokenStore<Account>({
             serviceName: SERVICE,
@@ -349,11 +245,24 @@ describe('createKeyringTokenStore', () => {
         })
     })
 
+    it('skips getDefaultId when an explicit ref is supplied (hot path)', async () => {
+        const keyring = buildSingleSlot({ secret: 'tok' })
+        mockedCreateSecureStore.mockReturnValue(keyring)
+        const { store: userRecords, state } = buildUserRecords<Account>()
+        state.records.set('42', { id: '42', account })
+        const getDefaultSpy = vi.spyOn(userRecords, 'getDefaultId')
+
+        const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
+
+        await store.active('42')
+        expect(getDefaultSpy).not.toHaveBeenCalled()
+    })
+
     describe('AccountRef support (keyed per-user slots)', () => {
         function buildMultiUser() {
             const km = buildKeyringMap()
             mockedCreateSecureStore.mockImplementation(km.create)
-            const { store: userRecords, state, removeSpy } = buildUserRecords()
+            const { store: userRecords, state, removeSpy } = buildUserRecords<Account>()
             state.records.set('1', { id: '1', account: { id: '1', label: 'alice', email: 'a@b' } })
             state.records.set('2', {
                 id: '2',
@@ -415,7 +324,7 @@ describe('createKeyringTokenStore', () => {
             expect(state.defaultId).toBeNull()
             // user-1's slot was cleared; user-2's slot was never touched.
             expect(km.slots.get('user-1')?.secret).toBeNull()
-            expect(km.deleteCalls.get('user-1') ?? 0).toBeGreaterThan(0)
+            expect((km.deleteCalls.get('user-1') ?? 0) > 0).toBe(true)
             expect(km.deleteCalls.has('user-2')).toBe(false)
         })
 
@@ -431,7 +340,7 @@ describe('createKeyringTokenStore', () => {
         it('honours a custom matchAccount predicate', async () => {
             const km = buildKeyringMap()
             mockedCreateSecureStore.mockImplementation(km.create)
-            const { store: userRecords, state } = buildUserRecords()
+            const { store: userRecords, state } = buildUserRecords<Account>()
             state.records.set('1', { id: '1', account: { id: '1', email: 'Alice@x.io' } })
             km.slots.set('user-1', { secret: 'tok' })
 
@@ -449,8 +358,7 @@ describe('createKeyringTokenStore', () => {
 
     describe('list() + setDefault()', () => {
         it('list() returns every account with the default marker', async () => {
-            mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-            const { store: userRecords, state } = buildUserRecords()
+            const { store: userRecords, state } = buildUserRecords<Account>()
             state.records.set('1', { id: '1', account: { id: '1', email: 'a@b' } })
             state.records.set('2', { id: '2', account: { id: '2', email: 'c@d' } })
             state.defaultId = '2'
@@ -463,18 +371,28 @@ describe('createKeyringTokenStore', () => {
             expect(all.find((entry) => entry.account.id === '1')?.isDefault).toBe(false)
         })
 
-        it('list() returns an empty array when nothing is stored', async () => {
-            mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-            const { store: userRecords } = buildUserRecords()
+        it('list() marks a single record as default even when no defaultId is pinned (matches active())', async () => {
+            const { store: userRecords, state } = buildUserRecords<Account>()
+            state.records.set('42', { id: '42', account })
+            // No defaultId set — active() treats the lone record as the
+            // implicit default, so list() must too.
 
             const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
 
+            const all = await store.list()
+            expect(all).toEqual([{ account, isDefault: true }])
+        })
+
+        it('list() returns an empty array when nothing is stored', async () => {
+            const { store: userRecords } = buildUserRecords<Account>()
+            const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })
+
             await expect(store.list()).resolves.toEqual([])
+            expect(mockedCreateSecureStore).not.toHaveBeenCalled()
         })
 
         it('setDefault(ref) marks the matching account as default', async () => {
-            mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-            const { store: userRecords, state } = buildUserRecords()
+            const { store: userRecords, state } = buildUserRecords<Account>()
             state.records.set('1', { id: '1', account: { id: '1', label: 'a', email: 'a@b' } })
             state.records.set('2', { id: '2', account: { id: '2', label: 'b', email: 'c@d' } })
             state.defaultId = '1'
@@ -483,11 +401,11 @@ describe('createKeyringTokenStore', () => {
 
             await store.setDefault('b')
             expect(state.defaultId).toBe('2')
+            expect(mockedCreateSecureStore).not.toHaveBeenCalled()
         })
 
         it('setDefault(ref) throws ACCOUNT_NOT_FOUND on a miss', async () => {
-            mockedCreateSecureStore.mockReturnValue(buildSingleSlot())
-            const { store: userRecords, state } = buildUserRecords()
+            const { store: userRecords, state } = buildUserRecords<Account>()
             state.records.set('1', { id: '1', account })
 
             const store = createKeyringTokenStore<Account>({ serviceName: SERVICE, userRecords })

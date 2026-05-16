@@ -246,4 +246,21 @@ describe('attachStatusCommand', () => {
             code: 'ACCOUNT_NOT_FOUND',
         })
     })
+
+    it('surfaces AUTH_STORE_READ_FAILED end-to-end (does not collapse to ACCOUNT_NOT_FOUND)', async () => {
+        const store: TokenStore<Account> = {
+            active: vi.fn(async () => {
+                throw new CliError('AUTH_STORE_READ_FAILED', 'keyring offline')
+            }),
+            set: vi.fn(),
+            clear: vi.fn(),
+            list: vi.fn(async () => [{ account, isDefault: true }]),
+            setDefault: vi.fn(),
+        }
+        const { program } = build({}, store)
+
+        await expect(
+            program.parseAsync(['node', 'cli', 'auth', 'status', '--user', 'me']),
+        ).rejects.toMatchObject({ code: 'AUTH_STORE_READ_FAILED' })
+    })
 })

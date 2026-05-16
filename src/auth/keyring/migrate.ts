@@ -1,11 +1,12 @@
 import { getErrorMessage } from '../../errors.js'
 import type { AuthAccount } from '../types.js'
+import { writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
     DEFAULT_ACCOUNT_FOR_USER,
     SecureStoreUnavailableError,
 } from './secure-store.js'
-import type { UserRecord, UserRecordStore } from './types.js'
+import type { UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
     serviceName: string
@@ -40,8 +41,26 @@ export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
 
 export type MigrateAuthResult<TAccount extends AuthAccount = AuthAccount> = {
     status: 'already-migrated' | 'no-legacy-state' | 'migrated' | 'skipped'
+    /**
+     * Internal-only failure detail for the call site (e.g. doctor commands).
+     * **Not** emitted to stderr — see `skipped()` for why.
+     */
     reason?: string
     migratedAccount?: TAccount
+}
+
+/** Internal `SkipReason` codes — kept generic for stderr so consumer-supplied error text can't leak PII to logs. */
+type SkipReason =
+    | 'identify-failed'
+    | 'keyring-write-failed'
+    | 'user-record-write-failed'
+    | 'cleanup-failed'
+
+const SKIP_REASON_MESSAGES: Record<SkipReason, string> = {
+    'identify-failed': 'could not identify user',
+    'keyring-write-failed': 'failed to write user-scoped credential',
+    'user-record-write-failed': 'failed to update user records',
+    'cleanup-failed': 'failed to clean up legacy state',
 }
 
 /**
@@ -95,53 +114,38 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     try {
         account = await identifyAccount(legacyToken)
     } catch (error) {
-        return skipped(silent, logPrefix, `could not identify user (${getErrorMessage(error)})`)
+        return skipped(silent, logPrefix, 'identify-failed', getErrorMessage(error))
     }
 
-    const perUserStore = createSecureStore({
-        serviceName,
-        account: accountForUser(account.id),
-    })
-
-    let storedSecurely = false
     try {
-        await perUserStore.setSecret(legacyToken)
-        storedSecurely = true
+        await writeRecordWithKeyringFallback({
+            serviceName,
+            accountForUser,
+            userRecords,
+            account,
+            token: legacyToken,
+        })
     } catch (error) {
-        if (!(error instanceof SecureStoreUnavailableError)) {
-            return skipped(
-                silent,
-                logPrefix,
-                `failed to write user-scoped credential (${getErrorMessage(error)})`,
-            )
-        }
-    }
-
-    const record: UserRecord<TAccount> = storedSecurely
-        ? { id: account.id, account }
-        : { id: account.id, account, fallbackToken: legacyToken }
-
-    try {
-        await userRecords.upsert(record)
-    } catch (error) {
-        if (storedSecurely) {
-            try {
-                await perUserStore.deleteSecret()
-            } catch {
-                // best-effort rollback
-            }
-        }
+        // `writeRecordWithKeyringFallback` only rethrows non-keyring errors
+        // (i.e. `userRecords.upsert` failures or unexpected keyring errors).
+        // SecureStoreUnavailableError is internally caught by the helper and
+        // never propagates here.
         return skipped(
             silent,
             logPrefix,
-            `failed to update user records (${getErrorMessage(error)})`,
+            error instanceof SecureStoreUnavailableError
+                ? 'keyring-write-failed'
+                : 'user-record-write-failed',
+            getErrorMessage(error),
         )
     }
 
+    // Default promotion is best-effort — the user record is durable and
+    // `<cli> account use` can fix things up later.
     try {
         await userRecords.setDefaultId(account.id)
     } catch {
-        // non-fatal — the record is written; setting a default can be retried later.
+        // non-fatal
     }
 
     try {
@@ -191,13 +195,24 @@ async function readLegacyToken(opts: {
     return null
 }
 
+/**
+ * Emit the migration skip line. The stderr text is a fixed phrase keyed off
+ * `SkipReason` so consumer-supplied callbacks (`identifyAccount`, the
+ * `UserRecordStore`, …) can't leak emails, paths, or auth diagnostics into
+ * logs. The raw error message is still attached to the returned
+ * `MigrateAuthResult.reason` for in-process callers that need it (doctor
+ * commands, tests).
+ */
 function skipped<TAccount extends AuthAccount>(
     silent: boolean | undefined,
     logPrefix: string,
-    reason: string,
+    reasonCode: SkipReason,
+    detail: string,
 ): MigrateAuthResult<TAccount> {
     if (!silent) {
-        console.error(`${logPrefix}: skipped legacy auth migration — ${reason}.`)
+        console.error(
+            `${logPrefix}: skipped legacy auth migration — ${SKIP_REASON_MESSAGES[reasonCode]}.`,
+        )
     }
-    return { status: 'skipped', reason }
+    return { status: 'skipped', reason: `${reasonCode}: ${detail}` }
 }
