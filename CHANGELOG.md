@@ -1,3 +1,9 @@
+## [0.16.0](https://github.com/Doist/cli-core/compare/v0.15.0...v0.16.0) (2026-05-16)
+
+### Features
+
+* **auth:** add migrateLegacyAuth helper ([#28](https://github.com/Doist/cli-core/issues/28)) ([cd7baee](https://github.com/Doist/cli-core/commit/cd7baeebdb9b3dfc5909862a0af7ae5bfee17723))
+
 ## [0.15.0](https://github.com/Doist/cli-core/compare/v0.14.0...v0.15.0) (2026-05-16)
 
 ### Features
