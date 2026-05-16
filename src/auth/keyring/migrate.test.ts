@@ -203,6 +203,37 @@ describe('migrateLegacyAuth', () => {
         expect(state.records.get('7')?.fallbackToken).toBeUndefined()
     })
 
+    it('migrates against an entirely offline keyring (WSL/headless)', async () => {
+        const km = buildKeyringMap()
+        // The whole keyring is dead: reading the legacy slot throws and
+        // writing the per-user slot would too. Migration must still complete
+        // by sourcing the token from the consumer's plaintext slot and
+        // parking it on the user record as `fallbackToken`.
+        km.slots.set(LEGACY, {
+            secret: null,
+            getErr: new SecureStoreUnavailableError('no dbus'),
+        })
+        km.slots.set('user-7', {
+            secret: null,
+            setErr: new SecureStoreUnavailableError('no dbus'),
+        })
+        mockedCreateSecureStore.mockImplementation(km.create)
+        const { store: userRecords, state } = buildUserRecords()
+
+        const result = await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords,
+            loadLegacyPlaintextToken: async () => 'plain_legacy',
+            identifyAccount: async () => ({ id: '7', email: 'p@l.x' }),
+            silent: true,
+        })
+
+        expect(result.status).toBe('migrated')
+        expect(state.records.get('7')?.fallbackToken).toBe('plain_legacy')
+        expect(state.defaultId).toBe('7')
+    })
+
     it('stores fallbackToken on the record when the per-user keyring write fails', async () => {
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })

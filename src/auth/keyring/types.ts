@@ -34,6 +34,13 @@ export type UserRecord<TAccount extends AuthAccount> = {
 export type UserRecordStore<TAccount extends AuthAccount> = {
     list(): Promise<UserRecord<TAccount>[]>
     getById(id: string): Promise<UserRecord<TAccount> | null>
+    /**
+     * **Replace**, do not merge. The persisted record must equal `record` field
+     * for field — an absent `fallbackToken` means "no plaintext token", and a
+     * merge-style implementation would let a stale plaintext token outlive a
+     * later keyring-backed write (the runtime preferentially reads
+     * `fallbackToken` over the keyring).
+     */
     upsert(record: UserRecord<TAccount>): Promise<void>
     remove(id: string): Promise<void>
     getDefaultId(): Promise<string | null>

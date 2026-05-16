@@ -1,6 +1,13 @@
 export const SECURE_STORE_DESCRIPTION = 'system credential manager'
 
 /**
+ * Default keyring account slug for a user id. Shared between the runtime
+ * `createKeyringTokenStore` and `migrateLegacyAuth` so a future rename can't
+ * silently park tokens in a slot the runtime no longer reads from.
+ */
+export const DEFAULT_ACCOUNT_FOR_USER = (id: string): string => `user-${id}`
+
+/**
  * Thrown when the OS credential manager cannot be reached — missing native
  * binary for the current architecture, libsecret/D-Bus unavailable
  * (common in WSL / headless Linux / containers / CI), Keychain locked, or

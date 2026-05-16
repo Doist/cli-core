@@ -1,4 +1,5 @@
 export {
+    DEFAULT_ACCOUNT_FOR_USER,
     SECURE_STORE_DESCRIPTION,
     SecureStoreUnavailableError,
     createSecureStore,

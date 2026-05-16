@@ -1,5 +1,10 @@
+import { getErrorMessage } from '../../errors.js'
 import type { AuthAccount } from '../types.js'
-import { createSecureStore, SecureStoreUnavailableError } from './secure-store.js'
+import {
+    createSecureStore,
+    DEFAULT_ACCOUNT_FOR_USER,
+    SecureStoreUnavailableError,
+} from './secure-store.js'
 import type { UserRecord, UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
@@ -38,8 +43,6 @@ export type MigrateAuthResult<TAccount extends AuthAccount = AuthAccount> = {
     reason?: string
     migratedAccount?: TAccount
 }
-
-const DEFAULT_ACCOUNT_FOR_USER = (id: string) => `user-${id}`
 
 /**
  * One-time migration of a v1 single-user auth state into a v2 multi-user
@@ -92,7 +95,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     try {
         account = await identifyAccount(legacyToken)
     } catch (error) {
-        return skipped(silent, logPrefix, `could not identify user (${describe(error)})`)
+        return skipped(silent, logPrefix, `could not identify user (${getErrorMessage(error)})`)
     }
 
     const perUserStore = createSecureStore({
@@ -109,7 +112,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
             return skipped(
                 silent,
                 logPrefix,
-                `failed to write user-scoped credential (${describe(error)})`,
+                `failed to write user-scoped credential (${getErrorMessage(error)})`,
             )
         }
     }
@@ -128,7 +131,11 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
                 // best-effort rollback
             }
         }
-        return skipped(silent, logPrefix, `failed to update user records (${describe(error)})`)
+        return skipped(
+            silent,
+            logPrefix,
+            `failed to update user records (${getErrorMessage(error)})`,
+        )
     }
 
     try {
@@ -153,8 +160,10 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     }
 
     if (!silent) {
-        const label = account.label ?? account.id
-        console.error(`${logPrefix}: migrated existing token to multi-user store (${label}).`)
+        // Log the stable id only — `account.label` is typically an email or
+        // other user-facing identifier, and these diagnostics flow to stderr
+        // (and possibly to log aggregators) where PII shouldn't appear.
+        console.error(`${logPrefix}: migrated existing token to multi-user store (${account.id}).`)
     }
 
     return { status: 'migrated', migratedAccount: account }
@@ -180,10 +189,6 @@ async function readLegacyToken(opts: {
     if (plaintext?.trim()) return plaintext.trim()
 
     return null
-}
-
-function describe(error: unknown): string {
-    return error instanceof Error && error.message ? error.message : String(error)
 }
 
 function skipped<TAccount extends AuthAccount>(

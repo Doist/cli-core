@@ -334,7 +334,7 @@ if (storage?.warning) console.error('Warning:', storage.warning)
 
 The returned store satisfies the full `TokenStore` contract — including `list()` / `setDefault(ref)` / `ref`-aware `active` / `clear` — so it plugs straight into the `logout` / `status` / `token` attachers. Default ref matching is `account.id === ref || account.label === ref`; override `matchAccount` to broaden it (e.g. email-case-insensitive).
 
-Add `@napi-rs/keyring` as an optional/peer dep of your CLI. The library ships pre-built native binaries for Windows, macOS, and Linux (glibc + musl); cli-core dynamic-imports it so a missing binary on an exotic arch surfaces as `SecureStoreUnavailableError` and triggers the same plaintext fallback path rather than crashing module load.
+`@napi-rs/keyring` is already declared in cli-core's own `optionalDependencies`, so npm pulls it in transitively when you install `@doist/cli-core` — your consumer CLI does not need to add it explicitly. The library ships pre-built native binaries for Windows, macOS, and Linux (glibc + musl); cli-core dynamic-imports it so a missing binary on an exotic arch surfaces as `SecureStoreUnavailableError` and triggers the same plaintext fallback path rather than crashing module load.
 
 For one-time migration of a v1 single-user token into the v2 multi-user shape, use `migrateLegacyAuth` from a postinstall hook:
 

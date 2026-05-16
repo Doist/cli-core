@@ -1,7 +1,9 @@
 import { CliError } from '../../errors.js'
 import type { AccountRef, AuthAccount, TokenStore } from '../types.js'
+import { accountNotFoundError } from '../user-flag.js'
 import {
     createSecureStore,
+    DEFAULT_ACCOUNT_FOR_USER,
     SECURE_STORE_DESCRIPTION,
     SecureStoreUnavailableError,
     type SecureStore,
@@ -33,7 +35,6 @@ export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccoun
     getLastClearResult(): TokenStorageResult | undefined
 }
 
-const DEFAULT_ACCOUNT_FOR_USER = (id: string) => `user-${id}`
 const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
     account: TAccount,
     ref: AccountRef,
@@ -70,43 +71,56 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         return createSecureStore({ serviceName, account: accountForUser(id) })
     }
 
-    async function findByRef(ref: AccountRef): Promise<UserRecord<TAccount> | null> {
-        const all = await userRecords.list()
-        return all.find((record) => matchAccount(record.account, ref)) ?? null
+    type Snapshot = { records: UserRecord<TAccount>[]; defaultId: string | null }
+    async function readSnapshot(): Promise<Snapshot> {
+        const [records, defaultId] = await Promise.all([
+            userRecords.list(),
+            userRecords.getDefaultId(),
+        ])
+        return { records, defaultId }
     }
 
-    async function resolveDefaultRecord(): Promise<UserRecord<TAccount> | null> {
-        const defaultId = await userRecords.getDefaultId()
-        if (defaultId) {
-            const record = await userRecords.getById(defaultId)
-            if (record) return record
-        }
-        const all = await userRecords.list()
-        if (all.length === 1) return all[0]
-        return null
+    function findByRef(snapshot: Snapshot, ref: AccountRef): UserRecord<TAccount> | null {
+        return snapshot.records.find((record) => matchAccount(record.account, ref)) ?? null
     }
 
-    async function readToken(record: UserRecord<TAccount>): Promise<string | null> {
-        if (record.fallbackToken?.trim()) {
-            return record.fallbackToken.trim()
+    function resolveDefault(snapshot: Snapshot): UserRecord<TAccount> | null {
+        if (snapshot.defaultId) {
+            const found = snapshot.records.find((r) => r.id === snapshot.defaultId)
+            if (found) return found
         }
-        try {
-            const token = await secureStoreFor(record.id).getSecret()
-            return token?.trim() ? token.trim() : null
-        } catch (error) {
-            if (error instanceof SecureStoreUnavailableError) return null
-            throw error
-        }
+        return snapshot.records.length === 1 ? snapshot.records[0] : null
     }
 
     return {
         async active(ref) {
-            const record = ref === undefined ? await resolveDefaultRecord() : await findByRef(ref)
+            const snapshot = await readSnapshot()
+            const record = ref === undefined ? resolveDefault(snapshot) : findByRef(snapshot, ref)
             if (!record) return null
 
-            const token = await readToken(record)
-            if (!token) return null
-            return { token, account: record.account }
+            if (record.fallbackToken?.trim()) {
+                return { token: record.fallbackToken.trim(), account: record.account }
+            }
+
+            try {
+                const token = await secureStoreFor(record.id).getSecret()
+                if (token?.trim()) {
+                    return { token: token.trim(), account: record.account }
+                }
+                return null
+            } catch (error) {
+                // A matching record exists but the keyring can't be read.
+                // Surface a typed failure instead of returning `null`, which
+                // would otherwise be indistinguishable from "no stored
+                // account" and trigger `ACCOUNT_NOT_FOUND` on `--user <ref>`.
+                if (error instanceof SecureStoreUnavailableError) {
+                    throw new CliError(
+                        'AUTH_STORE_READ_FAILED',
+                        `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
+                    )
+                }
+                throw error
+            }
         },
 
         async set(account, token) {
@@ -142,9 +156,16 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 throw error
             }
 
-            const existingDefault = await userRecords.getDefaultId()
-            if (!existingDefault) {
-                await userRecords.setDefaultId(account.id)
+            // Best-effort default promotion: the record is already persisted,
+            // so a failure here must not turn into `AUTH_STORE_WRITE_FAILED`
+            // (the user can recover with `<cli> account use`).
+            try {
+                const existingDefault = await userRecords.getDefaultId()
+                if (!existingDefault) {
+                    await userRecords.setDefaultId(account.id)
+                }
+            } catch {
+                // best-effort
             }
 
             lastStorageResult = storedSecurely
@@ -159,7 +180,8 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async clear(ref) {
-            const record = ref === undefined ? await resolveDefaultRecord() : await findByRef(ref)
+            const snapshot = await readSnapshot()
+            const record = ref === undefined ? resolveDefault(snapshot) : findByRef(snapshot, ref)
             if (!record) {
                 lastClearResult = undefined
                 return
@@ -167,26 +189,27 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             await userRecords.remove(record.id)
 
-            const currentDefault = await userRecords.getDefaultId()
-            if (currentDefault === record.id) {
+            if (snapshot.defaultId === record.id) {
                 await userRecords.setDefaultId(null)
             }
 
-            // No keyring entry to delete when the token was already plaintext.
-            if (record.fallbackToken !== undefined) {
-                lastClearResult = {
-                    storage: 'config-file',
-                    warning: buildFallbackWarning(
-                        'local auth state cleared in',
-                        userRecords.describeLocation(),
-                    ),
-                }
-                return
-            }
-
+            // Always attempt the keyring delete. Even when the record carried
+            // a `fallbackToken`, an older keyring entry may still be parked
+            // there from a prior keyring-online write that was later replaced
+            // by an offline-fallback write — skipping the delete would leak
+            // that orphan.
             try {
                 await secureStoreFor(record.id).deleteSecret()
-                lastClearResult = { storage: 'secure-store' }
+                lastClearResult =
+                    record.fallbackToken !== undefined
+                        ? {
+                              storage: 'config-file',
+                              warning: buildFallbackWarning(
+                                  'local auth state cleared in',
+                                  userRecords.describeLocation(),
+                              ),
+                          }
+                        : { storage: 'secure-store' }
             } catch (error) {
                 if (!(error instanceof SecureStoreUnavailableError)) throw error
                 lastClearResult = {
@@ -200,18 +223,18 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async list() {
-            const all = await userRecords.list()
-            const defaultId = await userRecords.getDefaultId()
-            return all.map((record) => ({
+            const { records, defaultId } = await readSnapshot()
+            return records.map((record) => ({
                 account: record.account,
                 isDefault: record.id === defaultId,
             }))
         },
 
         async setDefault(ref) {
-            const record = await findByRef(ref)
+            const all = await userRecords.list()
+            const record = all.find((r) => matchAccount(r.account, ref))
             if (!record) {
-                throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
+                throw accountNotFoundError(ref)
             }
             await userRecords.setDefaultId(record.id)
         },

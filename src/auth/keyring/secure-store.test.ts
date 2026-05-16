@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const keyringMocks = vi.hoisted(() => {
     const entry = {
@@ -88,6 +88,13 @@ describe('createSecureStore — missing native binary', () => {
         vi.resetModules()
     })
 
+    // Ensure the throw-on-import mock is torn down even when the assertion
+    // inside the `it` body fails. Inline cleanup would otherwise be skipped
+    // and leave the mock active for later tests.
+    afterEach(() => {
+        vi.doUnmock('@napi-rs/keyring')
+    })
+
     it('surfaces an import failure as SecureStoreUnavailableError instead of crashing module load', async () => {
         vi.doMock('@napi-rs/keyring', () => {
             throw new Error('no native binary for this arch')
@@ -98,7 +105,5 @@ describe('createSecureStore — missing native binary', () => {
         await expect(
             createSecureStore({ serviceName: SERVICE, account: ACCOUNT }).getSecret(),
         ).rejects.toBeInstanceOf(SecureStoreUnavailableError)
-
-        vi.doUnmock('@napi-rs/keyring')
     })
 })
