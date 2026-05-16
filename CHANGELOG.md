@@ -1,3 +1,9 @@
+## [0.15.0](https://github.com/Doist/cli-core/compare/v0.14.0...v0.15.0) (2026-05-16)
+
+### Features
+
+* **auth:** add createKeyringTokenStore (multi-account) ([#27](https://github.com/Doist/cli-core/issues/27)) ([adc07d1](https://github.com/Doist/cli-core/commit/adc07d1830657471bc945a5b2a5599f81a066ee3))
+
 ## [0.14.0](https://github.com/Doist/cli-core/compare/v0.13.0...v0.14.0) (2026-05-16)
 
 ### Features
