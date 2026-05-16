@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { runOAuthFlow } from './flow.js'
+import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenStore } from './types.js'
 
 type Account = { id: string; label?: string; email: string }
@@ -68,6 +68,40 @@ function instrument(provider: Partial<AuthProvider<Account>> = {}): {
     return { provider: wrapped, getRedirect: () => redirectUri }
 }
 
+/**
+ * Fill in the boilerplate fields every test would otherwise repeat
+ * (`scopes`, `readOnly`, `flags`, `preferredPort`, `renderSuccess`,
+ * `renderError`, `timeoutMs`). Caller supplies the variants — `provider`,
+ * `store`, `openBrowser` are required; anything else overrides a default.
+ */
+function flowOptions(
+    overrides: Partial<RunOAuthFlowOptions<Account>> &
+        Pick<RunOAuthFlowOptions<Account>, 'provider' | 'store' | 'openBrowser'>,
+): RunOAuthFlowOptions<Account> {
+    return {
+        scopes: [],
+        readOnly: false,
+        flags: {},
+        preferredPort: 0,
+        renderSuccess,
+        renderError,
+        timeoutMs: 5000,
+        ...overrides,
+    }
+}
+
+/**
+ * Drive the local callback server with a valid `code` + the `state` lifted
+ * from the authorize URL. Used as both an `openBrowser` and an
+ * `onAuthorizeUrl` stand-in across the suite.
+ */
+function driveCallback(getRedirect: () => string): (url: string) => Promise<void> {
+    return async (url) => {
+        const state = new URL(url).searchParams.get('state') ?? ''
+        await fetch(`${getRedirect()}?code=abc&state=${state}`)
+    }
+}
+
 describe('runOAuthFlow', () => {
     it('drives prepare → authorize → exchange → validate → store and returns the result', async () => {
         const prepare = vi.fn(async () => ({ handshake: { dcrSecret: 'shh' } }))
@@ -75,25 +109,17 @@ describe('runOAuthFlow', () => {
         const validateToken = vi.fn(async () => ({ id: '1', email: 'a@b' }))
         const { provider, getRedirect } = instrument({ prepare, exchangeCode, validateToken })
         const store = fakeStore()
+        const openBrowser = vi.fn(driveCallback(getRedirect))
 
-        const openBrowser = vi.fn(async (url: string) => {
-            const state = new URL(url).searchParams.get('state') ?? ''
-            await fetch(`${getRedirect()}?code=abc&state=${state}`)
-        })
-
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: ['read'],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser,
-            onAuthorizeUrl: () => undefined,
-            timeoutMs: 5000,
-        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                scopes: ['read'],
+                openBrowser,
+                onAuthorizeUrl: () => undefined,
+            }),
+        )
 
         expect(result.token).toBe('tok-1')
         expect(result.account).toEqual({ id: '1', email: 'a@b' })
@@ -118,21 +144,9 @@ describe('runOAuthFlow', () => {
         })
         const store = fakeStore()
 
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async (url) => {
-                const state = new URL(url).searchParams.get('state') ?? ''
-                await fetch(`${getRedirect()}?code=abc&state=${state}`)
-            },
-            timeoutMs: 5000,
-        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+        )
         expect(result.account.id).toBe('99')
         expect(validateToken).not.toHaveBeenCalled()
     })
@@ -154,21 +168,9 @@ describe('runOAuthFlow', () => {
         })
         const store = fakeStore()
 
-        await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async (url) => {
-                const state = new URL(url).searchParams.get('state') ?? ''
-                await fetch(`${getRedirect()}?code=abc&state=${state}`)
-            },
-            timeoutMs: 5000,
-        })
+        await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+        )
         expect(validateToken).toHaveBeenCalledTimes(1)
     })
 
@@ -176,18 +178,14 @@ describe('runOAuthFlow', () => {
         const { provider } = instrument()
         const store = fakeStore()
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 0,
-                renderSuccess,
-                renderError,
-                openBrowser: async () => {}, // never triggers a callback
-                timeoutMs: 50,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({
+                    provider,
+                    store,
+                    openBrowser: async () => {}, // never triggers a callback
+                    timeoutMs: 50,
+                }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_CALLBACK_TIMEOUT' })
     })
 
@@ -195,30 +193,25 @@ describe('runOAuthFlow', () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
 
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async (url) => {
-                const state = new URL(url).searchParams.get('state') ?? ''
-                // Spurious requests (browser-extension prefetch, accidental
-                // reload) that don't match the expected state should leave the
-                // server listening rather than killing the in-flight flow.
-                const bad1 = await fetch(`${getRedirect()}?code=abc&state=wrong`)
-                expect(bad1.status).toBe(400)
-                const bad2 = await fetch(`${getRedirect()}?code=abc`)
-                expect(bad2.status).toBe(400)
-                // The legitimate redirect arriving after the noise should still
-                // settle the wait.
-                await fetch(`${getRedirect()}?code=abc&state=${state}`)
-            },
-            timeoutMs: 5000,
-        })
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: async (url) => {
+                    const state = new URL(url).searchParams.get('state') ?? ''
+                    // Spurious requests (browser-extension prefetch, accidental
+                    // reload) that don't match the expected state should leave the
+                    // server listening rather than killing the in-flight flow.
+                    const bad1 = await fetch(`${getRedirect()}?code=abc&state=wrong`)
+                    expect(bad1.status).toBe(400)
+                    const bad2 = await fetch(`${getRedirect()}?code=abc`)
+                    expect(bad2.status).toBe(400)
+                    // The legitimate redirect arriving after the noise should still
+                    // settle the wait.
+                    await fetch(`${getRedirect()}?code=abc&state=${state}`)
+                },
+            }),
+        )
         expect(result.token).toBe('tok-1')
     })
 
@@ -227,18 +220,9 @@ describe('runOAuthFlow', () => {
         const { provider } = instrument()
         const store = fakeStore()
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 70_000,
-                renderSuccess,
-                renderError,
-                openBrowser,
-                timeoutMs: 5000,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({ provider, store, openBrowser, preferredPort: 70_000 }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_PORT_BIND_FAILED' })
         expect(openBrowser).not.toHaveBeenCalled()
     })
@@ -250,25 +234,20 @@ describe('runOAuthFlow', () => {
         const setSpy = vi.spyOn(store, 'set')
 
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 0,
-                renderSuccess,
-                renderError,
-                openBrowser: async () => {
-                    // Abort before the callback arrives — flow should reject
-                    // with AUTH_OAUTH_FAILED rather than continue waiting.
-                    controller.abort()
-                    void getRedirect() // touch to silence unused-fn lint
-                },
-                onAuthorizeUrl: () => undefined,
-                signal: controller.signal,
-                timeoutMs: 5000,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({
+                    provider,
+                    store,
+                    openBrowser: async () => {
+                        // Abort before the callback arrives — flow should reject
+                        // with AUTH_OAUTH_FAILED rather than continue waiting.
+                        controller.abort()
+                        void getRedirect() // touch to silence unused-fn lint
+                    },
+                    onAuthorizeUrl: () => undefined,
+                    signal: controller.signal,
+                }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_OAUTH_FAILED' })
         expect(setSpy).not.toHaveBeenCalled()
     })
@@ -280,23 +259,10 @@ describe('runOAuthFlow', () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
         const onAuthorizeUrl = vi.fn((_url: string) => undefined)
-        const openBrowser = vi.fn(async (url: string) => {
-            const state = new URL(url).searchParams.get('state') ?? ''
-            await fetch(`${getRedirect()}?code=abc&state=${state}`)
-        })
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser,
-            onAuthorizeUrl,
-            timeoutMs: 5000,
-        })
+        const openBrowser = vi.fn(driveCallback(getRedirect))
+        const result = await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser, onAuthorizeUrl }),
+        )
         expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
         expect(onAuthorizeUrl.mock.calls[0][0]).toMatch(/^https:\/\/example\.com\/oauth\/authorize/)
         expect(openBrowser).toHaveBeenCalledTimes(1)
@@ -306,26 +272,17 @@ describe('runOAuthFlow', () => {
     it('falls back to onAuthorizeUrl when the openBrowser opener throws', async () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
-        const onAuthorizeUrl = vi.fn(async (url: string) => {
-            // Drive the callback off the URL we received via the fallback path.
-            const state = new URL(url).searchParams.get('state') ?? ''
-            await fetch(`${getRedirect()}?code=abc&state=${state}`)
-        })
-        const result = await runOAuthFlow<Account>({
-            provider,
-            store,
-            scopes: [],
-            readOnly: false,
-            flags: {},
-            preferredPort: 0,
-            renderSuccess,
-            renderError,
-            openBrowser: async () => {
-                throw new Error('opener boom')
-            },
-            onAuthorizeUrl,
-            timeoutMs: 5000,
-        })
+        const onAuthorizeUrl = vi.fn(driveCallback(getRedirect))
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: async () => {
+                    throw new Error('opener boom')
+                },
+                onAuthorizeUrl,
+            }),
+        )
         expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
         expect(onAuthorizeUrl.mock.calls[0][0]).toMatch(/^https:\/\/example\.com\/oauth\/authorize/)
         expect(result.token).toBe('tok-1')
@@ -347,22 +304,14 @@ describe('runOAuthFlow', () => {
             async setDefault() {},
         }
         await expect(
-            runOAuthFlow<Account>({
-                provider,
-                store,
-                scopes: [],
-                readOnly: false,
-                flags: {},
-                preferredPort: 0,
-                renderSuccess,
-                renderError,
-                openBrowser: async (url) => {
-                    const state = new URL(url).searchParams.get('state') ?? ''
-                    await fetch(`${getRedirect()}?code=abc&state=${state}`)
-                },
-                onAuthorizeUrl: () => undefined,
-                timeoutMs: 5000,
-            }),
+            runOAuthFlow<Account>(
+                flowOptions({
+                    provider,
+                    store,
+                    openBrowser: driveCallback(getRedirect),
+                    onAuthorizeUrl: () => undefined,
+                }),
+            ),
         ).rejects.toMatchObject({ code: 'AUTH_STORE_WRITE_FAILED' })
     })
 })
