@@ -1,11 +1,4 @@
-export const SECURE_STORE_DESCRIPTION = 'system credential manager'
-
-/**
- * Default keyring account slug for a user id. Shared between the runtime
- * `createKeyringTokenStore` and `migrateLegacyAuth` so a future rename can't
- * silently park tokens in a slot the runtime no longer reads from.
- */
-export const DEFAULT_ACCOUNT_FOR_USER = (id: string): string => `user-${id}`
+import { getErrorMessage } from '../../errors.js'
 
 /**
  * Thrown when the OS credential manager cannot be reached — missing native
@@ -13,13 +6,17 @@ export const DEFAULT_ACCOUNT_FOR_USER = (id: string): string => `user-${id}`
  * (common in WSL / headless Linux / containers / CI), Keychain locked, or
  * any other error returned by the underlying keyring backend.
  *
- * Callers that want to degrade to a plaintext fallback should catch this
- * specific class rather than swallowing every `Error` — anything else
- * coming out of `SecureStore` is a programmer error.
+ * The original throwable is preserved on `cause` so platform-specific
+ * diagnostics (stack, native error code) aren't lost — callers that want
+ * to degrade to a plaintext fallback should catch this specific class
+ * rather than swallowing every `Error`.
  */
 export class SecureStoreUnavailableError extends Error {
-    constructor(message = 'System credential storage is unavailable') {
-        super(message)
+    constructor(
+        message = 'System credential storage is unavailable',
+        options?: { cause?: unknown },
+    ) {
+        super(message, options)
         this.name = 'SecureStoreUnavailableError'
     }
 }
@@ -37,58 +34,53 @@ export type CreateSecureStoreOptions = {
     account: string
 }
 
+type AsyncEntry = import('@napi-rs/keyring').AsyncEntry
+
 /**
  * Thin wrapper around `@napi-rs/keyring` that normalizes every failure mode
  * into `SecureStoreUnavailableError`. `serviceName` + `account` together
  * identify one credential slot in the OS keyring.
+ *
+ * The dynamic import + `AsyncEntry` construction is memoised per-store so
+ * repeated reads/writes share one entry and a missing native binary
+ * fast-fails on subsequent calls instead of retrying the import every time
+ * (the rejected promise replays its rejection on each `await`).
  */
 export function createSecureStore(options: CreateSecureStoreOptions): SecureStore {
     const { serviceName, account } = options
+    let entryPromise: Promise<AsyncEntry> | undefined
+
+    async function withEntry<T>(fn: (entry: AsyncEntry) => Promise<T>): Promise<T> {
+        if (!entryPromise) {
+            // Dynamic import: `@napi-rs/keyring` is an optional dependency.
+            // On unsupported architectures the native binary is absent and
+            // a static import would crash module load before we can surface
+            // `SecureStoreUnavailableError`.
+            entryPromise = (async () => {
+                const { AsyncEntry } = await import('@napi-rs/keyring')
+                return new AsyncEntry(serviceName, account)
+            })()
+        }
+        try {
+            const entry = await entryPromise
+            return await fn(entry)
+        } catch (error) {
+            throw toUnavailableError(error)
+        }
+    }
 
     return {
-        async getSecret(): Promise<string | null> {
-            const entry = await getEntry(serviceName, account)
-            try {
-                return (await entry.getPassword()) ?? null
-            } catch (error) {
-                throw toUnavailableError(error)
-            }
+        async getSecret() {
+            return withEntry(async (entry) => (await entry.getPassword()) ?? null)
         },
-
-        async setSecret(secret: string): Promise<void> {
-            const entry = await getEntry(serviceName, account)
-            try {
+        async setSecret(secret) {
+            return withEntry(async (entry) => {
                 await entry.setPassword(secret)
-            } catch (error) {
-                throw toUnavailableError(error)
-            }
+            })
         },
-
-        async deleteSecret(): Promise<boolean> {
-            const entry = await getEntry(serviceName, account)
-            try {
-                return await entry.deleteCredential()
-            } catch (error) {
-                throw toUnavailableError(error)
-            }
+        async deleteSecret() {
+            return withEntry((entry) => entry.deleteCredential())
         },
-    }
-}
-
-async function getEntry(
-    serviceName: string,
-    account: string,
-): Promise<import('@napi-rs/keyring').AsyncEntry> {
-    try {
-        // Dynamic import: `@napi-rs/keyring` is an optional dependency. On
-        // unsupported architectures (or when the native binary failed to
-        // install) a static import would crash module load before we get a
-        // chance to surface `SecureStoreUnavailableError` and let the caller
-        // fall back to plaintext config storage.
-        const { AsyncEntry } = await import('@napi-rs/keyring')
-        return new AsyncEntry(serviceName, account)
-    } catch (error) {
-        throw toUnavailableError(error)
     }
 }
 
@@ -96,7 +88,5 @@ function toUnavailableError(error: unknown): SecureStoreUnavailableError {
     if (error instanceof SecureStoreUnavailableError) {
         return error
     }
-    const message =
-        error instanceof Error ? error.message : 'System credential storage is unavailable'
-    return new SecureStoreUnavailableError(message)
+    return new SecureStoreUnavailableError(getErrorMessage(error), { cause: error })
 }
