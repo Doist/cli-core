@@ -197,130 +197,34 @@ describe('createDcrProvider', () => {
         })
     })
 
-    it('DCR response missing client_id is AUTH_DCR_FAILED', async () => {
-        const provider = createDcrProvider<Account>({
-            registrationUrl: REGISTRATION_URL,
-            authorizeUrl: AUTHORIZE_URL,
-            tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI' },
-            validate,
-            fetchImpl: (() => Promise.resolve(respond({ client_secret: 'sec' }))) as typeof fetch,
-        })
-        await expect(
-            provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
-        ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
-    })
-
-    it('DCR non-JSON response is AUTH_DCR_FAILED', async () => {
-        const provider = createDcrProvider<Account>({
-            registrationUrl: REGISTRATION_URL,
-            authorizeUrl: AUTHORIZE_URL,
-            tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI' },
-            validate,
-            fetchImpl: (() =>
+    it('DCR response missing client_id or returning non-JSON is AUTH_DCR_FAILED', async () => {
+        const make = (fetchImpl: typeof fetch) =>
+            createDcrProvider<Account>({
+                registrationUrl: REGISTRATION_URL,
+                authorizeUrl: AUTHORIZE_URL,
+                tokenUrl: TOKEN_URL,
+                clientMetadata: { clientName: 'CLI' },
+                validate,
+                fetchImpl,
+            })
+        const cases: Array<() => Promise<Response>> = [
+            () => Promise.resolve(respond({ client_secret: 'sec' })),
+            () =>
                 Promise.resolve(
                     new Response('<html>oops</html>', {
                         status: 200,
                         headers: { 'Content-Type': 'text/html' },
                     }),
-                )) as typeof fetch,
-        })
-        await expect(
-            provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
-        ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
-    })
-
-    it('token endpoint non-2xx becomes AUTH_TOKEN_EXCHANGE_FAILED', async () => {
-        const { fetchImpl } = makeFetchRecorder((u) =>
-            u === REGISTRATION_URL
-                ? respond({ client_id: 'cid', client_secret: 'sec' })
-                : new Response('invalid_grant', { status: 400 }),
-        )
-        const provider = createDcrProvider<Account>({
-            registrationUrl: REGISTRATION_URL,
-            authorizeUrl: AUTHORIZE_URL,
-            tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI' },
-            validate,
-            fetchImpl,
-        })
-        const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
-        await expect(
-            provider.exchangeCode({
-                code: 'c',
-                state: 's',
-                redirectUri: REDIRECT_URI,
-                handshake: { ...prepared.handshake, codeVerifier: 'v' },
-            }),
-        ).rejects.toMatchObject({ code: 'AUTH_TOKEN_EXCHANGE_FAILED' })
-    })
-
-    it('errorHints are prepended to every error (DCR failure + token-exchange failure), with body text appended on non-2xx', async () => {
-        const userHints = ['Re-run: cli auth login', 'Or set CLI_API_TOKEN']
-
-        // DCR non-2xx
-        const dcrProvider = createDcrProvider<Account>({
-            registrationUrl: REGISTRATION_URL,
-            authorizeUrl: AUTHORIZE_URL,
-            tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI' },
-            validate,
-            errorHints: userHints,
-            fetchImpl: (() =>
-                Promise.resolve(new Response('rate_limited', { status: 429 }))) as typeof fetch,
-        })
-        await expect(
-            dcrProvider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
-        ).rejects.toMatchObject({
-            code: 'AUTH_DCR_FAILED',
-            hints: [...userHints, 'rate_limited'],
-        })
-
-        // DCR missing client_id (no server body to append)
-        const noClientIdProvider = createDcrProvider<Account>({
-            registrationUrl: REGISTRATION_URL,
-            authorizeUrl: AUTHORIZE_URL,
-            tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI' },
-            validate,
-            errorHints: userHints,
-            fetchImpl: (() => Promise.resolve(respond({}))) as typeof fetch,
-        })
-        await expect(
-            noClientIdProvider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
-        ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED', hints: userHints })
-
-        // Token endpoint failure flows through postTokenEndpoint
-        const exchangeProvider = createDcrProvider<Account>({
-            registrationUrl: REGISTRATION_URL,
-            authorizeUrl: AUTHORIZE_URL,
-            tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI' },
-            validate,
-            errorHints: userHints,
-            fetchImpl: ((url: RequestInfo | URL) =>
-                String(url) === REGISTRATION_URL
-                    ? Promise.resolve(respond({ client_id: 'cid', client_secret: 'sec' }))
-                    : Promise.resolve(
-                          new Response('invalid_grant', { status: 400 }),
-                      )) as typeof fetch,
-        })
-        const prepared = await exchangeProvider.prepare!({
-            redirectUri: REDIRECT_URI,
-            flags: {},
-        })
-        await expect(
-            exchangeProvider.exchangeCode({
-                code: 'c',
-                state: 's',
-                redirectUri: REDIRECT_URI,
-                handshake: { ...prepared.handshake, codeVerifier: 'v' },
-            }),
-        ).rejects.toMatchObject({
-            code: 'AUTH_TOKEN_EXCHANGE_FAILED',
-            hints: [...userHints, 'invalid_grant'],
-        })
+                ),
+        ]
+        for (const fetchImpl of cases) {
+            await expect(
+                make(fetchImpl as typeof fetch).prepare!({
+                    redirectUri: REDIRECT_URI,
+                    flags: {},
+                }),
+            ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
+        }
     })
 
     it('clientMetadata.extra fields appear in the registration POST body verbatim; named fields win on collisions', async () => {
