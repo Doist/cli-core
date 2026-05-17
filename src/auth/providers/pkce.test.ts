@@ -148,6 +148,41 @@ describe('createPkceProvider', () => {
         ).rejects.toMatchObject({ code: 'AUTH_TOKEN_EXCHANGE_FAILED' })
     })
 
+    it('forwards errorHints onto both the token-endpoint failure and the handshake-lost guard', async () => {
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'unused',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'cid',
+            validate,
+            errorHints: ['Re-run login'],
+            fetchImpl: (() =>
+                Promise.resolve(new Response('invalid_grant', { status: 400 }))) as typeof fetch,
+        })
+        await expect(
+            provider.exchangeCode({
+                code: 'c',
+                state: 's',
+                redirectUri: 'http://localhost/callback',
+                handshake: { codeVerifier: 'v', clientId: 'cid' },
+            }),
+        ).rejects.toMatchObject({
+            code: 'AUTH_TOKEN_EXCHANGE_FAILED',
+            hints: ['Re-run login', 'invalid_grant'],
+        })
+        // Same hints flow through the internal handshake-lost guard.
+        await expect(
+            provider.exchangeCode({
+                code: 'c',
+                state: 's',
+                redirectUri: 'http://localhost/callback',
+                handshake: {},
+            }),
+        ).rejects.toMatchObject({
+            code: 'AUTH_TOKEN_EXCHANGE_FAILED',
+            hints: ['Re-run login'],
+        })
+    })
+
     it('throws AUTH_TOKEN_EXCHANGE_FAILED when the handshake state was lost between authorize and exchange', async () => {
         const provider = createPkceProvider<Account>({
             authorizeUrl: 'unused',

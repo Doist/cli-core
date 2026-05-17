@@ -23,11 +23,15 @@ export type { GenerateVerifierOptions } from './pkce.js'
 export { bundleFromExchange, persistBundle } from './persist.js'
 export type { PersistBundleOptions } from './persist.js'
 export { createPkceProvider } from './providers/pkce.js'
-export type { PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
+export type { OAuthLazyString, PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
 export { refreshAccessToken } from './refresh.js'
 export type { RefreshAccessTokenOptions, RefreshAccessTokenResult } from './refresh.js'
 export { createDcrProvider } from './providers/dcr.js'
-export type { DcrClientMetadata, DcrProviderOptions } from './providers/dcr.js'
+export type {
+    DcrClientMetadata,
+    DcrProviderOptions,
+    DcrTokenEndpointAuthMethod,
+} from './providers/dcr.js'
 export type {
     AccountRef,
     ActiveBundleSnapshot,

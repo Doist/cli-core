@@ -64,6 +64,75 @@ export function buildPkceAuthorizeUrl(input: BuildPkceAuthorizeUrlInput): string
     return url.toString()
 }
 
+/**
+ * Per RFC 6749 §2.3.1, the `client_id` and `client_secret` MUST be
+ * `application/x-www-form-urlencoded`-encoded before being concatenated with
+ * a colon for HTTP Basic Authentication. A literal colon (or any reserved
+ * character) in either value would otherwise corrupt the credential.
+ */
+export function encodeBasicAuth(clientId: string, clientSecret: string): string {
+    return Buffer.from(
+        `${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`,
+        'utf8',
+    ).toString('base64')
+}
+
+export type PostAndParseJsonInput = {
+    url: string
+    headers: Record<string, string>
+    /** Pre-encoded request body. */
+    body: string
+    /** Error code wrapped around every failure mode. */
+    errorCode: AuthErrorCode
+    /** Prefix for error messages, e.g. `'Token endpoint'` or `'Registration endpoint'`. */
+    errorLabel: string
+    errorHints?: string[]
+    fetchImpl: typeof fetch
+}
+
+/**
+ * POST a request, parse a JSON response, and wrap every failure mode as a
+ * typed `CliError`. Common backbone for the OAuth token endpoint and the
+ * RFC 7591 dynamic-client-registration endpoint — both POST a body, both
+ * expect a JSON reply, both want uniform error handling.
+ *
+ * Throws `errorCode` with the configured hints on:
+ *   - network failure (fetch rejection)
+ *   - non-2xx response (body text appended as a hint after `errorHints`)
+ *   - non-JSON 2xx body (a misconfigured proxy returning HTML, etc.)
+ *
+ * Success-shape validation (e.g. `access_token` present) is the caller's
+ * job, because it differs per endpoint.
+ */
+export async function postAndParseJson<T>(input: PostAndParseJsonInput): Promise<T> {
+    const fail = (message: string, extra?: string): CliError =>
+        buildAuthError(input.errorCode, message, input.errorHints, extra)
+
+    let response: Response
+    try {
+        response = await input.fetchImpl(input.url, {
+            method: 'POST',
+            headers: input.headers,
+            body: input.body,
+        })
+    } catch (error) {
+        throw fail(`${input.errorLabel} request failed: ${getErrorMessage(error)}`)
+    }
+
+    if (!response.ok) {
+        const detail = await safeReadText(response)
+        throw fail(`${input.errorLabel} returned HTTP ${response.status}.`, detail)
+    }
+
+    // Parse defensively — a misconfigured proxy can return a 2xx HTML error
+    // page that would otherwise blow up with a raw SyntaxError.
+    try {
+        return (await response.json()) as T
+    } catch (error) {
+        throw fail(`${input.errorLabel} returned non-JSON response: ${getErrorMessage(error)}`)
+    }
+}
+
 export type PostTokenEndpointInput = {
     url: string
     /** Form-encoded body. Caller owns grant_type + grant-specific params. */
@@ -94,8 +163,7 @@ export type PostTokenEndpointResult = {
  *
  * Failures uniformly throw `CliError('AUTH_TOKEN_EXCHANGE_FAILED', …)`:
  * network errors, non-2xx responses (with body text as a hint), non-JSON
- * bodies (the misconfigured-proxy HTML case), and responses missing
- * `access_token`.
+ * bodies, and responses missing `access_token`.
  */
 export async function postTokenEndpoint(
     input: PostTokenEndpointInput,
@@ -105,42 +173,28 @@ export async function postTokenEndpoint(
         Accept: 'application/json',
     }
     if (input.basicAuth) {
-        const encoded = Buffer.from(
-            `${input.basicAuth.clientId}:${input.basicAuth.clientSecret}`,
-            'utf8',
-        ).toString('base64')
-        headers.Authorization = `Basic ${encoded}`
+        headers.Authorization = `Basic ${encodeBasicAuth(input.basicAuth.clientId, input.basicAuth.clientSecret)}`
     }
 
-    const fail = (message: string, extra?: string): CliError =>
-        buildAuthError('AUTH_TOKEN_EXCHANGE_FAILED', message, input.errorHints, extra)
-
-    let response: Response
-    try {
-        response = await input.fetchImpl(input.url, {
-            method: 'POST',
-            headers,
-            body: input.body.toString(),
-        })
-    } catch (error) {
-        throw fail(`Token endpoint request failed: ${getErrorMessage(error)}`)
-    }
-
-    if (!response.ok) {
-        const detail = await safeReadText(response)
-        throw fail(`Token endpoint returned HTTP ${response.status}.`, detail)
-    }
-
-    // Parse defensively — a misconfigured proxy can return a 2xx HTML error
-    // page that would otherwise blow up with a raw SyntaxError.
-    let payload: { access_token?: string; refresh_token?: string; expires_in?: number }
-    try {
-        payload = (await response.json()) as typeof payload
-    } catch (error) {
-        throw fail(`Token endpoint returned non-JSON response: ${getErrorMessage(error)}`)
-    }
+    const payload = await postAndParseJson<{
+        access_token?: string
+        refresh_token?: string
+        expires_in?: number
+    }>({
+        url: input.url,
+        headers,
+        body: input.body.toString(),
+        errorCode: 'AUTH_TOKEN_EXCHANGE_FAILED',
+        errorLabel: 'Token endpoint',
+        errorHints: input.errorHints,
+        fetchImpl: input.fetchImpl,
+    })
     if (!payload.access_token) {
-        throw fail('Token endpoint response missing access_token.')
+        throw buildAuthError(
+            'AUTH_TOKEN_EXCHANGE_FAILED',
+            'Token endpoint response missing access_token.',
+            input.errorHints,
+        )
     }
     return {
         accessToken: payload.access_token,

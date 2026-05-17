@@ -1,4 +1,3 @@
-import { getErrorMessage } from '../../errors.js'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
     AuthAccount,
@@ -14,11 +13,13 @@ import type {
 import {
     buildAuthError,
     buildPkceAuthorizeUrl,
+    postAndParseJson,
     postTokenEndpoint,
     resolve,
-    safeReadText,
 } from './_oauth.js'
 import type { PkceLazyString } from './pkce.js'
+
+export type DcrTokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none'
 
 /**
  * RFC 7591 Dynamic Client Registration metadata POSTed to the registration
@@ -30,8 +31,13 @@ export type DcrClientMetadata = {
     clientUri?: string
     logoUri?: string
     applicationType?: 'native' | 'web'
-    /** How the token endpoint will be authenticated. Defaults to `'client_secret_basic'`. */
-    tokenEndpointAuthMethod?: 'client_secret_basic' | 'client_secret_post' | 'none'
+    /**
+     * Requested token-endpoint auth method. Defaults to `'client_secret_basic'`.
+     * The registration response is authoritative per RFC 7591 §3.2.1 — when
+     * the server returns its own `token_endpoint_auth_method`, that value
+     * wins over this configured one.
+     */
+    tokenEndpointAuthMethod?: DcrTokenEndpointAuthMethod
     /** Defaults to `['authorization_code']`. */
     grantTypes?: string[]
     /** Defaults to `['code']`. */
@@ -67,16 +73,25 @@ export type DcrProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     fetchImpl?: typeof fetch
 }
 
+const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
+    'client_secret_basic',
+    'client_secret_post',
+    'none',
+])
+
 /**
  * Build an `AuthProvider` for the RFC 7591 Dynamic Client Registration flow.
  *
  *  - `prepare`: POST `clientMetadata` to `registrationUrl`. Stash the issued
- *    `client_id` (and `client_secret` if returned) in the handshake.
+ *    `client_id`, optional `client_secret`, and the server-returned
+ *    `token_endpoint_auth_method` (RFC 7591 §3.2.1 — server is authoritative)
+ *    in the handshake.
  *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake.
- *  - `exchangeCode`: token endpoint POST, authenticated per the metadata's
- *    `tokenEndpointAuthMethod` — Basic auth header for `client_secret_basic`,
- *    secret in the body for `client_secret_post`, neither for `none` (or when
- *    the registration response carried no `client_secret`).
+ *  - `exchangeCode`: token endpoint POST, authenticated per the handshake's
+ *    server-returned auth method (falling back to the configured one) —
+ *    Basic auth header for `client_secret_basic`, secret in the body for
+ *    `client_secret_post`, neither for `none` (or when the registration
+ *    response carried no `client_secret`).
  *  - `validateToken`: caller-supplied.
  */
 export function createDcrProvider<TAccount extends AuthAccount>(
@@ -84,7 +99,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
 ): AuthProvider<TAccount> {
     const fetchImpl = options.fetchImpl ?? fetch
     const scopeSeparator = options.scopeSeparator ?? ' '
-    const tokenEndpointAuthMethod =
+    const configuredAuthMethod: DcrTokenEndpointAuthMethod =
         options.clientMetadata.tokenEndpointAuthMethod ?? 'client_secret_basic'
 
     return {
@@ -93,45 +108,47 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             const registrationBody = buildRegistrationBody(
                 options.clientMetadata,
                 input.redirectUri,
-                tokenEndpointAuthMethod,
+                configuredAuthMethod,
             )
 
-            const fail = (message: string, extra?: string) =>
-                buildAuthError('AUTH_DCR_FAILED', message, options.errorHints, extra)
+            const payload = await postAndParseJson<{
+                client_id?: string
+                client_secret?: string
+                token_endpoint_auth_method?: string
+            }>({
+                url: registrationUrl,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify(registrationBody),
+                errorCode: 'AUTH_DCR_FAILED',
+                errorLabel: 'Registration endpoint',
+                errorHints: options.errorHints,
+                fetchImpl,
+            })
 
-            let response: Response
-            try {
-                response = await fetchImpl(registrationUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Accept: 'application/json',
-                    },
-                    body: JSON.stringify(registrationBody),
-                })
-            } catch (error) {
-                throw fail(`Registration endpoint request failed: ${getErrorMessage(error)}`)
-            }
-
-            if (!response.ok) {
-                const detail = await safeReadText(response)
-                throw fail(`Registration endpoint returned HTTP ${response.status}.`, detail)
-            }
-
-            let payload: { client_id?: string; client_secret?: string }
-            try {
-                payload = (await response.json()) as typeof payload
-            } catch (error) {
-                throw fail(
-                    `Registration endpoint returned non-JSON response: ${getErrorMessage(error)}`,
-                )
-            }
             if (!payload.client_id) {
-                throw fail('Registration response missing client_id.')
+                throw buildAuthError(
+                    'AUTH_DCR_FAILED',
+                    'Registration response missing client_id.',
+                    options.errorHints,
+                )
             }
 
             const handshake: Record<string, unknown> = { clientId: payload.client_id }
             if (payload.client_secret) handshake.clientSecret = payload.client_secret
+            // Per RFC 7591 §3.2.1 the server may downgrade or override the
+            // requested method. Only persist values we know how to act on;
+            // an unknown method falls back to the configured one at exchange.
+            if (
+                typeof payload.token_endpoint_auth_method === 'string' &&
+                VALID_AUTH_METHODS.has(
+                    payload.token_endpoint_auth_method as DcrTokenEndpointAuthMethod,
+                )
+            ) {
+                handshake.tokenEndpointAuthMethod = payload.token_endpoint_auth_method
+            }
             return { handshake }
         },
 
@@ -178,6 +195,16 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             }
             const clientSecretRaw = input.handshake.clientSecret
             const clientSecret = typeof clientSecretRaw === 'string' ? clientSecretRaw : undefined
+            const issuedMethodRaw = input.handshake.tokenEndpointAuthMethod
+            const issuedMethod: DcrTokenEndpointAuthMethod | undefined =
+                typeof issuedMethodRaw === 'string' &&
+                VALID_AUTH_METHODS.has(issuedMethodRaw as DcrTokenEndpointAuthMethod)
+                    ? (issuedMethodRaw as DcrTokenEndpointAuthMethod)
+                    : undefined
+            // Server-issued method wins (RFC 7591 §3.2.1). Fall back to the
+            // configured one only when the server didn't echo a known method.
+            const effectiveAuthMethod = issuedMethod ?? configuredAuthMethod
+
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
             const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
 
@@ -191,11 +218,11 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             // Public-client fallback: a registration with no `client_secret`
             // can't authenticate Basic/Post regardless of the requested method,
             // so we POST `client_id` in the body like a non-confidential
-            // client. Otherwise honour the configured auth method.
+            // client. Otherwise honour the effective auth method.
             let basicAuth: { clientId: string; clientSecret: string } | undefined
-            if (!clientSecret || tokenEndpointAuthMethod === 'none') {
+            if (!clientSecret || effectiveAuthMethod === 'none') {
                 body.set('client_id', clientId)
-            } else if (tokenEndpointAuthMethod === 'client_secret_post') {
+            } else if (effectiveAuthMethod === 'client_secret_post') {
                 body.set('client_id', clientId)
                 body.set('client_secret', clientSecret)
             } else {
@@ -223,7 +250,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
 function buildRegistrationBody(
     metadata: DcrClientMetadata,
     redirectUri: string,
-    tokenEndpointAuthMethod: NonNullable<DcrClientMetadata['tokenEndpointAuthMethod']>,
+    tokenEndpointAuthMethod: DcrTokenEndpointAuthMethod,
 ): Record<string, unknown> {
     const body: Record<string, unknown> = {
         ...metadata.extra,

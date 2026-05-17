@@ -24,8 +24,10 @@ function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefin
 
 /**
  * Lazy resolver: a literal string, or a function that builds one from the
- * current PKCE handshake (so callers can derive the URL or client_id from
- * the active session's `baseUrl` / per-flow flags).
+ * current OAuth handshake (so callers can derive the URL or client_id from
+ * the active session's `baseUrl` / per-flow flags). Used by both
+ * `createPkceProvider` and `createDcrProvider`; prefer the grant-agnostic
+ * alias `OAuthLazyString` for new code.
  */
 export type PkceLazyString =
     | string
@@ -33,6 +35,9 @@ export type PkceLazyString =
           handshake: Record<string, unknown>
           flags: Record<string, unknown>
       }) => string | Promise<string>)
+
+/** Grant-agnostic alias for {@link PkceLazyString}. Identical type. */
+export type OAuthLazyString = PkceLazyString
 
 export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** OAuth 2.0 authorize endpoint. Function form supports per-flow base URLs (Outline self-hosted). */

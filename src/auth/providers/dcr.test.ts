@@ -143,6 +143,81 @@ describe('createDcrProvider', () => {
         expect(tokenBody.get('client_secret')).toBe('sec')
     })
 
+    it('falls back to public-client POST when registration omits client_secret even though client_secret_post was requested', async () => {
+        const { calls, fetchImpl } = makeFetchRecorder((u) =>
+            u === REGISTRATION_URL
+                ? respond({ client_id: 'pub-cid' }) // server returned no client_secret
+                : respond({ access_token: 'tok' }),
+        )
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            // Configured method asked for client_secret_post — but the registration
+            // came back without a secret, so the token request must still drop to
+            // public-client POST instead of sending a half-baked credential.
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'client_secret_post' },
+            validate,
+            fetchImpl,
+        })
+
+        const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
+        expect(prepared.handshake.clientSecret).toBeUndefined()
+
+        await provider.exchangeCode({
+            code: 'c',
+            state: 's',
+            redirectUri: REDIRECT_URI,
+            handshake: { ...prepared.handshake, codeVerifier: 'v' },
+        })
+
+        const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
+        const tokenHeaders = tokenCall.init.headers as Record<string, string>
+        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
+        expect(tokenHeaders.Authorization).toBeUndefined()
+        expect(tokenBody.get('client_id')).toBe('pub-cid')
+        expect(tokenBody.has('client_secret')).toBe(false)
+    })
+
+    it("honours the server's token_endpoint_auth_method from the registration response over the configured one (RFC 7591 §3.2.1)", async () => {
+        // Configured: client_secret_basic. Server downgrades to client_secret_post.
+        // Effective method on the token request must follow the server.
+        const { calls, fetchImpl } = makeFetchRecorder((u) =>
+            u === REGISTRATION_URL
+                ? respond({
+                      client_id: 'cid',
+                      client_secret: 'sec',
+                      token_endpoint_auth_method: 'client_secret_post',
+                  })
+                : respond({ access_token: 'tok' }),
+        )
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'client_secret_basic' },
+            validate,
+            fetchImpl,
+        })
+
+        const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
+        expect(prepared.handshake.tokenEndpointAuthMethod).toBe('client_secret_post')
+
+        await provider.exchangeCode({
+            code: 'c',
+            state: 's',
+            redirectUri: REDIRECT_URI,
+            handshake: { ...prepared.handshake, codeVerifier: 'v' },
+        })
+
+        const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
+        const tokenHeaders = tokenCall.init.headers as Record<string, string>
+        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
+        expect(tokenHeaders.Authorization).toBeUndefined()
+        expect(tokenBody.get('client_id')).toBe('cid')
+        expect(tokenBody.get('client_secret')).toBe('sec')
+    })
+
     it('tokenEndpointAuthMethod=none (or missing client_secret) sends client_id in the body and no Authorization header', async () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
