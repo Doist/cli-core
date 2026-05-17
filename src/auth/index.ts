@@ -26,6 +26,8 @@ export { createPkceProvider } from './providers/pkce.js'
 export type { PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
 export { refreshAccessToken } from './refresh.js'
 export type { RefreshAccessTokenOptions, RefreshAccessTokenResult } from './refresh.js'
+export { createDcrProvider } from './providers/dcr.js'
+export type { DcrClientMetadata, DcrProviderOptions } from './providers/dcr.js'
 export type {
     AccountRef,
     ActiveBundleSnapshot,
