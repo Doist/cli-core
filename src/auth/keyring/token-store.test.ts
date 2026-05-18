@@ -150,6 +150,23 @@ describe('createKeyringTokenStore', () => {
         expect(state.records.size).toBe(0)
     })
 
+    it('setBundle does not promote the user as default (silent refresh must not change account selection)', async () => {
+        // `set` (the explicit login path) promotes the first user to
+        // default. `setBundle` (silent refresh) must NOT, otherwise a
+        // refresh on a config with no pinned default — common after a
+        // logout-then-login-via-env-var sequence — would silently pin the
+        // refreshed account, mutating selection without the user asking.
+        const { store, state, setDefaultSpy } = fixture({
+            records: { '42': { account } },
+        })
+        expect(state.defaultId).toBeNull()
+
+        await store.setBundle!(account, { accessToken: 'at-1', refreshToken: 'rt-1' })
+
+        expect(state.defaultId).toBeNull()
+        expect(setDefaultSpy).not.toHaveBeenCalled()
+    })
+
     it('skips the refresh-slot keyring read when hasRefreshToken is false (hot-path optimisation)', async () => {
         const { refreshKeyring, store } = fixture({
             keyring: buildSingleSlot({ secret: 'at-only' }),

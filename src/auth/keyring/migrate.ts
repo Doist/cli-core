@@ -161,9 +161,14 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         const accountSlot = accountForUser(account.id)
         await writeRecordWithKeyringFallback({
             secureStore: createSecureStore({ serviceName, account: accountSlot }),
-            // Legacy single-user state never carried a refresh token, but
-            // wire the sibling slot anyway so a defensive delete clears any
-            // junk that may have been parked there by a hand-edit.
+            // The refresh slot is wired through so the helper signature
+            // doesn't have to special-case migration. `purgeRefreshSlot:
+            // false` below tells it not to touch the slot — a retry after
+            // `marker-write-failed` may land on an account that has since
+            // logged in via the v2 flow and now has a valid refresh secret.
+            // The legacy token is access-only and has no authority over
+            // refresh state; running the defensive delete would silently
+            // disable silent refresh for that account.
             refreshSecureStore: createSecureStore({
                 serviceName,
                 account: refreshAccountSlot(accountSlot),
@@ -171,6 +176,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
             userRecords,
             account,
             bundle: { accessToken: legacyToken.token },
+            purgeRefreshSlot: false,
         })
     } catch (error) {
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))

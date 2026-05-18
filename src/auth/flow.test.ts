@@ -175,13 +175,15 @@ describe('runOAuthFlow', () => {
         })
     })
 
-    it('persists the full bundle (refresh + expiry) when exchangeCode returns them', async () => {
-        const expiresAt = Date.now() + 3_600_000
+    it('persists the full bundle (refresh + access expiry + refresh expiry) when exchangeCode returns them', async () => {
+        const accessExpiresAt = Date.now() + 3_600_000
+        const refreshExpiresAt = Date.now() + 30 * 24 * 3_600_000
         const { provider, getRedirect } = instrument({
             exchangeCode: async () => ({
                 accessToken: 'tok-1',
                 refreshToken: 'rt-1',
-                expiresAt,
+                expiresAt: accessExpiresAt,
+                refreshTokenExpiresAt: refreshExpiresAt,
             }),
         })
         const store = fakeStore()
@@ -190,15 +192,14 @@ describe('runOAuthFlow', () => {
             flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
         )
 
-        // Regression guard: if `runOAuthFlow` drops refresh/expiry on the
-        // floor again (the original bug that motivated this PR), the
-        // snapshot here would lose the refresh token and the next
-        // `refreshAccessToken` call would fail with AUTH_REFRESH_UNAVAILABLE.
+        // Regression guard: if `runOAuthFlow` drops any of refresh / access
+        // expiry / refresh expiry on the floor, the snapshot would lose
+        // that field and silent re-auth would break.
         expect(store.last?.bundle).toEqual({
             accessToken: 'tok-1',
             refreshToken: 'rt-1',
-            accessTokenExpiresAt: expiresAt,
-            refreshTokenExpiresAt: undefined,
+            accessTokenExpiresAt: accessExpiresAt,
+            refreshTokenExpiresAt: refreshExpiresAt,
         })
     })
 
@@ -296,11 +297,17 @@ describe('runOAuthFlow', () => {
         expect(openBrowser).not.toHaveBeenCalled()
     })
 
-    it('halts via AbortSignal: aborting before the callback rejects with AUTH_OAUTH_FAILED and skips store.set', async () => {
+    it('halts via AbortSignal: aborting before the callback rejects with AUTH_OAUTH_FAILED and skips persistence', async () => {
         const controller = new AbortController()
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
+        // Spy on BOTH `set` and `setBundle` so a regression where
+        // `runOAuthFlow` persists via `setBundle` after abort (now the
+        // default path with refresh-token support) wouldn't slip through.
+        // Reading `store.last` is the strongest guard: it stays undefined
+        // iff neither method ran.
         const setSpy = vi.spyOn(store, 'set')
+        const setBundleSpy = vi.spyOn(store, 'setBundle')
 
         await expect(
             runOAuthFlow<Account>(
@@ -319,6 +326,8 @@ describe('runOAuthFlow', () => {
             ),
         ).rejects.toMatchObject({ code: 'AUTH_OAUTH_FAILED' })
         expect(setSpy).not.toHaveBeenCalled()
+        expect(setBundleSpy).not.toHaveBeenCalled()
+        expect(store.last).toBeUndefined()
     })
 
     it('always surfaces the authorize URL via onAuthorizeUrl, even when openBrowser succeeds', async () => {

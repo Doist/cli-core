@@ -187,30 +187,47 @@ describe('createPkceProvider', () => {
             expect(result.accessToken).toBe('new-access')
             expect(result.refreshToken).toBe('new-refresh')
             expect(result.expiresAt).toBeGreaterThan(Date.now())
-            // Account passes through so the caller doesn't have to look it up again.
-            expect(result.account).toEqual(account)
+            // `account` is intentionally left unset on refresh responses:
+            // refreshAccessToken threads the pre-refresh account through
+            // directly, so populating it here would be dead data inside
+            // cli-core. The contract still allows a provider to set it
+            // (e.g. for a server-side rename), but the PKCE default
+            // doesn't fabricate one.
+            expect(result.account).toBeUndefined()
         })
 
-        it('throws AUTH_REFRESH_EXPIRED on 400 invalid_grant (refresh token revoked or expired)', async () => {
-            const provider = createPkceProvider<Account>({
-                authorizeUrl: 'unused',
-                tokenUrl: 'https://example.com/oauth/token',
-                clientId: 'cid',
-                validate,
-                fetchImpl: (() =>
-                    Promise.resolve(
-                        new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }),
-                    )) as typeof fetch,
-            })
+        it.each([
+            ['400', 400],
+            // Many OAuth servers (and reverse proxies) return 401 for
+            // revoked / expired refresh tokens. Both must map to
+            // AUTH_REFRESH_EXPIRED so the caller forces re-login instead of
+            // treating it as a transient retryable error.
+            ['401', 401],
+        ])(
+            'throws AUTH_REFRESH_EXPIRED on %s invalid_grant (refresh token revoked or expired)',
+            async (_label, status) => {
+                const provider = createPkceProvider<Account>({
+                    authorizeUrl: 'unused',
+                    tokenUrl: 'https://example.com/oauth/token',
+                    clientId: 'cid',
+                    validate,
+                    fetchImpl: (() =>
+                        Promise.resolve(
+                            new Response(JSON.stringify({ error: 'invalid_grant' }), {
+                                status,
+                            }),
+                        )) as typeof fetch,
+                })
 
-            await expect(
-                provider.refreshToken!({
-                    refreshToken: 'rt',
-                    account,
-                    handshake: {},
-                }),
-            ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
-        })
+                await expect(
+                    provider.refreshToken!({
+                        refreshToken: 'rt',
+                        account,
+                        handshake: {},
+                    }),
+                ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
+            },
+        )
 
         it('throws AUTH_REFRESH_TRANSIENT on non-invalid_grant errors (5xx, network)', async () => {
             const transientStatus = createPkceProvider<Account>({

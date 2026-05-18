@@ -119,14 +119,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 label: 'Token',
             })
 
-            return {
-                accessToken: payload.access_token!,
-                refreshToken: payload.refresh_token,
-                expiresAt:
-                    typeof payload.expires_in === 'number'
-                        ? Date.now() + payload.expires_in * 1000
-                        : undefined,
-            }
+            return mapTokenPayloadToExchangeResult<TAccount>(payload)
         },
 
         async refreshToken(input: RefreshInput<TAccount>): Promise<ExchangeResult<TAccount>> {
@@ -161,18 +154,33 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                         : 'AUTH_REFRESH_TRANSIENT',
             })
 
-            return {
-                accessToken: payload.access_token!,
-                refreshToken: payload.refresh_token,
-                expiresAt:
-                    typeof payload.expires_in === 'number'
-                        ? Date.now() + payload.expires_in * 1000
-                        : undefined,
-                account: input.account,
-            }
+            return mapTokenPayloadToExchangeResult<TAccount>(payload)
         },
 
         validateToken: options.validate,
+    }
+}
+
+/**
+ * Translate the OAuth `{access_token, refresh_token, expires_in}` payload
+ * shape into cli-core's `ExchangeResult`. Centralised so a payload-shape
+ * change (e.g. wiring `refresh_token_expires_in` for servers that
+ * advertise it) lands in one place instead of drifting between
+ * `exchangeCode` and `refreshToken`. `account` is intentionally left
+ * unset: callers that need it (PKCE `refreshToken`) used to assign it
+ * here, but the only in-repo consumer (`refreshAccessToken`) now
+ * threads the pre-refresh account through directly.
+ */
+function mapTokenPayloadToExchangeResult<TAccount extends AuthAccount>(
+    payload: TokenEndpointPayload,
+): ExchangeResult<TAccount> {
+    return {
+        accessToken: payload.access_token!,
+        refreshToken: payload.refresh_token,
+        expiresAt:
+            typeof payload.expires_in === 'number'
+                ? Date.now() + payload.expires_in * 1000
+                : undefined,
     }
 }
 

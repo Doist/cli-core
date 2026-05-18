@@ -9,12 +9,23 @@ type WriteRecordOptions<TAccount extends AuthAccount> = {
      * Per-account keyring slot for the refresh token (separate slot under
      * `${account}/refresh`). When the bundle has no refresh token this slot
      * is still cleared on write so a previous refresh secret doesn't outlive
-     * a login that didn't return one.
+     * a login that didn't return one — except when `purgeRefreshSlot: false`,
+     * see below.
      */
     refreshSecureStore: SecureStore
     userRecords: UserRecordStore<TAccount>
     account: TAccount
     bundle: TokenBundle
+    /**
+     * When `false`, skip the defensive delete of the refresh slot for
+     * bundles without a refresh token, and don't reset `hasRefreshToken`
+     * on the persisted record. Used by `migrateLegacyAuth`: a retry after a
+     * `marker-write-failed` may land on an account that has since logged in
+     * via the v2 flow and now has a valid refresh secret — the legacy token
+     * has no authority over refresh state and must not erase it. Defaults
+     * to `true` (the safe default for fresh logins).
+     */
+    purgeRefreshSlot?: boolean
 }
 
 type WriteRecordResult = {
@@ -51,8 +62,24 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
     options: WriteRecordOptions<TAccount>,
 ): Promise<WriteRecordResult> {
     const { secureStore, refreshSecureStore, userRecords, account, bundle } = options
+    const purgeRefreshSlot = options.purgeRefreshSlot ?? true
     const trimmedAccess = bundle.accessToken.trim()
     const trimmedRefresh = bundle.refreshToken?.trim() || undefined
+
+    /**
+     * Best-effort access-slot rollback shared by both refresh-slot failure
+     * paths (write + delete). When the keyring is partially offline (or
+     * misbehaves), we route both tokens to the fallback record so they
+     * travel together — never leave an orphan access credential.
+     */
+    async function rollbackAccess(error: unknown): Promise<void> {
+        try {
+            await secureStore.deleteSecret()
+        } catch {
+            // best-effort rollback
+        }
+        if (!(error instanceof SecureStoreUnavailableError)) throw error
+    }
 
     let storedSecurely = false
     try {
@@ -69,53 +96,46 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
                 await refreshSecureStore.setSecret(trimmedRefresh)
                 wroteRefreshSecurely = true
             } catch (error) {
-                // Best-effort rollback of the access slot regardless of error
-                // shape — otherwise we leave an orphan access credential for
-                // an account cli-core hasn't recorded yet. After rollback
-                // we fall through to either the offline-fallback record
-                // (keyring) or rethrow (other).
-                try {
-                    await secureStore.deleteSecret()
-                } catch {
-                    // best-effort rollback
-                }
                 storedSecurely = false
-                if (!(error instanceof SecureStoreUnavailableError)) throw error
+                await rollbackAccess(error)
             }
-        } else {
+        } else if (purgeRefreshSlot) {
             // No refresh token in this bundle — purge any previous secret so
             // it can't shadow the new state. A delete failure here would let
             // a stale refresh token resurface on the next `active()`; safer
-            // to fall through to the offline-fallback path and roll back the
-            // access slot, mirroring the keyring-unavailable branch above.
+            // to fall through to the offline-fallback path. Callers that
+            // know they have no authority over refresh state (e.g.
+            // `migrateLegacyAuth`) pass `purgeRefreshSlot: false` to opt out
+            // of this purge entirely.
             try {
                 await refreshSecureStore.deleteSecret()
             } catch (error) {
-                try {
-                    await secureStore.deleteSecret()
-                } catch {
-                    // best-effort
-                }
                 storedSecurely = false
-                if (!(error instanceof SecureStoreUnavailableError)) throw error
+                await rollbackAccess(error)
             }
         }
     }
 
+    // Whether the record should advertise a refresh token: the bundle's
+    // refresh wins; when the caller asked us not to touch the refresh slot
+    // and the bundle has none, we have no authority to flip the bit so
+    // leave the field unset (the upsert is `replace, not merge`, but
+    // `undefined` is the contract's "I don't know" — readers fall through
+    // to the access-token-only path).
+    const hasRefreshToken = Boolean(trimmedRefresh) || (!purgeRefreshSlot ? undefined : false)
+
+    const baseRecord = {
+        account,
+        accessTokenExpiresAt: bundle.accessTokenExpiresAt,
+        refreshTokenExpiresAt: bundle.refreshTokenExpiresAt,
+        hasRefreshToken,
+    }
     const record: UserRecord<TAccount> = storedSecurely
-        ? {
-              account,
-              accessTokenExpiresAt: bundle.accessTokenExpiresAt,
-              refreshTokenExpiresAt: bundle.refreshTokenExpiresAt,
-              hasRefreshToken: Boolean(trimmedRefresh),
-          }
+        ? baseRecord
         : {
-              account,
+              ...baseRecord,
               fallbackToken: trimmedAccess,
               fallbackRefreshToken: trimmedRefresh,
-              accessTokenExpiresAt: bundle.accessTokenExpiresAt,
-              refreshTokenExpiresAt: bundle.refreshTokenExpiresAt,
-              hasRefreshToken: Boolean(trimmedRefresh),
           }
 
     try {

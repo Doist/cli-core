@@ -160,6 +160,34 @@ describe('writeRecordWithKeyringFallback', () => {
         expect(state.records.get('42')?.hasRefreshToken).toBe(false)
     })
 
+    it('does not touch the refresh slot when purgeRefreshSlot: false (legacy-migration path)', async () => {
+        // migrateLegacyAuth uses this to avoid destroying a refresh secret
+        // that a v2 login may have written between the failed-marker write
+        // and the retry. Without this, the legacy access-only token would
+        // silently disable refresh for the account.
+        const secureStore = buildSingleSlot()
+        const refreshSecureStore = buildSingleSlot({ secret: 'rt_already_there' })
+        const { store: userRecords, state } = buildUserRecords<Account>()
+
+        const result = await writeRecordWithKeyringFallback({
+            secureStore,
+            refreshSecureStore,
+            userRecords,
+            account,
+            bundle: { accessToken: 'legacy_at' },
+            purgeRefreshSlot: false,
+        })
+
+        expect(result.storedSecurely).toBe(true)
+        expect(secureStore.setSpy).toHaveBeenCalledWith('legacy_at')
+        // The pre-existing refresh secret survives the migration write.
+        expect(refreshSecureStore.deleteSpy).not.toHaveBeenCalled()
+        expect(refreshSecureStore.setSpy).not.toHaveBeenCalled()
+        // The persisted record leaves `hasRefreshToken` unset (we don't
+        // know — the legacy bundle has no authority over refresh state).
+        expect(state.records.get('42')?.hasRefreshToken).toBeUndefined()
+    })
+
     it('rethrows non-keyring errors from setSecret without writing the record', async () => {
         const secureStore = buildSingleSlot()
         const cause = new Error('unexpected backend explosion')

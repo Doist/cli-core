@@ -4,6 +4,7 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import { promisify } from 'node:util'
 import { CliError, getErrorMessage } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
+import { persistBundle } from './persist.js'
 import { generateState } from './pkce.js'
 import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
 
@@ -188,20 +189,16 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
         checkAborted()
 
         try {
-            // Use setBundle when the store implements it so refresh + expiry
-            // metadata survives to enable silent re-auth later. Fall back to
-            // the simple `set` for stores that don't (the refresh metadata is
-            // lost, which is acceptable — those stores can't refresh anyway).
-            if (options.store.setBundle) {
-                await options.store.setBundle(account, {
-                    accessToken: exchange.accessToken,
-                    refreshToken: exchange.refreshToken,
-                    accessTokenExpiresAt: exchange.expiresAt,
-                    refreshTokenExpiresAt: exchange.refreshTokenExpiresAt,
-                })
-            } else {
-                await options.store.set(account, exchange.accessToken)
-            }
+            // Shared persistence helper preferred over open-coding the
+            // `setBundle ? … : set(…)` policy — refresh.ts uses the same
+            // helper so login and silent refresh can't drift on how
+            // bundles get stored.
+            await persistBundle(options.store, account, {
+                accessToken: exchange.accessToken,
+                refreshToken: exchange.refreshToken,
+                accessTokenExpiresAt: exchange.expiresAt,
+                refreshTokenExpiresAt: exchange.refreshTokenExpiresAt,
+            })
         } catch (error) {
             if (error instanceof CliError) throw error
             throw new CliError(

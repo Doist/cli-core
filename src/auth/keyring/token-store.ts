@@ -179,7 +179,18 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         }
     }
 
-    async function persistBundle(account: TAccount, bundle: TokenBundle): Promise<void> {
+    /**
+     * Shared persistence path for `set` / `setBundle`. The `promoteDefault`
+     * flag is only `true` on the explicit `set` (login) path so that a
+     * silent refresh on a config with no pinned default doesn't accidentally
+     * pin the refreshed account as the new default — refresh is a
+     * credential-rotation operation, not an account-selection signal.
+     */
+    async function persistBundle(
+        account: TAccount,
+        bundle: TokenBundle,
+        promoteDefault: boolean,
+    ): Promise<void> {
         lastStorageResult = undefined
 
         const { storedSecurely } = await writeRecordWithKeyringFallback({
@@ -190,16 +201,18 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             bundle,
         })
 
-        // Best-effort default promotion: a failure here must not turn into
-        // `AUTH_STORE_WRITE_FAILED` (the user can recover by setting a
-        // default later).
-        try {
-            const existingDefault = await userRecords.getDefaultId()
-            if (!existingDefault) {
-                await userRecords.setDefaultId(account.id)
+        if (promoteDefault) {
+            // Best-effort: a failure here must not turn into
+            // `AUTH_STORE_WRITE_FAILED` (the user can recover by setting a
+            // default later).
+            try {
+                const existingDefault = await userRecords.getDefaultId()
+                if (!existingDefault) {
+                    await userRecords.setDefaultId(account.id)
+                }
+            } catch {
+                // best-effort
             }
-        } catch {
-            // best-effort
         }
 
         lastStorageResult = storedSecurely
@@ -228,11 +241,13 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async set(account, token) {
-            await persistBundle(account, { accessToken: token })
+            await persistBundle(account, { accessToken: token }, true)
         },
 
         async setBundle(account, bundle) {
-            await persistBundle(account, bundle)
+            // No default promotion: a silent refresh shouldn't mutate
+            // account selection. The caller already chose this account.
+            await persistBundle(account, bundle, false)
         },
 
         async clear(ref) {
@@ -256,18 +271,15 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             // Always attempt to delete both keyring slots. Either may have
             // an orphan entry from a prior keyring-online write that was
-            // later replaced by an offline-fallback write.
-            let keyringClean = true
-            try {
-                await accessStoreFor(record.account).deleteSecret()
-            } catch {
-                keyringClean = false
-            }
-            try {
-                await refreshStoreFor(record.account).deleteSecret()
-            } catch {
-                keyringClean = false
-            }
+            // later replaced by an offline-fallback write. Run them
+            // concurrently — they're independent and the keyring IPC
+            // round-trip is the latency-heavy part.
+            const [accessResult, refreshResult] = await Promise.allSettled([
+                accessStoreFor(record.account).deleteSecret(),
+                refreshStoreFor(record.account).deleteSecret(),
+            ])
+            const keyringClean =
+                accessResult.status === 'fulfilled' && refreshResult.status === 'fulfilled'
 
             if (!keyringClean) {
                 lastClearResult = fallbackClear

@@ -1,6 +1,7 @@
 import { closeSync, openSync, unlinkSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { CliError } from '../errors.js'
+import { persistBundle } from './persist.js'
 import type { AccountRef, AuthAccount, AuthProvider, TokenBundle, TokenStore } from './types.js'
 import { requireSnapshotForRef } from './user-flag.js'
 
@@ -129,6 +130,12 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
             handshake: buildHandshake(account),
         })
 
+        // Honour an `account` returned by the provider — refresh responses
+        // can legitimately carry updated identity (server-side rename,
+        // re-resolved label) that callers want to see. Defaults to the
+        // pre-refresh account when the provider doesn't return one.
+        const refreshedAccount = exchange.account ?? account
+
         const nextBundle: TokenBundle = {
             accessToken: exchange.accessToken,
             // Rotate when the server returns one, keep the previous when it
@@ -138,28 +145,14 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
             refreshTokenExpiresAt: exchange.refreshTokenExpiresAt ?? bundle.refreshTokenExpiresAt,
         }
 
-        await persistBundle(options.store, account, nextBundle)
-        return { token: nextBundle.accessToken, bundle: nextBundle, account }
+        await persistBundle(options.store, refreshedAccount, nextBundle)
+        return {
+            token: nextBundle.accessToken,
+            bundle: nextBundle,
+            account: refreshedAccount,
+        }
     } finally {
         if (lock) lock.release()
-    }
-}
-
-/**
- * Persist via `setBundle` when the store implements it; fall back to `set`
- * with just the access token for simple single-token stores (they lose
- * refresh + expiry metadata; subsequent refreshes will fail with
- * `AUTH_REFRESH_UNAVAILABLE`, which surfaces as a forced re-login).
- */
-async function persistBundle<TAccount extends AuthAccount>(
-    store: TokenStore<TAccount>,
-    account: TAccount,
-    bundle: TokenBundle,
-): Promise<void> {
-    if (store.setBundle) {
-        await store.setBundle(account, bundle)
-    } else {
-        await store.set(account, bundle.accessToken)
     }
 }
 
