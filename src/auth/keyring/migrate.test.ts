@@ -353,8 +353,14 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         // is racy: a parallel v2 login could complete between the two
         // calls and we'd clobber it. With `tryInsert`, the consumer
         // commits to an atomic check-and-insert and we trust their answer.
-        const tryInsert = vi.fn(async (_record: UserRecord<Account>) => true)
         const harness = buildUserRecords<Account>()
+        // Stub tryInsert that ALSO actually inserts into the harness so
+        // the migration's ownership-check re-reads see the placeholder.
+        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
+            if (harness.state.records.has(record.account.id)) return false
+            harness.state.records.set(record.account.id, record)
+            return true
+        })
         harness.store.tryInsert = tryInsert
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })
@@ -373,15 +379,21 @@ describe('migrateLegacyAuth — stderr privacy', () => {
 
         expect(result).toMatchObject({ status: 'migrated' })
         expect(tryInsert).toHaveBeenCalledTimes(1)
-        // The inserted record persists `hasRefreshToken: false` (legacy
-        // tokens never have a refresh slot) so `active()` skips the
-        // refresh-slot keyring round-trip per command for migrated users.
+        // Placeholder uses a unique signature (`fallbackToken: legacyToken`
+        // + `hasRefreshToken: undefined`) so the ownership-check re-read
+        // can distinguish "still ours" from "v2 login took over". After
+        // the keyring write succeeds the follow-up upsert flips
+        // `hasRefreshToken` to `false`.
         expect(tryInsert.mock.calls[0][0]).toMatchObject({
             account: { id: '1' },
-            hasRefreshToken: false,
+            fallbackToken: 'legacy_tok',
+            hasRefreshToken: undefined,
         })
         // Access secret landed in the per-user slot.
         expect(km.slots.get('user-1')?.secret).toBe('legacy_tok')
+        // Follow-up upsert flipped hasRefreshToken to false (so future
+        // active() reads skip the refresh-slot IPC).
+        expect(harness.state.records.get('1')?.hasRefreshToken).toBe(false)
     })
 
     it('keeps the plaintext fallback on the record when tryInsert succeeds but setSecret hits a keyring-offline error', async () => {
@@ -392,9 +404,13 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         // no recoverable token. Subsequent migrations would see
         // `tryInsert: false` (record exists) and the CLI would surface
         // AUTH_STORE_READ_FAILED forever.
-        const tryInsert = vi.fn(async (_record: UserRecord<Account>) => true)
-        const upsertSpy = vi.fn(async (_record: UserRecord<Account>) => {})
         const harness = buildUserRecords<Account>()
+        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
+            if (harness.state.records.has(record.account.id)) return false
+            harness.state.records.set(record.account.id, record)
+            return true
+        })
+        const upsertSpy = vi.fn(async (_record: UserRecord<Account>) => {})
         harness.store.tryInsert = tryInsert
         // Intercept upsert too so we can verify it isn't called to clear
         // the fallback (would happen on success).
@@ -423,14 +439,67 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         })
 
         expect(result).toMatchObject({ status: 'migrated' })
-        // tryInsert was called with the plaintext fallback baked in.
+        // tryInsert was called with the plaintext fallback baked in
+        // (placeholder signature: `fallbackToken: legacyToken` +
+        // `hasRefreshToken: undefined`).
         expect(tryInsert.mock.calls[0][0]).toMatchObject({
             fallbackToken: 'legacy_tok',
-            hasRefreshToken: false,
+            hasRefreshToken: undefined,
         })
         // The follow-up upsert (which would clear the fallback) never
         // ran because setSecret failed — the record keeps the fallback.
         expect(upsertSpy).not.toHaveBeenCalled()
+    })
+
+    it('aborts the keyring write when a concurrent v2 login replaces the placeholder mid-migration', async () => {
+        // Simulates: tryInsert succeeds with our placeholder; then a v2
+        // login completes (writes its own access token + record) before
+        // we run our follow-up keyring writes. The ownership-check
+        // re-read must detect the shape change and stop us from
+        // clobbering the v2 state.
+        const harness = buildUserRecords<Account>()
+        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
+            if (harness.state.records.has(record.account.id)) return false
+            harness.state.records.set(record.account.id, record)
+            // Race: as soon as our placeholder lands, a v2 login completes.
+            // Replaces the record with its keyring-backed shape (no
+            // fallbackToken, hasRefreshToken: true).
+            harness.state.records.set(record.account.id, {
+                account: { id: '1', email: 'a@b' },
+                hasRefreshToken: true,
+            })
+            return true
+        })
+        harness.store.tryInsert = tryInsert
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        // V2 already wrote its access token to the keyring before our
+        // migration's setSecret runs.
+        km.slots.set('user-1', { secret: 'v2_access' })
+        km.slots.set('user-1/refresh', { secret: 'v2_refresh' })
+        mockedCreateSecureStore.mockImplementation(km.create)
+
+        await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords: harness.store,
+            hasMigrated: async () => false,
+            markMigrated: async () => {},
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => ({ id: '1', email: 'a@b' }),
+            silent: true,
+        })
+
+        // V2's access token survives — our setSecret was skipped because
+        // the ownership-check re-read saw the record had been replaced.
+        expect(km.slots.get('user-1')?.secret).toBe('v2_access')
+        // V2's refresh token survives too.
+        expect(km.slots.get('user-1/refresh')?.secret).toBe('v2_refresh')
+        // The v2 record is intact (hasRefreshToken: true, no fallback).
+        expect(harness.state.records.get('1')).toMatchObject({
+            hasRefreshToken: true,
+        })
+        expect(harness.state.records.get('1')?.fallbackToken).toBeUndefined()
     })
 
     it('leaves the v2 record alone when tryInsert returns false (existing v2 login)', async () => {
