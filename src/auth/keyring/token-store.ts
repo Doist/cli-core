@@ -131,11 +131,15 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
     /**
      * Read the access + refresh secrets for a record, preferring the
-     * plaintext fallbacks when present. Returns `null` when the access slot
-     * is empty (corrupted state, surfaced to the caller as
-     * `AUTH_STORE_READ_FAILED`).
+     * plaintext fallbacks when present. Throws `AUTH_STORE_READ_FAILED`
+     * directly when the access slot is empty (deleted out-of-band) or
+     * when the keyring read itself fails — collapsing it to a return
+     * value here would leave the caller doing the same `if (!bundle)
+     * throw` dance, smearing the corruption signal across two places.
+     * `attachLogoutCommand` catches this code specifically so an explicit
+     * `logout --user <ref>` can still clear the corrupted record.
      */
-    async function readBundleForRecord(record: UserRecord<TAccount>): Promise<TokenBundle | null> {
+    async function readBundleForRecord(record: UserRecord<TAccount>): Promise<TokenBundle> {
         const fallbackAccess = record.fallbackToken?.trim()
         if (fallbackAccess) {
             return {
@@ -188,11 +192,36 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         const [rawAccess, rawRefresh] = await Promise.all([accessPromise, refreshPromise])
 
         const accessToken = rawAccess?.trim()
-        if (!accessToken) return null
+        if (!accessToken) {
+            // Record exists, no `fallbackToken`, and the keyring slot is
+            // empty — the credential was deleted out-of-band (user ran
+            // `security delete-generic-password`, `secret-tool clear`, …).
+            throw new CliError(
+                'AUTH_STORE_READ_FAILED',
+                `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
+            )
+        }
+
+        const refreshToken = rawRefresh?.trim() || undefined
+
+        // Backfill `hasRefreshToken: false` best-effort when we probed the
+        // refresh slot (record said `undefined` — "unknown") and found
+        // nothing. Pre-PR records didn't have this field; without the
+        // backfill they'd pay an extra keyring IPC per `active()` call
+        // forever. Doing it on a read isn't strictly race-safe — a
+        // concurrent `setBundle` could be writing a fresh refresh secret
+        // at the same instant — but for an account whose record says
+        // "no refresh yet known", such concurrency is vanishingly rare
+        // (login is foreground; silent refresh requires an already-stored
+        // refresh token). Failures here are swallowed: the worst case is
+        // the next `active()` pays the same extra IPC and tries again.
+        if (record.hasRefreshToken === undefined && refreshToken === undefined) {
+            void userRecords.upsert({ ...record, hasRefreshToken: false }).catch(() => undefined)
+        }
 
         return {
             accessToken,
-            refreshToken: rawRefresh?.trim() || undefined,
+            refreshToken,
             accessTokenExpiresAt: record.accessTokenExpiresAt,
             refreshTokenExpiresAt: record.refreshTokenExpiresAt,
         }
@@ -256,13 +285,6 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             if (!record) return null
 
             const bundle = await readBundleForRecord(record)
-            if (!bundle) {
-                throw new CliError(
-                    'AUTH_STORE_READ_FAILED',
-                    `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
-                )
-            }
-
             return { token: bundle.accessToken, bundle, account: record.account }
         },
 

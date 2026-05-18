@@ -168,55 +168,63 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     // acceptable for typical postinstall-style invocations.
     try {
         const accountSlot = accountForUser(account.id)
+        const accessStore = createSecureStore({ serviceName, account: accountSlot })
+        const refreshStore = createSecureStore({
+            serviceName,
+            account: refreshAccountSlot(accountSlot),
+        })
+
         if (userRecords.tryInsert) {
-            // Migration writes access-only; refresh slot defensively
-            // cleared so a hand-edited stale secret can't shadow the
-            // legacy state. `hasRefreshToken: false` is persisted so
-            // `active()` skips the refresh-slot round-trip per command.
-            // When the record already exists, `tryInsert` returns false
-            // and we leave the v2 record alone.
-            const refreshStore = createSecureStore({
-                serviceName,
-                account: refreshAccountSlot(accountSlot),
-            })
+            // Two-phase write so a crash between the record write and the
+            // keyring write can't permanently brick the user. Without it,
+            // a crash mid-migration would leave a record with no
+            // recoverable token: subsequent retries see `tryInsert: false`,
+            // skip, and the CLI surfaces `AUTH_STORE_READ_FAILED` forever.
+            //
+            // Phase 1: tryInsert with `fallbackToken: legacyToken.token`
+            // — even if everything after this crashes, the record is
+            // self-sufficient via the plaintext fallback path.
+            // Phase 2: move the secret into the keyring, then upsert to
+            // clear the fallback. If the keyring is offline we leave the
+            // fallback in place (the correct degraded state).
             const inserted = await userRecords.tryInsert({
                 account,
-                fallbackToken: undefined,
+                fallbackToken: legacyToken.token,
                 hasRefreshToken: false,
             })
             if (inserted) {
-                // Now persist the access secret + clear the refresh slot.
-                // Done after the record write because `tryInsert`'s
-                // atomicity guarantee is the load-bearing piece.
+                let movedToKeyring = false
                 try {
-                    await createSecureStore({
-                        serviceName,
-                        account: accountSlot,
-                    }).setSecret(legacyToken.token)
+                    await accessStore.setSecret(legacyToken.token)
+                    movedToKeyring = true
                 } catch (error) {
                     if (!(error instanceof SecureStoreUnavailableError)) throw error
-                    // Keyring offline: re-upsert with the plaintext fallback.
-                    await userRecords.upsert({
-                        account,
-                        fallbackToken: legacyToken.token,
-                        hasRefreshToken: false,
-                    })
+                    // Keyring offline — keep the plaintext fallback.
                 }
-                // Best-effort cleanup of any stale refresh secret.
+                if (movedToKeyring) {
+                    await userRecords.upsert({ account, hasRefreshToken: false })
+                }
+                // Best-effort cleanup of any stale refresh secret (legacy
+                // single-user state never had one, but a hand-edit might).
                 await refreshStore.deleteSecret().catch(() => undefined)
             }
         } else {
             const existing = (await userRecords.list()).find((r) => r.account.id === account.id)
             if (!existing) {
                 await writeRecordWithKeyringFallback({
-                    secureStore: createSecureStore({ serviceName, account: accountSlot }),
-                    refreshSecureStore: createSecureStore({
-                        serviceName,
-                        account: refreshAccountSlot(accountSlot),
-                    }),
+                    secureStore: accessStore,
+                    refreshSecureStore: refreshStore,
                     userRecords,
                     account,
                     bundle: { accessToken: legacyToken.token },
+                    // The list-then-write fallback can still race with a
+                    // parallel v2 login that writes a refresh secret
+                    // between our `list()` and the helper's `upsert`.
+                    // `purgeRefreshSlot: false` keeps the refresh slot
+                    // untouched and persists `hasRefreshToken: undefined`
+                    // ("unknown" — readers probe the slot) so a v2
+                    // refresh secret written mid-race remains visible.
+                    purgeRefreshSlot: false,
                 })
             }
         }

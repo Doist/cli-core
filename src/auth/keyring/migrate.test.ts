@@ -384,6 +384,55 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         expect(km.slots.get('user-1')?.secret).toBe('legacy_tok')
     })
 
+    it('keeps the plaintext fallback on the record when tryInsert succeeds but setSecret hits a keyring-offline error', async () => {
+        // Two-phase write under contention with an offline keyring:
+        // phase 1 (tryInsert with fallbackToken) succeeds, phase 2
+        // (setSecret) throws SecureStoreUnavailableError. The migration
+        // must NOT clear the fallback — that would leave a record with
+        // no recoverable token. Subsequent migrations would see
+        // `tryInsert: false` (record exists) and the CLI would surface
+        // AUTH_STORE_READ_FAILED forever.
+        const tryInsert = vi.fn(async (_record: UserRecord<Account>) => true)
+        const upsertSpy = vi.fn(async (_record: UserRecord<Account>) => {})
+        const harness = buildUserRecords<Account>()
+        harness.store.tryInsert = tryInsert
+        // Intercept upsert too so we can verify it isn't called to clear
+        // the fallback (would happen on success).
+        const originalUpsert = harness.store.upsert
+        harness.store.upsert = async (record) => {
+            await upsertSpy(record)
+            return originalUpsert(record)
+        }
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        km.slots.set('user-1', {
+            secret: null,
+            setErr: new SecureStoreUnavailableError('keyring down'),
+        })
+        mockedCreateSecureStore.mockImplementation(km.create)
+
+        const result = await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords: harness.store,
+            hasMigrated: async () => false,
+            markMigrated: async () => {},
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => ({ id: '1', email: 'a@b' }),
+            silent: true,
+        })
+
+        expect(result).toMatchObject({ status: 'migrated' })
+        // tryInsert was called with the plaintext fallback baked in.
+        expect(tryInsert.mock.calls[0][0]).toMatchObject({
+            fallbackToken: 'legacy_tok',
+            hasRefreshToken: false,
+        })
+        // The follow-up upsert (which would clear the fallback) never
+        // ran because setSecret failed — the record keeps the fallback.
+        expect(upsertSpy).not.toHaveBeenCalled()
+    })
+
     it('leaves the v2 record alone when tryInsert returns false (existing v2 login)', async () => {
         // The whole point of routing through `tryInsert`: when a v2
         // login has already completed for the same account between

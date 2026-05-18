@@ -126,7 +126,7 @@ describe('createKeyringTokenStore', () => {
         const { keyring, refreshKeyring, store, state } = fixture()
         const expiresAt = Date.now() + 3_600_000
 
-        await store.setBundle!(account, {
+        await store.setBundle(account, {
             accessToken: 'at-1',
             refreshToken: 'rt-1',
             accessTokenExpiresAt: expiresAt,
@@ -164,7 +164,7 @@ describe('createKeyringTokenStore', () => {
         })
         expect(state.defaultId).toBeNull()
 
-        await store.setBundle!(account, { accessToken: 'at-1', refreshToken: 'rt-1' })
+        await store.setBundle(account, { accessToken: 'at-1', refreshToken: 'rt-1' })
 
         expect(state.defaultId).toBeNull()
         expect(setDefaultSpy).not.toHaveBeenCalled()
@@ -193,6 +193,47 @@ describe('createKeyringTokenStore', () => {
         // refresh-slot path).
         expect(keyring.getSpy).toHaveBeenCalled()
         expect(refreshKeyring.getSpy).toHaveBeenCalled()
+    })
+
+    it('propagates non-keyring errors from the refresh-slot read (no silent downgrade)', async () => {
+        // Unexpected backend or programming errors must NOT collapse to
+        // "no refresh token" — that would hide real breakage. Only
+        // SecureStoreUnavailableError is the documented degraded case.
+        const refreshKeyring = buildSingleSlot()
+        refreshKeyring.getSpy.mockRejectedValueOnce(new Error('boom — programming error'))
+        const { store } = fixture({
+            keyring: buildSingleSlot({ secret: 'at-1' }),
+            refreshKeyring,
+            records: { '42': { account, hasRefreshToken: true } },
+            defaultId: '42',
+        })
+
+        await expect(store.active()).rejects.toThrow(/boom/)
+    })
+
+    it('backfills hasRefreshToken: false on the record when undefined and the refresh slot is empty', async () => {
+        // Pre-PR keyring-backed records have `hasRefreshToken: undefined`
+        // because the field didn't exist. Treating undefined as "try the
+        // slot" is correct (preserves migration safety) but would cost
+        // every active() call a second keyring IPC forever. After a read
+        // confirms the slot is empty, backfill `false` so subsequent
+        // reads skip the slot.
+        const refreshKeyring = buildSingleSlot() // empty refresh slot
+        const { store, state, upsertSpy } = fixture({
+            keyring: buildSingleSlot({ secret: 'at-old' }),
+            refreshKeyring,
+            records: { '42': { account } }, // hasRefreshToken: undefined
+            defaultId: '42',
+        })
+
+        await store.active()
+
+        // Backfill is fire-and-forget — wait for the microtask flush so
+        // the assertion isn't racy.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(upsertSpy).toHaveBeenCalled()
+        expect(state.records.get('42')?.hasRefreshToken).toBe(false)
     })
 
     it('reads the refresh slot when hasRefreshToken is undefined (unknown state from legacy migration)', async () => {
