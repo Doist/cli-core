@@ -203,6 +203,50 @@ describe('runOAuthFlow', () => {
         })
     })
 
+    it('falls back to set(token) when the store does not implement setBundle (custom-store back-compat)', async () => {
+        // Custom `TokenStore` implementations predating refresh-token
+        // support only ship `set(account, token)`. The shared
+        // `persistBundle` helper degrades gracefully — login still works,
+        // but refresh metadata is lost (subsequent refreshes throw
+        // AUTH_REFRESH_UNAVAILABLE). Without this test the back-compat
+        // path is unexercised and a regression that always required
+        // `setBundle` would silently break consumers.
+        const setSpy = vi.fn(async (_account: Account, _token: string) => {})
+        const legacyStore: TokenStore<Account> = {
+            async active() {
+                return null
+            },
+            set: setSpy,
+            // No setBundle — that's the whole point.
+            async clear() {},
+            async list() {
+                return []
+            },
+            async setDefault() {},
+        }
+        const { provider, getRedirect } = instrument({
+            exchangeCode: async () => ({
+                accessToken: 'tok-legacy',
+                refreshToken: 'rt-1',
+                expiresAt: Date.now() + 3_600_000,
+            }),
+        })
+
+        await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store: legacyStore,
+                openBrowser: driveCallback(getRedirect),
+            }),
+        )
+
+        // The legacy `set` path receives just the access token — refresh +
+        // expiry get dropped (correct degraded behaviour for stores that
+        // can't persist them).
+        expect(setSpy).toHaveBeenCalledTimes(1)
+        expect(setSpy.mock.calls[0][1]).toBe('tok-legacy')
+    })
+
     it('skips validateToken when exchangeCode returns an account', async () => {
         const validateToken = vi.fn(async () => ({ id: 'WRONG', email: 'x@x' }))
         const { provider, getRedirect } = instrument({

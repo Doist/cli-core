@@ -154,32 +154,47 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return skipped(silent, logPrefix, 'identify-failed', getErrorMessage(error))
     }
 
-    // `writeRecordWithKeyringFallback` swallows `SecureStoreUnavailableError`
-    // internally (writing to `fallbackToken` instead), so any error here is
-    // a non-keyring failure — typically a `userRecords.upsert` rejection.
+    // Skip the write entirely when the v2 record already exists for this
+    // account. A `marker-write-failed` retry may land on a store where the
+    // user has since completed a v2 login (with a refresh token + expiry
+    // on the record). `userRecords.upsert` is replace-not-merge — writing
+    // here with a legacy access-only bundle would clobber that v2 metadata
+    // (`hasRefreshToken`, `accessTokenExpiresAt`, …) and silently disable
+    // silent refresh for the account. The legacy token has no authority
+    // over refresh state, so the safest answer is "don't touch a record
+    // that already exists — just complete the migration marker".
+    let existingRecords: Awaited<ReturnType<UserRecordStore<TAccount>['list']>>
     try {
-        const accountSlot = accountForUser(account.id)
-        await writeRecordWithKeyringFallback({
-            secureStore: createSecureStore({ serviceName, account: accountSlot }),
-            // The refresh slot is wired through so the helper signature
-            // doesn't have to special-case migration. `purgeRefreshSlot:
-            // false` below tells it not to touch the slot — a retry after
-            // `marker-write-failed` may land on an account that has since
-            // logged in via the v2 flow and now has a valid refresh secret.
-            // The legacy token is access-only and has no authority over
-            // refresh state; running the defensive delete would silently
-            // disable silent refresh for that account.
-            refreshSecureStore: createSecureStore({
-                serviceName,
-                account: refreshAccountSlot(accountSlot),
-            }),
-            userRecords,
-            account,
-            bundle: { accessToken: legacyToken.token },
-            purgeRefreshSlot: false,
-        })
+        existingRecords = await userRecords.list()
     } catch (error) {
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
+    }
+    const existing = existingRecords.find((r) => r.account.id === account.id)
+    if (!existing) {
+        // `writeRecordWithKeyringFallback` swallows `SecureStoreUnavailableError`
+        // internally (writing to `fallbackToken` instead), so any error here
+        // is a non-keyring failure — typically a `userRecords.upsert`
+        // rejection.
+        try {
+            const accountSlot = accountForUser(account.id)
+            await writeRecordWithKeyringFallback({
+                secureStore: createSecureStore({ serviceName, account: accountSlot }),
+                // Refresh slot wired through but never touched on the legacy
+                // path — `purgeRefreshSlot: false` opts out of the defensive
+                // delete so a hand-edited refresh secret survives (though
+                // legacy single-user state never had one).
+                refreshSecureStore: createSecureStore({
+                    serviceName,
+                    account: refreshAccountSlot(accountSlot),
+                }),
+                userRecords,
+                account,
+                bundle: { accessToken: legacyToken.token },
+                purgeRefreshSlot: false,
+            })
+        } catch (error) {
+            return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
+        }
     }
 
     // Default promotion is best-effort and **only fires when nothing is

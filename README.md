@@ -403,6 +403,7 @@ The helper is best-effort throughout: any failure (offline keyring, network erro
 For OAuth providers whose servers issue refresh tokens (Outline, anything ALCs / DCR-based), `refreshAccessToken` keeps users signed in past the access token's expiry without re-running `<cli> auth login`. Wire it through your CLI's `getApiToken()` so every authenticated request consults the same code path. The `createPkceProvider` ships with a `refreshToken` implementation; bespoke providers add their own.
 
 ```ts
+import { getConfigPath } from '@doist/cli-core'
 import { refreshAccessToken } from '@doist/cli-core/auth'
 
 export async function getApiToken(): Promise<string> {

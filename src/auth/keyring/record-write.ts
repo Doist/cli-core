@@ -142,18 +142,14 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
         await userRecords.upsert(record)
     } catch (error) {
         if (storedSecurely) {
-            try {
-                await secureStore.deleteSecret()
-            } catch {
-                // best-effort — the user record failure is the real cause
-            }
-            if (wroteRefreshSecurely) {
-                try {
-                    await refreshSecureStore.deleteSecret()
-                } catch {
-                    // best-effort
-                }
-            }
+            // Roll back both keyring writes concurrently — independent calls
+            // and the IPC round-trip is the latency-heavy part. `allSettled`
+            // also keeps the user-record error (the real failure) from
+            // being shadowed by a rollback throw.
+            await Promise.allSettled([
+                secureStore.deleteSecret(),
+                wroteRefreshSecurely ? refreshSecureStore.deleteSecret() : Promise.resolve(false),
+            ])
         }
         throw error
     }

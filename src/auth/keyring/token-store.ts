@@ -160,11 +160,17 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 }
                 throw error
             })
-        const refreshPromise = record.hasRefreshToken
-            ? refreshStoreFor(record.account)
-                  .getSecret()
-                  .catch(() => null)
-            : Promise.resolve(null)
+        // `!== false` rather than truthy: a record with `hasRefreshToken:
+        // undefined` (e.g. one written by the legacy-migration path which
+        // has no authority over refresh state) means "unknown — try the
+        // slot". Treating undefined as "no" here would silently hide a v2
+        // refresh secret that a later v2 login put in the sibling slot.
+        const refreshPromise =
+            record.hasRefreshToken !== false
+                ? refreshStoreFor(record.account)
+                      .getSecret()
+                      .catch(() => null)
+                : Promise.resolve(null)
 
         const [rawAccess, rawRefresh] = await Promise.all([accessPromise, refreshPromise])
 
@@ -179,14 +185,21 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         }
     }
 
+    /** Snapshot for a ref-only resolve path; skips the `getDefaultId` read. */
+    function refOnlySnapshot(records: UserRecord<TAccount>[]): Snapshot {
+        return { records, defaultId: null }
+    }
+
     /**
      * Shared persistence path for `set` / `setBundle`. The `promoteDefault`
-     * flag is only `true` on the explicit `set` (login) path so that a
-     * silent refresh on a config with no pinned default doesn't accidentally
-     * pin the refreshed account as the new default — refresh is a
-     * credential-rotation operation, not an account-selection signal.
+     * flag is `true` for explicit-login callers (the legacy `set(token)`
+     * path always promotes; the `setBundle(account, bundle, {
+     * promoteDefault: true })` path opts in via the option). Silent refresh
+     * never promotes — credential rotation must not mutate account
+     * selection. Renamed away from the shared module's `persistBundle` so
+     * navigation isn't ambiguous.
      */
-    async function persistBundle(
+    async function writeBundle(
         account: TAccount,
         bundle: TokenBundle,
         promoteDefault: boolean,
@@ -222,10 +235,10 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
     return {
         async active(ref) {
-            const snapshot: Snapshot =
+            const snapshot =
                 ref === undefined
                     ? await readFullSnapshot()
-                    : { records: await userRecords.list(), defaultId: null }
+                    : refOnlySnapshot(await userRecords.list())
             const record = resolveTarget(snapshot, ref)
             if (!record) return null
 
@@ -241,13 +254,14 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async set(account, token) {
-            await persistBundle(account, { accessToken: token }, true)
+            await writeBundle(account, { accessToken: token }, true)
         },
 
-        async setBundle(account, bundle) {
-            // No default promotion: a silent refresh shouldn't mutate
-            // account selection. The caller already chose this account.
-            await persistBundle(account, bundle, false)
+        async setBundle(account, bundle, setOptions) {
+            // Default promotion is opt-in here: callers from the explicit
+            // login path pass `promoteDefault: true`; silent refresh omits
+            // it so credential rotation doesn't mutate account selection.
+            await writeBundle(account, bundle, setOptions?.promoteDefault === true)
         },
 
         async clear(ref) {
@@ -304,7 +318,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async setDefault(ref) {
-            const snapshot: Snapshot = { records: await userRecords.list(), defaultId: null }
+            const snapshot = refOnlySnapshot(await userRecords.list())
             const record = resolveTarget(snapshot, ref)
             if (!record) {
                 throw accountNotFoundError(ref)

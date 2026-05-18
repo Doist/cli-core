@@ -4,7 +4,7 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import { promisify } from 'node:util'
 import { CliError, getErrorMessage } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
-import { persistBundle } from './persist.js'
+import { bundleFromExchange, persistBundle } from './persist.js'
 import { generateState } from './pkce.js'
 import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
 
@@ -189,15 +189,12 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
         checkAborted()
 
         try {
-            // Shared persistence helper preferred over open-coding the
-            // `setBundle ? … : set(…)` policy — refresh.ts uses the same
-            // helper so login and silent refresh can't drift on how
-            // bundles get stored.
-            await persistBundle(options.store, account, {
-                accessToken: exchange.accessToken,
-                refreshToken: exchange.refreshToken,
-                accessTokenExpiresAt: exchange.expiresAt,
-                refreshTokenExpiresAt: exchange.refreshTokenExpiresAt,
+            await persistBundle(options.store, account, bundleFromExchange(exchange), {
+                // Explicit-login path: pin this account as default when
+                // nothing is pinned yet so the first login on a fresh
+                // config auto-selects it. `refreshAccessToken` omits this
+                // flag so silent refresh never mutates selection.
+                promoteDefault: true,
             })
         } catch (error) {
             if (error instanceof CliError) throw error

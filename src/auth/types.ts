@@ -151,8 +151,17 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * which loses refresh + expiry metadata. The built-in
      * `createKeyringTokenStore` implements this so refresh-token flows work
      * end-to-end.
+     *
+     * `options.promoteDefault: true` lets explicit-login callers ask the
+     * store to pin this account as the default when nothing is pinned yet
+     * (mirrors `set`'s implicit promotion). Silent refresh paths omit it so
+     * a refresh never mutates account selection.
      */
-    setBundle?(account: TAccount, bundle: TokenBundle): Promise<void>
+    setBundle?(
+        account: TAccount,
+        bundle: TokenBundle,
+        options?: { promoteDefault?: boolean },
+    ): Promise<void>
     /** Remove a stored credential. No-op when `ref` doesn't match. */
     clear(ref?: AccountRef): Promise<void>
     /** Every stored account with a default marker. */

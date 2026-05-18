@@ -1,7 +1,7 @@
 import { closeSync, openSync, unlinkSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { CliError } from '../errors.js'
-import { persistBundle } from './persist.js'
+import { bundleFromExchange, persistBundle } from './persist.js'
 import type { AccountRef, AuthAccount, AuthProvider, TokenBundle, TokenStore } from './types.js'
 import { requireSnapshotForRef } from './user-flag.js'
 
@@ -136,14 +136,11 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         // pre-refresh account when the provider doesn't return one.
         const refreshedAccount = exchange.account ?? account
 
-        const nextBundle: TokenBundle = {
-            accessToken: exchange.accessToken,
-            // Rotate when the server returns one, keep the previous when it
-            // doesn't.
-            refreshToken: exchange.refreshToken ?? bundle.refreshToken,
-            accessTokenExpiresAt: exchange.expiresAt,
-            refreshTokenExpiresAt: exchange.refreshTokenExpiresAt ?? bundle.refreshTokenExpiresAt,
-        }
+        // `bundleFromExchange` carries forward refresh + refresh expiry
+        // when the server omits them (rotation isn't universal). Silent
+        // refresh persists without `promoteDefault` so credential rotation
+        // never mutates account selection.
+        const nextBundle = bundleFromExchange(exchange, bundle)
 
         await persistBundle(options.store, refreshedAccount, nextBundle)
         return {

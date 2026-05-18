@@ -1,4 +1,19 @@
-import type { AuthAccount, TokenBundle, TokenStore } from './types.js'
+import type { AuthAccount, ExchangeResult, TokenBundle, TokenStore } from './types.js'
+
+export type PersistBundleOptions = {
+    /**
+     * Ask a `setBundle`-implementing store to pin this account as the
+     * default when nothing is pinned yet. Login (`runOAuthFlow`) sets this
+     * to `true` so the first login on a fresh config auto-selects the
+     * account; silent refresh (`refreshAccessToken`) omits it so a refresh
+     * never mutates account selection.
+     *
+     * Ignored when the store doesn't implement `setBundle` — the legacy
+     * `set(token)` fallback always promotes (matches its historical
+     * behaviour and the single-token-store mental model).
+     */
+    promoteDefault?: boolean
+}
 
 /**
  * Persist a `TokenBundle` through whatever method the store implements.
@@ -16,10 +31,36 @@ export async function persistBundle<TAccount extends AuthAccount>(
     store: TokenStore<TAccount>,
     account: TAccount,
     bundle: TokenBundle,
+    options: PersistBundleOptions = {},
 ): Promise<void> {
     if (store.setBundle) {
-        await store.setBundle(account, bundle)
+        await store.setBundle(account, bundle, { promoteDefault: options.promoteDefault })
     } else {
         await store.set(account, bundle.accessToken)
+    }
+}
+
+/**
+ * Translate an `ExchangeResult` (returned by `exchangeCode` / `refreshToken`)
+ * into the persisted `TokenBundle` shape. Centralised so a new field added
+ * to either side (e.g. wiring `refreshTokenExpiresAt` for OAuth servers
+ * that advertise it) lands in one place instead of drifting between
+ * `runOAuthFlow` and `refreshAccessToken`.
+ *
+ * `previous` carries-forward credentials that the response didn't refresh.
+ * Refresh-token rotation is the most common case: many OAuth servers
+ * rotate on every refresh, others reuse — persist whatever comes back, fall
+ * back to the previous when the field is absent. Pass `undefined` from the
+ * login path (no previous bundle to carry forward).
+ */
+export function bundleFromExchange<TAccount extends AuthAccount>(
+    exchange: ExchangeResult<TAccount>,
+    previous?: TokenBundle,
+): TokenBundle {
+    return {
+        accessToken: exchange.accessToken,
+        refreshToken: exchange.refreshToken ?? previous?.refreshToken,
+        accessTokenExpiresAt: exchange.expiresAt,
+        refreshTokenExpiresAt: exchange.refreshTokenExpiresAt ?? previous?.refreshTokenExpiresAt,
     }
 }

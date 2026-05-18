@@ -167,6 +167,52 @@ describe('createKeyringTokenStore', () => {
         expect(setDefaultSpy).not.toHaveBeenCalled()
     })
 
+    it('downgrades to no-refresh when hasRefreshToken is true but the refresh-slot read fails', async () => {
+        // The refresh slot is non-essential — a keyring hiccup on it must
+        // NOT fail the access-token lookup (the user can still authenticate;
+        // refresh will just fail next time and trigger re-login). Without
+        // this guard, every transient refresh-slot keyring error would
+        // surface as `AUTH_STORE_READ_FAILED` and block the CLI.
+        const refreshKeyring = buildSingleSlot()
+        refreshKeyring.getSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('flaky'))
+        const { store, keyring } = fixture({
+            keyring: buildSingleSlot({ secret: 'at-1' }),
+            refreshKeyring,
+            records: { '42': { account, hasRefreshToken: true } },
+            defaultId: '42',
+        })
+
+        const snapshot = await store.active()
+
+        expect(snapshot?.token).toBe('at-1')
+        expect(snapshot?.bundle?.refreshToken).toBeUndefined()
+        // Access slot was consulted (the failure is isolated to the
+        // refresh-slot path).
+        expect(keyring.getSpy).toHaveBeenCalled()
+        expect(refreshKeyring.getSpy).toHaveBeenCalled()
+    })
+
+    it('reads the refresh slot when hasRefreshToken is undefined (unknown state from legacy migration)', async () => {
+        // The legacy-migration path writes `hasRefreshToken: undefined` —
+        // it has no authority over refresh state. The gate must NOT treat
+        // undefined as "no", otherwise a refresh secret that a v2 login
+        // wrote into the sibling slot becomes silently invisible after
+        // the migration retry.
+        const refreshKeyring = buildSingleSlot({ secret: 'rt-survived-migration' })
+        const { store } = fixture({
+            keyring: buildSingleSlot({ secret: 'at-from-migration' }),
+            refreshKeyring,
+            records: { '42': { account } }, // hasRefreshToken: undefined
+            defaultId: '42',
+        })
+
+        const snapshot = await store.active()
+
+        expect(snapshot?.token).toBe('at-from-migration')
+        expect(snapshot?.bundle?.refreshToken).toBe('rt-survived-migration')
+        expect(refreshKeyring.getSpy).toHaveBeenCalled()
+    })
+
     it('skips the refresh-slot keyring read when hasRefreshToken is false (hot-path optimisation)', async () => {
         const { refreshKeyring, store } = fixture({
             keyring: buildSingleSlot({ secret: 'at-only' }),

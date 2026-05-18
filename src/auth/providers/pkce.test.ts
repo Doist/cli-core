@@ -261,5 +261,34 @@ describe('createPkceProvider', () => {
                 }),
             ).rejects.toMatchObject({ code: 'AUTH_REFRESH_TRANSIENT' })
         })
+
+        it('throws AUTH_REFRESH_TRANSIENT on a 2xx non-JSON response (misconfigured proxy)', async () => {
+            // `exchangeCode` already maps non-JSON 2xx to AUTH_TOKEN_EXCHANGE_FAILED,
+            // but the refresh path routes through a different error code
+            // and was previously uncovered. A regression that swapped the
+            // error code (e.g. classified a JSON parse error as
+            // AUTH_REFRESH_EXPIRED) would otherwise slip through.
+            const provider = createPkceProvider<Account>({
+                authorizeUrl: 'unused',
+                tokenUrl: 'https://example.com/oauth/token',
+                clientId: 'cid',
+                validate,
+                fetchImpl: (() =>
+                    Promise.resolve(
+                        new Response('<html>oops</html>', {
+                            status: 200,
+                            headers: { 'Content-Type': 'text/html' },
+                        }),
+                    )) as typeof fetch,
+            })
+
+            await expect(
+                provider.refreshToken!({
+                    refreshToken: 'rt',
+                    account,
+                    handshake: {},
+                }),
+            ).rejects.toMatchObject({ code: 'AUTH_REFRESH_TRANSIENT' })
+        })
     })
 })
