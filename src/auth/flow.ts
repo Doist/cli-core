@@ -188,12 +188,20 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
         checkAborted()
 
         try {
-            await options.store.set(account, {
-                accessToken: exchange.accessToken,
-                refreshToken: exchange.refreshToken,
-                accessTokenExpiresAt: exchange.accessTokenExpiresAt,
-                refreshTokenExpiresAt: exchange.refreshTokenExpiresAt,
-            })
+            // Use setBundle when the store implements it so refresh + expiry
+            // metadata survives to enable silent re-auth later. Fall back to
+            // the simple `set` for stores that don't (the refresh metadata is
+            // lost, which is acceptable — those stores can't refresh anyway).
+            if (options.store.setBundle) {
+                await options.store.setBundle(account, {
+                    accessToken: exchange.accessToken,
+                    refreshToken: exchange.refreshToken,
+                    accessTokenExpiresAt: exchange.expiresAt,
+                    refreshTokenExpiresAt: exchange.refreshTokenExpiresAt,
+                })
+            } else {
+                await options.store.set(account, exchange.accessToken)
+            }
         } catch (error) {
             if (error instanceof CliError) throw error
             throw new CliError(

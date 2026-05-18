@@ -22,26 +22,33 @@ import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import openBrowserModule from 'open'
 import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
-import type { AuthProvider, TokenStore } from './types.js'
+import type { AuthProvider, TokenBundle, TokenStore } from './types.js'
 
 type Account = { id: string; label?: string; email: string }
+type FakeStoreState = { account: Account; bundle: TokenBundle }
 
-/** Tiny in-memory `TokenStore` so the flow tests don't need disk I/O. */
-function fakeStore(): TokenStore<Account> & { last?: { account: Account; token: string } } {
-    const state: { last?: { account: Account; token: string } } = {}
+/**
+ * Tiny in-memory `TokenStore` so the flow tests don't need disk I/O. Keeps
+ * the full `TokenBundle` so tests can verify that `runOAuthFlow` persists
+ * refresh + expiry, not just the access token.
+ */
+function fakeStore(): TokenStore<Account> & { last?: FakeStoreState } {
+    const state: { last?: FakeStoreState } = {}
     return {
         async active() {
             return state.last
                 ? {
-                      token: state.last.token,
-                      bundle: { accessToken: state.last.token },
+                      token: state.last.bundle.accessToken,
+                      bundle: state.last.bundle,
                       account: state.last.account,
                   }
                 : null
         },
-        async set(account, credentials) {
-            const token = typeof credentials === 'string' ? credentials : credentials.accessToken
-            state.last = { account, token }
+        async set(account, token) {
+            state.last = { account, bundle: { accessToken: token } }
+        },
+        async setBundle(account, bundle) {
+            state.last = { account, bundle }
         },
         async clear() {
             state.last = undefined
@@ -158,8 +165,40 @@ describe('runOAuthFlow', () => {
         expect(openBrowser).toHaveBeenCalledTimes(1)
         expect(await store.active()).toEqual({
             token: 'tok-1',
-            bundle: { accessToken: 'tok-1' },
+            bundle: {
+                accessToken: 'tok-1',
+                refreshToken: undefined,
+                accessTokenExpiresAt: undefined,
+                refreshTokenExpiresAt: undefined,
+            },
             account: { id: '1', email: 'a@b' },
+        })
+    })
+
+    it('persists the full bundle (refresh + expiry) when exchangeCode returns them', async () => {
+        const expiresAt = Date.now() + 3_600_000
+        const { provider, getRedirect } = instrument({
+            exchangeCode: async () => ({
+                accessToken: 'tok-1',
+                refreshToken: 'rt-1',
+                expiresAt,
+            }),
+        })
+        const store = fakeStore()
+
+        await runOAuthFlow<Account>(
+            flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
+        )
+
+        // Regression guard: if `runOAuthFlow` drops refresh/expiry on the
+        // floor again (the original bug that motivated this PR), the
+        // snapshot here would lose the refresh token and the next
+        // `refreshAccessToken` call would fail with AUTH_REFRESH_UNAVAILABLE.
+        expect(store.last?.bundle).toEqual({
+            accessToken: 'tok-1',
+            refreshToken: 'rt-1',
+            accessTokenExpiresAt: expiresAt,
+            refreshTokenExpiresAt: undefined,
         })
     })
 

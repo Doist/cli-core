@@ -23,25 +23,29 @@ type WriteRecordResult = {
 }
 
 /**
- * Shared keyring-then-record write used by `createKeyringTokenStore.set` and
- * `migrateLegacyAuth`. Encapsulates the order-of-operations contract that
- * matters for credential safety:
+ * Shared keyring-then-record write used by `createKeyringTokenStore.set` /
+ * `setBundle` and `migrateLegacyAuth`. Encapsulates the order-of-operations
+ * contract that matters for credential safety:
  *
- *   1. Keyring `setSecret` for access token first. On
+ *   1. Keyring `setSecret` for the access token first. On
  *      `SecureStoreUnavailableError`, swallow and route both tokens to the
  *      record's fallback slots. Any other error rethrows.
  *   2. When the keyring is online and the bundle has a refresh token, write
- *      it to the sibling refresh slot. When the bundle has no refresh token,
- *      best-effort `deleteSecret()` on the refresh slot so a stale secret
- *      from a previous login doesn't shadow the new state.
- *   3. `userRecords.upsert(record)`. On failure, best-effort rollback both
+ *      it to the sibling refresh slot. On `SecureStoreUnavailableError`,
+ *      roll back the access-slot write and fall through to the fallback
+ *      record (so both tokens travel together — never split state across
+ *      keyring and record). On any other error, also roll back the access
+ *      slot (best-effort) before rethrowing — leaving an orphan access
+ *      credential with no matching user record breaks `active()` later.
+ *   3. When the keyring is online and the bundle has no refresh token,
+ *      delete any pre-existing refresh secret. A delete failure here is
+ *      surfaced as a write failure (raised as `SecureStoreUnavailableError`'s
+ *      semantic equivalent: fall through to the fallback record) so a stale
+ *      refresh secret can never outlive a login that didn't return one —
+ *      otherwise `active()` would later read and use it.
+ *   4. `userRecords.upsert(record)`. On failure, best-effort rollback both
  *      keyring writes so we don't leave orphan credentials for an account
  *      cli-core never managed to register. Original error rethrows.
- *
- * Default promotion (`setDefaultId`) is intentionally **not** in here — both
- * call sites do it best-effort outside the critical section because it is a
- * preference, not a correctness requirement, and an error there must not
- * dirty up a successful credential write.
  */
 export async function writeRecordWithKeyringFallback<TAccount extends AuthAccount>(
     options: WriteRecordOptions<TAccount>,
@@ -58,10 +62,6 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
         if (!(error instanceof SecureStoreUnavailableError)) throw error
     }
 
-    // Refresh slot mirrors the access slot's online/offline branch. When
-    // online without a refresh token, clear the slot defensively — a
-    // re-login that no longer returns refresh shouldn't leave a stale
-    // refresh secret behind that `active()` would happily return.
     let wroteRefreshSecurely = false
     if (storedSecurely) {
         if (trimmedRefresh) {
@@ -69,23 +69,35 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
                 await refreshSecureStore.setSecret(trimmedRefresh)
                 wroteRefreshSecurely = true
             } catch (error) {
-                if (!(error instanceof SecureStoreUnavailableError)) throw error
-                // Refresh slot offline but access slot was online — treat as
-                // partial offline: park everything on the record fallback so
-                // `active()` reads from a single consistent place.
+                // Best-effort rollback of the access slot regardless of error
+                // shape — otherwise we leave an orphan access credential for
+                // an account cli-core hasn't recorded yet. After rollback
+                // we fall through to either the offline-fallback record
+                // (keyring) or rethrow (other).
                 try {
                     await secureStore.deleteSecret()
                 } catch {
                     // best-effort rollback
                 }
                 storedSecurely = false
+                if (!(error instanceof SecureStoreUnavailableError)) throw error
             }
         } else {
-            // No refresh token in this bundle — purge any previous secret.
+            // No refresh token in this bundle — purge any previous secret so
+            // it can't shadow the new state. A delete failure here would let
+            // a stale refresh token resurface on the next `active()`; safer
+            // to fall through to the offline-fallback path and roll back the
+            // access slot, mirroring the keyring-unavailable branch above.
             try {
                 await refreshSecureStore.deleteSecret()
-            } catch {
-                // best-effort
+            } catch (error) {
+                try {
+                    await secureStore.deleteSecret()
+                } catch {
+                    // best-effort
+                }
+                storedSecurely = false
+                if (!(error instanceof SecureStoreUnavailableError)) throw error
             }
         }
     }
@@ -95,6 +107,7 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
               account,
               accessTokenExpiresAt: bundle.accessTokenExpiresAt,
               refreshTokenExpiresAt: bundle.refreshTokenExpiresAt,
+              hasRefreshToken: Boolean(trimmedRefresh),
           }
         : {
               account,
@@ -102,6 +115,7 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
               fallbackRefreshToken: trimmedRefresh,
               accessTokenExpiresAt: bundle.accessTokenExpiresAt,
               refreshTokenExpiresAt: bundle.refreshTokenExpiresAt,
+              hasRefreshToken: Boolean(trimmedRefresh),
           }
 
     try {

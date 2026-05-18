@@ -35,6 +35,16 @@ export type UserRecord<TAccount extends AuthAccount> = {
     accessTokenExpiresAt?: number
     /** Unix-epoch ms — when the persisted refresh token expires (rarely known). */
     refreshTokenExpiresAt?: number
+    /**
+     * `true` iff a refresh token is known to exist in the sibling keyring
+     * slot (or in `fallbackRefreshToken`). The keyring token store reads it
+     * to decide whether to spend a second keyring round-trip on the refresh
+     * slot during `active()`. A stale `true` (e.g. the refresh slot was
+     * deleted out-of-band) downgrades to "no refresh available" via the
+     * read path; a stale `false` would silently hide a refresh credential,
+     * so writes must always update this bit atomically with the slot.
+     */
+    hasRefreshToken?: boolean
 }
 
 /**

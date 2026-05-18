@@ -47,8 +47,8 @@ export type ExchangeResult<TAccount extends AuthAccount = AuthAccount> = {
     accessToken: string
     refreshToken?: string
     /** Unix-epoch ms when the access token expires. */
-    accessTokenExpiresAt?: number
-    /** Unix-epoch ms when the refresh token expires (rarely advertised). */
+    expiresAt?: number
+    /** Unix-epoch ms when the refresh token expires (rarely advertised by OAuth servers). */
     refreshTokenExpiresAt?: number
     /** Set when the token endpoint already identifies the account; skips `validateToken`. */
     account?: TAccount
@@ -139,13 +139,20 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
         ref?: AccountRef,
     ): Promise<{ token: string; bundle?: TokenBundle; account: TAccount } | null>
     /**
-     * Persist credentials for `account`, replacing any previous entry. Accepts
-     * either a bare access-token string (for providers without refresh) or a
-     * full `TokenBundle` (access + optional refresh + expiry). Throw
+     * Persist `token` for `account`, replacing any previous entry. Throw
      * `CliError` for typed failures; other thrown values become
      * `AUTH_STORE_WRITE_FAILED`.
      */
-    set(account: TAccount, credentials: string | TokenBundle): Promise<void>
+    set(account: TAccount, token: string): Promise<void>
+    /**
+     * Persist a full credential bundle (access + optional refresh + expiry).
+     * Optional: stores backed by simple single-token storage can omit this
+     * and cli-core helpers will fall back to `set(account, bundle.accessToken)`,
+     * which loses refresh + expiry metadata. The built-in
+     * `createKeyringTokenStore` implements this so refresh-token flows work
+     * end-to-end.
+     */
+    setBundle?(account: TAccount, bundle: TokenBundle): Promise<void>
     /** Remove a stored credential. No-op when `ref` doesn't match. */
     clear(ref?: AccountRef): Promise<void>
     /** Every stored account with a default marker. */

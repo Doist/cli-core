@@ -2,6 +2,7 @@ import { closeSync, openSync, unlinkSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { CliError } from '../errors.js'
 import type { AccountRef, AuthAccount, AuthProvider, TokenBundle, TokenStore } from './types.js'
+import { requireSnapshotForRef } from './user-flag.js'
 
 /** Default skew window: refresh when fewer than 60s remain on the access token. */
 const DEFAULT_SKEW_MS = 60_000
@@ -22,21 +23,25 @@ export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
     buildHandshake?: (account: TAccount) => Record<string, unknown>
     /**
      * Refresh when fewer than this many ms remain on the access token's
-     * `expiresAt`. Default 60s. Set to `0` for "only refresh when fully
-     * expired"; set to `Infinity` to force a refresh whenever a refresh
-     * token exists.
+     * `accessTokenExpiresAt`. Default 60s. Set to `0` for "only refresh
+     * when fully expired"; set to `Infinity` to force a refresh whenever a
+     * refresh token exists.
      */
     skewMs?: number
     /**
      * Force a refresh regardless of expiry — used by the reactive 401-retry
      * path where the server has already rejected the access token. Throws
-     * `AUTH_REFRESH_UNAVAILABLE` when no refresh token is stored.
+     * `AUTH_REFRESH_UNAVAILABLE` when no refresh token is stored. Honored
+     * only when the post-lock re-read still returns the same access token
+     * (so a concurrent process that refreshed first wins).
      */
     force?: boolean
     /**
-     * Sidecar lock file path. Defaults to `${store.getRecordsLocation()}.refresh.lock`
-     * when the store is a `KeyringTokenStore` exposing `getRecordsLocation`,
-     * otherwise no file lock is used (single-process safety only).
+     * Absolute filesystem path to a sidecar lock file. When provided, the
+     * helper acquires it via `O_EXCL` before refreshing so two concurrent
+     * processes don't race the server's refresh-token rotation. When
+     * omitted, no cross-process lock is taken (single-process safety only).
+     * Pass an expanded path (no `~`); cli-core does not interpret it.
      */
     lockPath?: string
     /** Lock acquisition window. Default 2_000ms. */
@@ -49,11 +54,12 @@ export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
  * the new bundle and returns it. When refresh isn't needed the active bundle
  * is returned unchanged.
  *
- * Concurrency: when a sidecar lock file path is available, the helper acquires
- * it before refreshing. On contention it waits up to `lockTimeoutMs`, then
- * re-reads the store — if another process has already refreshed, the fresh
- * bundle is returned without firing a duplicate POST. If the lock can't be
- * acquired the refresh proceeds anyway (worst case: one extra token rotation).
+ * Concurrency: when `lockPath` is supplied, the helper acquires it before
+ * refreshing. On contention it waits up to `lockTimeoutMs`, then re-reads
+ * the store — if another process has already refreshed (detected by a
+ * changed access token), the fresh bundle is returned without firing a
+ * duplicate POST, even when `force` was set. If the lock can't be acquired
+ * the refresh proceeds anyway (worst case: one extra token rotation).
  */
 export async function refreshAccessToken<TAccount extends AuthAccount>(
     options: RefreshAccessTokenOptions<TAccount>,
@@ -61,19 +67,18 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
     const skewMs = options.skewMs ?? DEFAULT_SKEW_MS
     const lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS
 
-    const snapshot = await options.store.active(options.ref)
+    const snapshot = await requireSnapshotForRef(options.store, options.ref)
     if (!snapshot) {
         throw new CliError('NOT_AUTHENTICATED', 'No stored credentials to refresh.')
     }
     // Synthesise a minimal bundle for stores that don't track refresh state —
     // they'll fall through to `AUTH_REFRESH_UNAVAILABLE` below since
     // `refreshToken` is missing, which is the right behaviour.
-    const bundle: TokenBundle = snapshot.bundle ?? { accessToken: snapshot.token }
-    const resolvedSnapshot = { token: snapshot.token, bundle, account: snapshot.account }
-    if (!shouldRefresh(bundle, skewMs, options.force ?? false)) {
-        return resolvedSnapshot
+    const initialBundle: TokenBundle = snapshot.bundle ?? { accessToken: snapshot.token }
+    if (!shouldRefresh(initialBundle, skewMs, options.force ?? false)) {
+        return { token: snapshot.token, bundle: initialBundle, account: snapshot.account }
     }
-    if (!bundle.refreshToken) {
+    if (!initialBundle.refreshToken) {
         throw new CliError(
             'AUTH_REFRESH_UNAVAILABLE',
             'Access token expired and no refresh token is stored.',
@@ -86,46 +91,75 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         )
     }
 
-    const lockPath = options.lockPath ?? deriveLockPath(options.store)
-    const lock = lockPath ? await acquireFileLock(lockPath, lockTimeoutMs) : null
+    const lock = options.lockPath ? await acquireFileLock(options.lockPath, lockTimeoutMs) : null
 
+    let bundle = initialBundle
+    let account = snapshot.account
     try {
-        // Re-read inside the lock: another process may have refreshed
-        // already, and re-using its result avoids two refreshes racing the
-        // server's rotation logic (the loser's refresh token would be void).
+        // Re-read inside the lock. Another process may have refreshed already;
+        // when that happened, its rotated access token will differ from ours
+        // and we MUST return the fresh result instead of firing our own
+        // refresh — even on the `force` path. Continuing would POST with our
+        // (now-rotated, invalid) refresh token and yield `invalid_grant`.
         if (lock) {
-            const fresh = await options.store.active(options.ref)
+            const fresh = await requireSnapshotForRef(options.store, options.ref)
             if (fresh) {
                 const freshBundle = fresh.bundle ?? { accessToken: fresh.token }
+                if (fresh.token !== snapshot.token) {
+                    // Another process won the race. Return its result; ignore
+                    // our `force` flag because the access token has already
+                    // been rotated server-side.
+                    return { token: fresh.token, bundle: freshBundle, account: fresh.account }
+                }
                 if (!shouldRefresh(freshBundle, skewMs, options.force ?? false)) {
                     return { token: fresh.token, bundle: freshBundle, account: fresh.account }
                 }
+                bundle = freshBundle
+                account = fresh.account
             }
         }
 
         const buildHandshake =
             options.buildHandshake ??
-            ((account: TAccount): Record<string, unknown> => ({ ...account, flags: {} }))
+            ((acc: TAccount): Record<string, unknown> => ({ ...acc, flags: {} }))
 
         const exchange = await options.provider.refreshToken({
-            refreshToken: bundle.refreshToken,
-            account: snapshot.account,
-            handshake: buildHandshake(snapshot.account),
+            refreshToken: bundle.refreshToken!,
+            account,
+            handshake: buildHandshake(account),
         })
 
         const nextBundle: TokenBundle = {
             accessToken: exchange.accessToken,
             // Rotate when the server returns one, keep the previous when it
-            // doesn't. Same logic the spec calls out for refresh rotation.
+            // doesn't.
             refreshToken: exchange.refreshToken ?? bundle.refreshToken,
-            accessTokenExpiresAt: exchange.accessTokenExpiresAt,
+            accessTokenExpiresAt: exchange.expiresAt,
             refreshTokenExpiresAt: exchange.refreshTokenExpiresAt ?? bundle.refreshTokenExpiresAt,
         }
 
-        await options.store.set(snapshot.account, nextBundle)
-        return { token: nextBundle.accessToken, bundle: nextBundle, account: snapshot.account }
+        await persistBundle(options.store, account, nextBundle)
+        return { token: nextBundle.accessToken, bundle: nextBundle, account }
     } finally {
         if (lock) lock.release()
+    }
+}
+
+/**
+ * Persist via `setBundle` when the store implements it; fall back to `set`
+ * with just the access token for simple single-token stores (they lose
+ * refresh + expiry metadata; subsequent refreshes will fail with
+ * `AUTH_REFRESH_UNAVAILABLE`, which surfaces as a forced re-login).
+ */
+async function persistBundle<TAccount extends AuthAccount>(
+    store: TokenStore<TAccount>,
+    account: TAccount,
+    bundle: TokenBundle,
+): Promise<void> {
+    if (store.setBundle) {
+        await store.setBundle(account, bundle)
+    } else {
+        await store.set(account, bundle.accessToken)
     }
 }
 
@@ -133,16 +167,6 @@ function shouldRefresh(bundle: TokenBundle, skewMs: number, force: boolean): boo
     if (force) return true
     if (typeof bundle.accessTokenExpiresAt !== 'number') return false
     return Date.now() > bundle.accessTokenExpiresAt - skewMs
-}
-
-function deriveLockPath<TAccount extends AuthAccount>(
-    store: TokenStore<TAccount>,
-): string | undefined {
-    const candidate = store as { getRecordsLocation?: () => string }
-    if (typeof candidate.getRecordsLocation === 'function') {
-        return `${candidate.getRecordsLocation()}.refresh.lock`
-    }
-    return undefined
 }
 
 type FileLock = { release: () => void }
@@ -172,8 +196,8 @@ async function acquireFileLock(path: string, timeoutMs: number): Promise<FileLoc
             }
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-                // ENOENT on a missing dir is the only other realistic case;
-                // bubble up so the caller proceeds without the lock.
+                // ENOENT on a missing dir, EACCES, … bubble up so the caller
+                // proceeds without the lock.
                 return null
             }
             if (Date.now() >= deadline) return null

@@ -36,12 +36,10 @@ export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
 }
 
 export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccount> & {
-    /** Storage result from the most recent `set()` call, or `undefined` before any (and reset to `undefined` when the most recent `set()` threw). */
+    /** Storage result from the most recent `set()` / `setBundle()` call, or `undefined` before any (and reset to `undefined` when the most recent call threw). */
     getLastStorageResult(): TokenStorageResult | undefined
     /** Storage result from the most recent `clear()` call, or `undefined` before any (and reset to `undefined` when the most recent `clear()` threw or was a no-op). */
     getLastClearResult(): TokenStorageResult | undefined
-    /** Human-readable location of the underlying record store. Surfaced so `refreshAccessToken` can derive a sidecar lock path without re-plumbing options. */
-    getRecordsLocation(): string
 }
 
 const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
@@ -49,42 +47,20 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
     ref: AccountRef,
 ): boolean => account.id === ref || account.label === ref
 
-/** Sibling keyring slot for the refresh token. Kept here so every read/write site agrees on the wire format. */
+/** Sibling keyring slot for the refresh token. Single source of truth for the wire format. */
 export function refreshAccountSlot(accessSlot: string): string {
     return `${accessSlot}/refresh`
-}
-
-function toBundle(credentials: string | TokenBundle): TokenBundle {
-    return typeof credentials === 'string' ? { accessToken: credentials } : credentials
 }
 
 /**
  * Multi-account `TokenStore` that keeps secrets in the OS credential manager
  * and per-user metadata in the consumer's `UserRecordStore`. Falls back to
- * plaintext tokens on the user record when the keyring is unreachable (WSL
- * without D-Bus, missing native binary, locked Keychain, …) so the CLI keeps
- * working at the cost of a visible warning.
- *
- * Read order in `active()` is `fallbackToken` first, then the keyring. That
- * matches the write semantics in `writeRecordWithKeyringFallback`: when the
- * keyring is online the record is written with no `fallbackToken`, so the
- * keyring read is the only path. When the keyring is offline the token is
- * parked on the record and must be reachable on every subsequent read.
+ * plaintext tokens on the user record when the keyring is unreachable.
  *
  * Refresh tokens live in a sibling keyring slot (`${account}/refresh`) so
- * that `clear()` can drop them without parsing the access slot's contents.
- *
- * Write order is keyring first, then `userRecords.upsert`. If the upsert
- * fails after a successful keyring write, both keyring entries are rolled
- * back via `deleteSecret()` to avoid orphan credentials for a user that
- * cli-core never managed to record.
- *
- * Clear order is the inverse: record removal first (the source of truth that
- * the rest of the CLI reads), then keyring delete (both slots). Any keyring
- * delete failure after a successful removal is downgraded to a warning — the
- * orphan secret is harmless because no record references it anymore, and
- * surfacing the error would corrupt local state (record gone, but caller
- * sees a thrown exception and assumes the clear failed).
+ * `clear()` can drop them without parsing the access slot's contents. Reads
+ * are gated on `UserRecord.hasRefreshToken` so accounts without refresh
+ * tokens don't pay a second keyring round-trip per `active()` call.
  */
 export function createKeyringTokenStore<TAccount extends AuthAccount>(
     options: CreateKeyringTokenStoreOptions<TAccount>,
@@ -109,11 +85,6 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
     type Snapshot = { records: UserRecord<TAccount>[]; defaultId: string | null }
 
-    /**
-     * Read both `list()` and `getDefaultId()` concurrently. Used by paths
-     * that need the pinned default (no-ref `active`/`clear`, `list`, and
-     * `clear`'s default-unpin check).
-     */
     async function readFullSnapshot(): Promise<Snapshot> {
         const [records, defaultId] = await Promise.all([
             userRecords.list(),
@@ -157,9 +128,9 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
     /**
      * Read the access + refresh secrets for a record, preferring the
-     * plaintext fallbacks when present (mirrors the contract that the
-     * fallback is authoritative whenever it exists). Returns `null` for the
-     * "stored corrupted state" case so callers can throw `AUTH_STORE_READ_FAILED`.
+     * plaintext fallbacks when present. Returns `null` when the access slot
+     * is empty (corrupted state, surfaced to the caller as
+     * `AUTH_STORE_READ_FAILED`).
      */
     async function readBundleForRecord(record: UserRecord<TAccount>): Promise<TokenBundle | null> {
         const fallbackAccess = record.fallbackToken?.trim()
@@ -172,32 +143,33 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             }
         }
 
-        let rawAccess: string | null
-        try {
-            rawAccess = await accessStoreFor(record.account).getSecret()
-        } catch (error) {
-            if (error instanceof SecureStoreUnavailableError) {
-                throw new CliError(
-                    'AUTH_STORE_READ_FAILED',
-                    `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
-                )
-            }
-            throw error
-        }
+        // Parallel reads: access slot always needed; refresh slot only when
+        // the record says it exists. Sequential reads here would double the
+        // IPC latency on every authenticated command. The refresh read is
+        // wrapped in `.catch(() => null)` so a transient keyring hiccup on
+        // the (non-essential) refresh slot doesn't fail an otherwise-valid
+        // access-token lookup.
+        const accessPromise = accessStoreFor(record.account)
+            .getSecret()
+            .catch((error: unknown) => {
+                if (error instanceof SecureStoreUnavailableError) {
+                    throw new CliError(
+                        'AUTH_STORE_READ_FAILED',
+                        `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
+                    )
+                }
+                throw error
+            })
+        const refreshPromise = record.hasRefreshToken
+            ? refreshStoreFor(record.account)
+                  .getSecret()
+                  .catch(() => null)
+            : Promise.resolve(null)
+
+        const [rawAccess, rawRefresh] = await Promise.all([accessPromise, refreshPromise])
 
         const accessToken = rawAccess?.trim()
         if (!accessToken) return null
-
-        // Refresh slot read errors are downgraded — a missing or unreadable
-        // refresh token is not fatal (the access token alone is still usable
-        // until it expires). Surface as "no refresh present" so the caller
-        // sees a consistent shape.
-        let rawRefresh: string | null = null
-        try {
-            rawRefresh = await refreshStoreFor(record.account).getSecret()
-        } catch {
-            rawRefresh = null
-        }
 
         return {
             accessToken,
@@ -205,6 +177,34 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             accessTokenExpiresAt: record.accessTokenExpiresAt,
             refreshTokenExpiresAt: record.refreshTokenExpiresAt,
         }
+    }
+
+    async function persistBundle(account: TAccount, bundle: TokenBundle): Promise<void> {
+        lastStorageResult = undefined
+
+        const { storedSecurely } = await writeRecordWithKeyringFallback({
+            secureStore: accessStoreFor(account),
+            refreshSecureStore: refreshStoreFor(account),
+            userRecords,
+            account,
+            bundle,
+        })
+
+        // Best-effort default promotion: a failure here must not turn into
+        // `AUTH_STORE_WRITE_FAILED` (the user can recover by setting a
+        // default later).
+        try {
+            const existingDefault = await userRecords.getDefaultId()
+            if (!existingDefault) {
+                await userRecords.setDefaultId(account.id)
+            }
+        } catch {
+            // best-effort
+        }
+
+        lastStorageResult = storedSecurely
+            ? { storage: 'secure-store' }
+            : fallbackResult('token saved as plaintext in')
     }
 
     return {
@@ -218,9 +218,6 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             const bundle = await readBundleForRecord(record)
             if (!bundle) {
-                // Record exists, no `fallbackToken`, and the keyring slot is
-                // empty — credential deleted out-of-band. Corrupted state,
-                // not a miss.
                 throw new CliError(
                     'AUTH_STORE_READ_FAILED',
                     `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
@@ -230,34 +227,12 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             return { token: bundle.accessToken, bundle, account: record.account }
         },
 
-        async set(account, credentials) {
-            // Reset the cached storage result up front so a caller that
-            // catches a thrown `set()` doesn't observe the previous call's
-            // warning leaking through `getLastStorageResult`.
-            lastStorageResult = undefined
+        async set(account, token) {
+            await persistBundle(account, { accessToken: token })
+        },
 
-            const bundle = toBundle(credentials)
-            const { storedSecurely } = await writeRecordWithKeyringFallback({
-                secureStore: accessStoreFor(account),
-                refreshSecureStore: refreshStoreFor(account),
-                userRecords,
-                account,
-                bundle,
-            })
-
-            // Best-effort default promotion — same rationale as before.
-            try {
-                const existingDefault = await userRecords.getDefaultId()
-                if (!existingDefault) {
-                    await userRecords.setDefaultId(account.id)
-                }
-            } catch {
-                // best-effort
-            }
-
-            lastStorageResult = storedSecurely
-                ? { storage: 'secure-store' }
-                : fallbackResult('token saved as plaintext in')
+        async setBundle(account, bundle) {
+            await persistBundle(account, bundle)
         },
 
         async clear(ref) {
@@ -331,10 +306,6 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
         getLastClearResult() {
             return lastClearResult
-        },
-
-        getRecordsLocation() {
-            return recordsLocation
         },
     }
 }

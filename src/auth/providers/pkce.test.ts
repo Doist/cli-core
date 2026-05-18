@@ -84,7 +84,7 @@ describe('createPkceProvider', () => {
             handshake: { codeVerifier: 'the-verifier', clientId: 'client-xyz' },
         })
         expect(result.accessToken).toBe('tok-1')
-        expect(result.accessTokenExpiresAt).toBeGreaterThan(Date.now())
+        expect(result.expiresAt).toBeGreaterThan(Date.now())
 
         const failing = createPkceProvider<Account>({
             authorizeUrl: 'unused',
@@ -186,7 +186,7 @@ describe('createPkceProvider', () => {
             expect(captured!.body.has('code_verifier')).toBe(false)
             expect(result.accessToken).toBe('new-access')
             expect(result.refreshToken).toBe('new-refresh')
-            expect(result.accessTokenExpiresAt).toBeGreaterThan(Date.now())
+            expect(result.expiresAt).toBeGreaterThan(Date.now())
             // Account passes through so the caller doesn't have to look it up again.
             expect(result.account).toEqual(account)
         })

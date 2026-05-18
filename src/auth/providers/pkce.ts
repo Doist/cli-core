@@ -1,4 +1,4 @@
-import { CliError, getErrorMessage } from '../../errors.js'
+import { CliError, type CliErrorCode, getErrorMessage } from '../../errors.js'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
     AuthAccount,
@@ -38,15 +38,22 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     fetchImpl?: typeof fetch
 }
 
+type TokenEndpointPayload = {
+    access_token?: string
+    refresh_token?: string
+    expires_in?: number
+    error?: string
+}
+
 /**
  * Build an `AuthProvider` for the standard "PKCE S256, public client (no
  * client_secret)" flow. Covers Outline (user-supplied client_id + base_url)
  * and Todoist (pre-registered client_id, custom verifier alphabet,
  * comma-separated scope string).
  *
- * The scope list itself is resolved by the caller before invoking
- * `runOAuthFlow` and arrives on `AuthorizeInput.scopes`; this factory does
- * not own scope resolution.
+ * Implements `exchangeCode` (authorization_code grant) and `refreshToken`
+ * (refresh_token grant). Both POSTs share `postToTokenEndpoint` so the
+ * fetch + error handling + JSON-parsing logic lives in exactly one place.
  *
  * Flows that need DCR or HTTP Basic auth on the token endpoint implement
  * the `AuthProvider` interface directly.
@@ -93,9 +100,6 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                     'Internal: PKCE handshake state lost between authorize and exchange.',
                 )
             }
-            // `runOAuthFlow` folds the runtime `flags` into the handshake
-            // before calling exchange, so a `tokenUrl: ({ flags }) => ...`
-            // resolver sees the same flags it saw during authorize.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
             const tokenUrl = resolve(options.tokenUrl, input.handshake, flags)
 
@@ -107,53 +111,18 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 code_verifier: verifier,
             })
 
-            let response: Response
-            try {
-                response = await fetchImpl(tokenUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        Accept: 'application/json',
-                    },
-                    body: body.toString(),
-                })
-            } catch (error) {
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    `Token endpoint request failed: ${getErrorMessage(error)}`,
-                )
-            }
+            const payload = await postToTokenEndpoint({
+                fetchImpl,
+                tokenUrl,
+                body,
+                errorCode: 'AUTH_TOKEN_EXCHANGE_FAILED',
+                label: 'Token',
+            })
 
-            if (!response.ok) {
-                const detail = await safeReadText(response)
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    `Token endpoint returned HTTP ${response.status}.`,
-                    detail ? { hints: [detail] } : {},
-                )
-            }
-
-            // Parse defensively — a misconfigured proxy can return a 2xx HTML
-            // error page that would otherwise blow up with a raw SyntaxError.
-            let payload: { access_token?: string; refresh_token?: string; expires_in?: number }
-            try {
-                payload = (await response.json()) as typeof payload
-            } catch (error) {
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    `Token endpoint returned non-JSON response: ${getErrorMessage(error)}`,
-                )
-            }
-            if (!payload.access_token) {
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    'Token endpoint response missing access_token.',
-                )
-            }
             return {
-                accessToken: payload.access_token,
+                accessToken: payload.access_token!,
                 refreshToken: payload.refresh_token,
-                accessTokenExpiresAt:
+                expiresAt:
                     typeof payload.expires_in === 'number'
                         ? Date.now() + payload.expires_in * 1000
                         : undefined,
@@ -176,61 +145,26 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 client_id: clientId,
             })
 
-            let response: Response
-            try {
-                response = await fetchImpl(tokenUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        Accept: 'application/json',
-                    },
-                    body: body.toString(),
-                })
-            } catch (error) {
-                throw new CliError(
-                    'AUTH_REFRESH_TRANSIENT',
-                    `Refresh request failed: ${getErrorMessage(error)}`,
-                )
-            }
+            const payload = await postToTokenEndpoint({
+                fetchImpl,
+                tokenUrl,
+                body,
+                // 400/401 + `invalid_grant` is the spec signal that the
+                // refresh token itself is revoked/expired. We tunnel that
+                // discriminator through the helper via `classifyErrorStatus`
+                // so the caller code stays one return path.
+                errorCode: 'AUTH_REFRESH_TRANSIENT',
+                label: 'Refresh token',
+                classifyErrorStatus: (status, detail) =>
+                    (status === 400 || status === 401) && /invalid_grant/i.test(detail ?? '')
+                        ? 'AUTH_REFRESH_EXPIRED'
+                        : 'AUTH_REFRESH_TRANSIENT',
+            })
 
-            if (!response.ok) {
-                const detail = await safeReadText(response)
-                // 400/401 with `invalid_grant` means the refresh token is
-                // revoked or expired and a forced re-login is the only
-                // recovery. Other statuses are treated as transient (server
-                // hiccup) — the caller may retry on the next request.
-                const isInvalidGrant =
-                    (response.status === 400 || response.status === 401) &&
-                    /invalid_grant/i.test(detail ?? '')
-                throw new CliError(
-                    isInvalidGrant ? 'AUTH_REFRESH_EXPIRED' : 'AUTH_REFRESH_TRANSIENT',
-                    `Refresh token endpoint returned HTTP ${response.status}.`,
-                    detail ? { hints: [detail] } : {},
-                )
-            }
-
-            let payload: { access_token?: string; refresh_token?: string; expires_in?: number }
-            try {
-                payload = (await response.json()) as typeof payload
-            } catch (error) {
-                throw new CliError(
-                    'AUTH_REFRESH_TRANSIENT',
-                    `Refresh endpoint returned non-JSON response: ${getErrorMessage(error)}`,
-                )
-            }
-            if (!payload.access_token) {
-                throw new CliError(
-                    'AUTH_REFRESH_TRANSIENT',
-                    'Refresh endpoint response missing access_token.',
-                )
-            }
             return {
-                accessToken: payload.access_token,
-                // Some OAuth servers rotate refresh tokens; others don't. We
-                // can't tell from one response, so persist whatever comes
-                // back. The caller's `set()` will replace the stored value.
+                accessToken: payload.access_token!,
                 refreshToken: payload.refresh_token,
-                accessTokenExpiresAt:
+                expiresAt:
                     typeof payload.expires_in === 'number'
                         ? Date.now() + payload.expires_in * 1000
                         : undefined,
@@ -248,6 +182,76 @@ function resolve(
     flags: Record<string, unknown>,
 ): string {
     return typeof resolver === 'function' ? resolver({ handshake, flags }) : resolver
+}
+
+type PostOptions = {
+    fetchImpl: typeof fetch
+    tokenUrl: string
+    body: URLSearchParams
+    /** Error code used for network failures, 5xx, non-JSON, and missing access_token. */
+    errorCode: CliErrorCode
+    /** Human label for error messages ("Token", "Refresh token"). */
+    label: string
+    /**
+     * For 4xx responses where the body discriminates the error type (e.g.
+     * `invalid_grant` on a refresh). Returning a different code routes the
+     * thrown `CliError` to a different recovery path in the caller.
+     */
+    classifyErrorStatus?: (status: number, detail: string | undefined) => CliErrorCode
+}
+
+/**
+ * Shared OAuth token-endpoint POST. Used by both `exchangeCode` and
+ * `refreshToken` so the fetch + status handling + JSON parsing logic is
+ * defined once. Always-JSON content type, urlencoded body, no auth header
+ * (PKCE = public client).
+ */
+async function postToTokenEndpoint(options: PostOptions): Promise<TokenEndpointPayload> {
+    let response: Response
+    try {
+        response = await options.fetchImpl(options.tokenUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Accept: 'application/json',
+            },
+            body: options.body.toString(),
+        })
+    } catch (error) {
+        throw new CliError(
+            options.errorCode,
+            `${options.label} endpoint request failed: ${getErrorMessage(error)}`,
+        )
+    }
+
+    if (!response.ok) {
+        const detail = await safeReadText(response)
+        const code = options.classifyErrorStatus
+            ? options.classifyErrorStatus(response.status, detail)
+            : options.errorCode
+        throw new CliError(
+            code,
+            `${options.label} endpoint returned HTTP ${response.status}.`,
+            detail ? { hints: [detail] } : {},
+        )
+    }
+
+    let payload: TokenEndpointPayload
+    try {
+        payload = (await response.json()) as TokenEndpointPayload
+    } catch (error) {
+        throw new CliError(
+            options.errorCode,
+            `${options.label} endpoint returned non-JSON response: ${getErrorMessage(error)}`,
+        )
+    }
+    if (!payload.access_token) {
+        throw new CliError(
+            options.errorCode,
+            `${options.label} endpoint response missing access_token.`,
+        )
+    }
+    return payload
 }
 
 async function safeReadText(response: Response): Promise<string | undefined> {

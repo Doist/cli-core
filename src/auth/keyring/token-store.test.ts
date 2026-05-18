@@ -93,6 +93,7 @@ describe('createKeyringTokenStore', () => {
             account,
             accessTokenExpiresAt: undefined,
             refreshTokenExpiresAt: undefined,
+            hasRefreshToken: false,
         })
         expect(state.defaultId).toBe('42')
         expect(store.getLastStorageResult()).toEqual({ storage: 'secure-store' })
@@ -113,6 +114,57 @@ describe('createKeyringTokenStore', () => {
         expect(state.records.size).toBe(0)
         expect(state.defaultId).toBeNull()
         expect(store.getLastClearResult()).toEqual({ storage: 'secure-store' })
+    })
+
+    it('round-trips setBundle → active → clear with refresh token in the sibling slot', async () => {
+        // End-to-end coverage for the bundle path (set, hot-path read,
+        // clear) — the access-token-only round-trip above doesn't exercise
+        // refresh slot routing, hasRefreshToken gating, or the parallel read.
+        const { keyring, refreshKeyring, store, state } = fixture()
+        const expiresAt = Date.now() + 3_600_000
+
+        await store.setBundle!(account, {
+            accessToken: 'at-1',
+            refreshToken: 'rt-1',
+            accessTokenExpiresAt: expiresAt,
+        })
+
+        expect(keyring.setSpy).toHaveBeenCalledWith('at-1')
+        expect(refreshKeyring.setSpy).toHaveBeenCalledWith('rt-1')
+        expect(state.records.get('42')?.hasRefreshToken).toBe(true)
+        expect(state.records.get('42')?.accessTokenExpiresAt).toBe(expiresAt)
+
+        const snapshot = await store.active()
+        expect(snapshot?.bundle).toEqual({
+            accessToken: 'at-1',
+            refreshToken: 'rt-1',
+            accessTokenExpiresAt: expiresAt,
+            refreshTokenExpiresAt: undefined,
+        })
+
+        await store.clear()
+        // Both slots cleared on logout — otherwise an orphan refresh token
+        // survives in the keyring.
+        expect(keyring.deleteSpy).toHaveBeenCalled()
+        expect(refreshKeyring.deleteSpy).toHaveBeenCalled()
+        expect(state.records.size).toBe(0)
+    })
+
+    it('skips the refresh-slot keyring read when hasRefreshToken is false (hot-path optimisation)', async () => {
+        const { refreshKeyring, store } = fixture({
+            keyring: buildSingleSlot({ secret: 'at-only' }),
+            records: { '42': { account, hasRefreshToken: false } },
+            defaultId: '42',
+        })
+
+        const snapshot = await store.active()
+
+        expect(snapshot?.token).toBe('at-only')
+        expect(snapshot?.bundle?.refreshToken).toBeUndefined()
+        // The gating bit's whole point: no second IPC round-trip when there's
+        // nothing in the refresh slot. A stale `true` would force an extra
+        // keyring hit per command for accounts that never had refresh.
+        expect(refreshKeyring.getSpy).not.toHaveBeenCalled()
     })
 
     it('falls back to a plaintext token on the user record when the keyring is offline', async () => {

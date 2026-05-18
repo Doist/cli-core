@@ -7,6 +7,7 @@ import {
     type SecureStore,
     SecureStoreUnavailableError,
 } from './secure-store.js'
+import { refreshAccountSlot } from './token-store.js'
 import type { UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
@@ -165,7 +166,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
             // junk that may have been parked there by a hand-edit.
             refreshSecureStore: createSecureStore({
                 serviceName,
-                account: `${accountSlot}/refresh`,
+                account: refreshAccountSlot(accountSlot),
             }),
             userRecords,
             account,
