@@ -224,17 +224,34 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
                     if (!(error instanceof SecureStoreUnavailableError)) throw error
                     // Keyring offline — keep the plaintext fallback.
                 }
-                if (movedToKeyring) {
-                    if (await recordStillOurs()) {
-                        await userRecords.upsert({ account, hasRefreshToken: false })
-                    } else {
-                        // V2 login took over while we were writing — undo
-                        // our keyring write so its `setSecret` is the
-                        // authoritative one.
-                        await accessStore.deleteSecret().catch(() => undefined)
+                // One ownership re-read after the keyring write; cache the
+                // result so the follow-up upsert AND the refresh-slot
+                // cleanup share the same answer. The earlier code re-read
+                // again after the upsert, but the upsert flips
+                // `hasRefreshToken` away from the placeholder signature
+                // so that check was guaranteed to return false (and the
+                // cleanup silently skipped).
+                const stillOurs = await recordStillOurs()
+                if (movedToKeyring && stillOurs) {
+                    await userRecords.upsert({ account, hasRefreshToken: false })
+                } else if (movedToKeyring) {
+                    // V2 login took over after our setSecret. Only roll
+                    // the keyring write back when the slot still contains
+                    // OUR legacy token — a blind delete would otherwise
+                    // remove v2's credential (their setSecret may have
+                    // run after ours), leaving the v2 record permanently
+                    // unreadable.
+                    try {
+                        const current = (await accessStore.getSecret())?.trim()
+                        if (current === legacyTokenStr) {
+                            await accessStore.deleteSecret().catch(() => undefined)
+                        }
+                    } catch {
+                        // best-effort: if we can't read the slot, don't
+                        // risk a destructive delete.
                     }
                 }
-                if (await recordStillOurs()) {
+                if (stillOurs) {
                     // Best-effort cleanup of any stale refresh secret
                     // (legacy single-user state never had one, but a
                     // hand-edit might). Skipped when v2 owns the record.

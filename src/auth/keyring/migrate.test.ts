@@ -502,6 +502,70 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         expect(harness.state.records.get('1')?.fallbackToken).toBeUndefined()
     })
 
+    it('does not delete the access slot during rollback when a v2 login has since overwritten it', async () => {
+        // Race: our setSecret writes the legacy token, then a v2 login
+        // overwrites the slot with its access token AND replaces the
+        // record. When we discover we lost ownership, a blind
+        // deleteSecret() would remove the v2 access token and leave the
+        // v2 record permanently unreadable (AUTH_STORE_READ_FAILED).
+        // The rollback must check the slot still contains OUR token
+        // before deleting.
+        const harness = buildUserRecords<Account>()
+        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
+            if (harness.state.records.has(record.account.id)) return false
+            harness.state.records.set(record.account.id, record)
+            return true
+        })
+        harness.store.tryInsert = tryInsert
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        mockedCreateSecureStore.mockImplementation(km.create)
+
+        // Hook setSecret on the per-user slot so that AS SOON AS our
+        // migration writes 'legacy_tok' there, a "v2 login" completes:
+        // overwrites the slot with v2's token and replaces the record.
+        const userSlot = km.slots.get('user-1') ?? { secret: null }
+        km.slots.set('user-1', userSlot)
+        // Wrap setSecret so the race fires after our write.
+        const originalCreate = km.create
+        mockedCreateSecureStore.mockImplementation((args) => {
+            const store = originalCreate(args)
+            if (args.account === 'user-1') {
+                const originalSet = store.setSecret.bind(store)
+                store.setSecret = async (secret) => {
+                    await originalSet(secret)
+                    // V2 login lands now: overwrite the slot and the record.
+                    userSlot.secret = 'v2_access'
+                    harness.state.records.set('1', {
+                        account: { id: '1', email: 'a@b' },
+                        hasRefreshToken: true,
+                    })
+                }
+            }
+            return store
+        })
+
+        await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords: harness.store,
+            hasMigrated: async () => false,
+            markMigrated: async () => {},
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => ({ id: '1', email: 'a@b' }),
+            silent: true,
+        })
+
+        // V2's access token survives the rollback — the guarded delete
+        // saw the slot no longer contained the legacy token and
+        // declined to remove anything.
+        expect(km.slots.get('user-1')?.secret).toBe('v2_access')
+        // V2 record intact.
+        expect(harness.state.records.get('1')).toMatchObject({
+            hasRefreshToken: true,
+        })
+    })
+
     it('leaves the v2 record alone when tryInsert returns false (existing v2 login)', async () => {
         // The whole point of routing through `tryInsert`: when a v2
         // login has already completed for the same account between

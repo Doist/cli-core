@@ -120,7 +120,16 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
             const fresh = await requireSnapshotForRef(options.store, options.ref)
             if (fresh) {
                 const freshBundle = fresh.bundle ?? { accessToken: fresh.token }
-                if (fresh.token !== snapshot.token) {
+                // Compare the WHOLE bundle, not just the access-token
+                // string. A provider that rotates only the refresh token
+                // (or whose access token is opaquely re-issued with the
+                // same string) would otherwise leave the waiter with a
+                // stale refresh token and a guaranteed `invalid_grant`
+                // on its next POST.
+                if (
+                    fresh.token !== snapshot.token ||
+                    freshBundle.refreshToken !== initialBundle.refreshToken
+                ) {
                     // Another process won the race. Return its result; ignore
                     // our `force` flag because the access token has already
                     // been rotated server-side.
