@@ -16,7 +16,8 @@ function buildStore(
     store: TokenStore<Account>
     activeSpy: ReturnType<typeof vi.fn>
 } {
-    const activeSpy = vi.fn(async () => initial)
+    const snapshot = initial && { ...initial, bundle: { accessToken: initial.token } }
+    const activeSpy = vi.fn(async () => snapshot)
     const store: TokenStore<Account> = {
         active: activeSpy,
         set: vi.fn(),
@@ -131,6 +132,7 @@ describe('attachStatusCommand', () => {
         expect(fetchLive).toHaveBeenCalledWith({
             account,
             token: 'tok',
+            bundle: { accessToken: 'tok' },
             view: { json: false, ndjson: false },
             flags: {},
         })

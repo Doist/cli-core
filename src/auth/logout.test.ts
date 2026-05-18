@@ -18,7 +18,8 @@ function buildStore(
     activeSpy: ReturnType<typeof vi.fn>
     clearSpy: ReturnType<typeof vi.fn>
 } {
-    const activeSpy = vi.fn(async () => initial)
+    const snapshot = initial && { ...initial, bundle: { accessToken: initial.token } }
+    const activeSpy = vi.fn(async () => snapshot)
     const clearSpy = vi.fn(async () => undefined)
     const store: TokenStore<Account> = {
         active: activeSpy,

@@ -188,7 +188,12 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
         checkAborted()
 
         try {
-            await options.store.set(account, exchange.accessToken)
+            await options.store.set(account, {
+                accessToken: exchange.accessToken,
+                refreshToken: exchange.refreshToken,
+                accessTokenExpiresAt: exchange.accessTokenExpiresAt,
+                refreshTokenExpiresAt: exchange.refreshTokenExpiresAt,
+            })
         } catch (error) {
             if (error instanceof CliError) throw error
             throw new CliError(

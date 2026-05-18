@@ -1,6 +1,8 @@
 export type { AuthErrorCode } from './errors.js'
 export { runOAuthFlow } from './flow.js'
 export type { RunOAuthFlowOptions, RunOAuthFlowResult } from './flow.js'
+export { refreshAccessToken } from './refresh.js'
+export type { RefreshAccessTokenOptions } from './refresh.js'
 export { attachLoginCommand } from './login.js'
 export type { AttachLoginCommandOptions, AttachLoginContext } from './login.js'
 export { attachLogoutCommand } from './logout.js'
@@ -32,6 +34,8 @@ export type {
     ExchangeResult,
     PrepareInput,
     PrepareResult,
+    RefreshInput,
+    TokenBundle,
     TokenStore,
     ValidateInput,
 } from './types.js'

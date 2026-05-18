@@ -31,9 +31,16 @@ function fakeStore(): TokenStore<Account> & { last?: { account: Account; token: 
     const state: { last?: { account: Account; token: string } } = {}
     return {
         async active() {
-            return state.last ?? null
+            return state.last
+                ? {
+                      token: state.last.token,
+                      bundle: { accessToken: state.last.token },
+                      account: state.last.account,
+                  }
+                : null
         },
-        async set(account, token) {
+        async set(account, credentials) {
+            const token = typeof credentials === 'string' ? credentials : credentials.accessToken
             state.last = { account, token }
         },
         async clear() {
@@ -151,6 +158,7 @@ describe('runOAuthFlow', () => {
         expect(openBrowser).toHaveBeenCalledTimes(1)
         expect(await store.active()).toEqual({
             token: 'tok-1',
+            bundle: { accessToken: 'tok-1' },
             account: { id: '1', email: 'a@b' },
         })
     })

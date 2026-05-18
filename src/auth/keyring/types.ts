@@ -25,6 +25,16 @@ export type UserRecord<TAccount extends AuthAccount> = {
      * that would otherwise live in the OS credential manager.
      */
     fallbackToken?: string
+    /**
+     * Plaintext refresh token, kept in step with `fallbackToken`: only ever
+     * present when the keyring was unavailable at write time. Same
+     * security-relevant treatment.
+     */
+    fallbackRefreshToken?: string
+    /** Unix-epoch ms — when the persisted access token expires. */
+    accessTokenExpiresAt?: number
+    /** Unix-epoch ms — when the persisted refresh token expires (rarely known). */
+    refreshTokenExpiresAt?: number
 }
 
 /**

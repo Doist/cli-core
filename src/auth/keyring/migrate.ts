@@ -157,14 +157,19 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     // internally (writing to `fallbackToken` instead), so any error here is
     // a non-keyring failure — typically a `userRecords.upsert` rejection.
     try {
+        const accountSlot = accountForUser(account.id)
         await writeRecordWithKeyringFallback({
-            secureStore: createSecureStore({
+            secureStore: createSecureStore({ serviceName, account: accountSlot }),
+            // Legacy single-user state never carried a refresh token, but
+            // wire the sibling slot anyway so a defensive delete clears any
+            // junk that may have been parked there by a hand-edit.
+            refreshSecureStore: createSecureStore({
                 serviceName,
-                account: accountForUser(account.id),
+                account: `${accountSlot}/refresh`,
             }),
             userRecords,
             account,
-            token: legacyToken.token,
+            bundle: { accessToken: legacyToken.token },
         })
     } catch (error) {
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))

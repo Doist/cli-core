@@ -7,6 +7,7 @@ import type {
     AuthorizeResult,
     ExchangeInput,
     ExchangeResult,
+    RefreshInput,
     ValidateInput,
 } from '../types.js'
 
@@ -152,10 +153,88 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             return {
                 accessToken: payload.access_token,
                 refreshToken: payload.refresh_token,
-                expiresAt:
+                accessTokenExpiresAt:
                     typeof payload.expires_in === 'number'
                         ? Date.now() + payload.expires_in * 1000
                         : undefined,
+            }
+        },
+
+        async refreshToken(input: RefreshInput<TAccount>): Promise<ExchangeResult<TAccount>> {
+            // At refresh time there is no PKCE codeVerifier — the access
+            // token has already been issued, and the refresh grant doesn't
+            // re-prove the user. We do still need the clientId (public OAuth
+            // client) and tokenUrl, both resolved from the synthesised
+            // handshake on the stored account.
+            const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
+            const tokenUrl = resolve(options.tokenUrl, input.handshake, flags)
+            const clientId = resolve(options.clientId, input.handshake, flags)
+
+            const body = new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: input.refreshToken,
+                client_id: clientId,
+            })
+
+            let response: Response
+            try {
+                response = await fetchImpl(tokenUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        Accept: 'application/json',
+                    },
+                    body: body.toString(),
+                })
+            } catch (error) {
+                throw new CliError(
+                    'AUTH_REFRESH_TRANSIENT',
+                    `Refresh request failed: ${getErrorMessage(error)}`,
+                )
+            }
+
+            if (!response.ok) {
+                const detail = await safeReadText(response)
+                // 400/401 with `invalid_grant` means the refresh token is
+                // revoked or expired and a forced re-login is the only
+                // recovery. Other statuses are treated as transient (server
+                // hiccup) — the caller may retry on the next request.
+                const isInvalidGrant =
+                    (response.status === 400 || response.status === 401) &&
+                    /invalid_grant/i.test(detail ?? '')
+                throw new CliError(
+                    isInvalidGrant ? 'AUTH_REFRESH_EXPIRED' : 'AUTH_REFRESH_TRANSIENT',
+                    `Refresh token endpoint returned HTTP ${response.status}.`,
+                    detail ? { hints: [detail] } : {},
+                )
+            }
+
+            let payload: { access_token?: string; refresh_token?: string; expires_in?: number }
+            try {
+                payload = (await response.json()) as typeof payload
+            } catch (error) {
+                throw new CliError(
+                    'AUTH_REFRESH_TRANSIENT',
+                    `Refresh endpoint returned non-JSON response: ${getErrorMessage(error)}`,
+                )
+            }
+            if (!payload.access_token) {
+                throw new CliError(
+                    'AUTH_REFRESH_TRANSIENT',
+                    'Refresh endpoint response missing access_token.',
+                )
+            }
+            return {
+                accessToken: payload.access_token,
+                // Some OAuth servers rotate refresh tokens; others don't. We
+                // can't tell from one response, so persist whatever comes
+                // back. The caller's `set()` will replace the stored value.
+                refreshToken: payload.refresh_token,
+                accessTokenExpiresAt:
+                    typeof payload.expires_in === 'number'
+                        ? Date.now() + payload.expires_in * 1000
+                        : undefined,
+                account: input.account,
             }
         },
 

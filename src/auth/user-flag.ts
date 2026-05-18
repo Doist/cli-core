@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
-import type { AccountRef, AuthAccount, TokenStore } from './types.js'
+import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from './types.js'
 
 // Shared `--user <ref>` wiring + snapshot-or-throw helper so the three auth
 // attachers can't drift on flag wording or miss semantics. Internal — not
@@ -31,7 +31,7 @@ export function accountNotFoundError(ref: AccountRef): CliError {
 export async function requireSnapshotForRef<TAccount extends AuthAccount>(
     store: TokenStore<TAccount>,
     ref: AccountRef | undefined,
-): Promise<{ token: string; account: TAccount } | null> {
+): Promise<{ token: string; bundle?: TokenBundle; account: TAccount } | null> {
     const snapshot = await store.active(ref)
     if (ref !== undefined && snapshot === null) {
         throw accountNotFoundError(ref)

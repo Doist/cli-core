@@ -84,7 +84,7 @@ describe('createPkceProvider', () => {
             handshake: { codeVerifier: 'the-verifier', clientId: 'client-xyz' },
         })
         expect(result.accessToken).toBe('tok-1')
-        expect(result.expiresAt).toBeGreaterThan(Date.now())
+        expect(result.accessTokenExpiresAt).toBeGreaterThan(Date.now())
 
         const failing = createPkceProvider<Account>({
             authorizeUrl: 'unused',
@@ -143,5 +143,106 @@ describe('createPkceProvider', () => {
                 handshake: {},
             }),
         ).rejects.toMatchObject({ code: 'AUTH_TOKEN_EXCHANGE_FAILED' })
+    })
+
+    describe('refreshToken', () => {
+        const account: Account = { id: '1', label: 'a', email: 'a@b' }
+
+        it('POSTs grant_type=refresh_token with the stored refresh_token + client_id (no client_secret)', async () => {
+            let captured: { url: string; body: URLSearchParams } | null = null
+            const provider = createPkceProvider<Account>({
+                authorizeUrl: 'unused',
+                tokenUrl: 'https://example.com/oauth/token',
+                clientId: 'client-xyz',
+                validate,
+                fetchImpl: ((url: string, init?: RequestInit) => {
+                    captured = {
+                        url,
+                        body: new URLSearchParams((init?.body as string) ?? ''),
+                    }
+                    return Promise.resolve(
+                        respond({
+                            access_token: 'new-access',
+                            refresh_token: 'new-refresh',
+                            expires_in: 3600,
+                        }),
+                    )
+                }) as typeof fetch,
+            })
+            const refresh = provider.refreshToken
+            expect(refresh).toBeTypeOf('function')
+
+            const result = await refresh!({
+                refreshToken: 'old-refresh',
+                account,
+                handshake: {},
+            })
+
+            expect(captured!.url).toBe('https://example.com/oauth/token')
+            expect(captured!.body.get('grant_type')).toBe('refresh_token')
+            expect(captured!.body.get('refresh_token')).toBe('old-refresh')
+            expect(captured!.body.get('client_id')).toBe('client-xyz')
+            expect(captured!.body.has('client_secret')).toBe(false)
+            expect(captured!.body.has('code_verifier')).toBe(false)
+            expect(result.accessToken).toBe('new-access')
+            expect(result.refreshToken).toBe('new-refresh')
+            expect(result.accessTokenExpiresAt).toBeGreaterThan(Date.now())
+            // Account passes through so the caller doesn't have to look it up again.
+            expect(result.account).toEqual(account)
+        })
+
+        it('throws AUTH_REFRESH_EXPIRED on 400 invalid_grant (refresh token revoked or expired)', async () => {
+            const provider = createPkceProvider<Account>({
+                authorizeUrl: 'unused',
+                tokenUrl: 'https://example.com/oauth/token',
+                clientId: 'cid',
+                validate,
+                fetchImpl: (() =>
+                    Promise.resolve(
+                        new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }),
+                    )) as typeof fetch,
+            })
+
+            await expect(
+                provider.refreshToken!({
+                    refreshToken: 'rt',
+                    account,
+                    handshake: {},
+                }),
+            ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
+        })
+
+        it('throws AUTH_REFRESH_TRANSIENT on non-invalid_grant errors (5xx, network)', async () => {
+            const transientStatus = createPkceProvider<Account>({
+                authorizeUrl: 'unused',
+                tokenUrl: 'https://example.com/oauth/token',
+                clientId: 'cid',
+                validate,
+                fetchImpl: (() =>
+                    Promise.resolve(new Response('upstream', { status: 503 }))) as typeof fetch,
+            })
+            await expect(
+                transientStatus.refreshToken!({
+                    refreshToken: 'rt',
+                    account,
+                    handshake: {},
+                }),
+            ).rejects.toMatchObject({ code: 'AUTH_REFRESH_TRANSIENT' })
+
+            const network = createPkceProvider<Account>({
+                authorizeUrl: 'unused',
+                tokenUrl: 'https://example.com/oauth/token',
+                clientId: 'cid',
+                validate,
+                fetchImpl: (() => Promise.reject(new Error('ECONNRESET'))) as typeof fetch,
+            })
+            await expect(
+                network.refreshToken!({
+                    refreshToken: 'rt',
+                    account,
+                    handshake: {},
+                }),
+            ).rejects.toMatchObject({ code: 'AUTH_REFRESH_TRANSIENT' })
+        })
     })
 })

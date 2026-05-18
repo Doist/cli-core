@@ -1,5 +1,5 @@
 import { CliError } from '../../errors.js'
-import type { AccountRef, AuthAccount, TokenStore } from '../types.js'
+import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
 import { writeRecordWithKeyringFallback } from './record-write.js'
 import {
@@ -40,6 +40,8 @@ export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccoun
     getLastStorageResult(): TokenStorageResult | undefined
     /** Storage result from the most recent `clear()` call, or `undefined` before any (and reset to `undefined` when the most recent `clear()` threw or was a no-op). */
     getLastClearResult(): TokenStorageResult | undefined
+    /** Human-readable location of the underlying record store. Surfaced so `refreshAccessToken` can derive a sidecar lock path without re-plumbing options. */
+    getRecordsLocation(): string
 }
 
 const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
@@ -47,10 +49,19 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
     ref: AccountRef,
 ): boolean => account.id === ref || account.label === ref
 
+/** Sibling keyring slot for the refresh token. Kept here so every read/write site agrees on the wire format. */
+export function refreshAccountSlot(accessSlot: string): string {
+    return `${accessSlot}/refresh`
+}
+
+function toBundle(credentials: string | TokenBundle): TokenBundle {
+    return typeof credentials === 'string' ? { accessToken: credentials } : credentials
+}
+
 /**
  * Multi-account `TokenStore` that keeps secrets in the OS credential manager
- * and per-user metadata in the consumer's `UserRecordStore`. Falls back to a
- * plaintext token on the user record when the keyring is unreachable (WSL
+ * and per-user metadata in the consumer's `UserRecordStore`. Falls back to
+ * plaintext tokens on the user record when the keyring is unreachable (WSL
  * without D-Bus, missing native binary, locked Keychain, …) so the CLI keeps
  * working at the cost of a visible warning.
  *
@@ -60,17 +71,20 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
  * keyring read is the only path. When the keyring is offline the token is
  * parked on the record and must be reachable on every subsequent read.
  *
+ * Refresh tokens live in a sibling keyring slot (`${account}/refresh`) so
+ * that `clear()` can drop them without parsing the access slot's contents.
+ *
  * Write order is keyring first, then `userRecords.upsert`. If the upsert
- * fails after a successful keyring write, the keyring entry is rolled back
- * via `deleteSecret()` to avoid orphan credentials for a user that cli-core
- * never managed to record.
+ * fails after a successful keyring write, both keyring entries are rolled
+ * back via `deleteSecret()` to avoid orphan credentials for a user that
+ * cli-core never managed to record.
  *
  * Clear order is the inverse: record removal first (the source of truth that
- * the rest of the CLI reads), then keyring delete. Any keyring delete
- * failure after a successful removal is downgraded to a warning — the orphan
- * secret is harmless because no record references it anymore, and surfacing
- * the error would corrupt local state (record gone, but caller sees a thrown
- * exception and assumes the clear failed).
+ * the rest of the CLI reads), then keyring delete (both slots). Any keyring
+ * delete failure after a successful removal is downgraded to a warning — the
+ * orphan secret is harmless because no record references it anymore, and
+ * surfacing the error would corrupt local state (record gone, but caller
+ * sees a thrown exception and assumes the clear failed).
  */
 export function createKeyringTokenStore<TAccount extends AuthAccount>(
     options: CreateKeyringTokenStoreOptions<TAccount>,
@@ -82,8 +96,15 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     let lastStorageResult: TokenStorageResult | undefined
     let lastClearResult: TokenStorageResult | undefined
 
-    function secureStoreFor(account: TAccount): SecureStore {
+    function accessStoreFor(account: TAccount): SecureStore {
         return createSecureStore({ serviceName, account: accountForUser(account.id) })
+    }
+
+    function refreshStoreFor(account: TAccount): SecureStore {
+        return createSecureStore({
+            serviceName,
+            account: refreshAccountSlot(accountForUser(account.id)),
+        })
     }
 
     type Snapshot = { records: UserRecord<TAccount>[]; defaultId: string | null }
@@ -101,19 +122,6 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         return { records, defaultId }
     }
 
-    /**
-     * Resolve the snapshot target for a given ref (or the implicit default
-     * when `ref === undefined`). Two failure modes:
-     *
-     * - Multiple records match the `ref`: ambiguous (the default matcher
-     *   includes `account.label`, and labels aren't guaranteed unique).
-     *   Throws `NO_ACCOUNT_SELECTED` so the user picks a tighter ref instead
-     *   of silently acting on whichever record `list()` returned first.
-     * - `ref === undefined`, no `defaultId` pinned, and more than one record
-     *   exists. Same code — `setDefaultId` is best-effort during `set()`,
-     *   so a typed failure here is the only non-misleading signal for "you
-     *   have multiple accounts; pick one".
-     */
     function resolveTarget(
         snapshot: Snapshot,
         ref: AccountRef | undefined,
@@ -147,11 +155,60 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         }
     }
 
+    /**
+     * Read the access + refresh secrets for a record, preferring the
+     * plaintext fallbacks when present (mirrors the contract that the
+     * fallback is authoritative whenever it exists). Returns `null` for the
+     * "stored corrupted state" case so callers can throw `AUTH_STORE_READ_FAILED`.
+     */
+    async function readBundleForRecord(record: UserRecord<TAccount>): Promise<TokenBundle | null> {
+        const fallbackAccess = record.fallbackToken?.trim()
+        if (fallbackAccess) {
+            return {
+                accessToken: fallbackAccess,
+                refreshToken: record.fallbackRefreshToken?.trim() || undefined,
+                accessTokenExpiresAt: record.accessTokenExpiresAt,
+                refreshTokenExpiresAt: record.refreshTokenExpiresAt,
+            }
+        }
+
+        let rawAccess: string | null
+        try {
+            rawAccess = await accessStoreFor(record.account).getSecret()
+        } catch (error) {
+            if (error instanceof SecureStoreUnavailableError) {
+                throw new CliError(
+                    'AUTH_STORE_READ_FAILED',
+                    `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
+                )
+            }
+            throw error
+        }
+
+        const accessToken = rawAccess?.trim()
+        if (!accessToken) return null
+
+        // Refresh slot read errors are downgraded — a missing or unreadable
+        // refresh token is not fatal (the access token alone is still usable
+        // until it expires). Surface as "no refresh present" so the caller
+        // sees a consistent shape.
+        let rawRefresh: string | null = null
+        try {
+            rawRefresh = await refreshStoreFor(record.account).getSecret()
+        } catch {
+            rawRefresh = null
+        }
+
+        return {
+            accessToken,
+            refreshToken: rawRefresh?.trim() || undefined,
+            accessTokenExpiresAt: record.accessTokenExpiresAt,
+            refreshTokenExpiresAt: record.refreshTokenExpiresAt,
+        }
+    }
+
     return {
         async active(ref) {
-            // Ref-only path skips `getDefaultId()` — `resolveTarget` never
-            // touches it when `ref` is supplied, so the extra read would be
-            // pure latency on every authenticated command.
             const snapshot: Snapshot =
                 ref === undefined
                     ? await readFullSnapshot()
@@ -159,64 +216,36 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             const record = resolveTarget(snapshot, ref)
             if (!record) return null
 
-            const fallback = record.fallbackToken?.trim()
-            if (fallback) {
-                return { token: fallback, account: record.account }
+            const bundle = await readBundleForRecord(record)
+            if (!bundle) {
+                // Record exists, no `fallbackToken`, and the keyring slot is
+                // empty — credential deleted out-of-band. Corrupted state,
+                // not a miss.
+                throw new CliError(
+                    'AUTH_STORE_READ_FAILED',
+                    `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
+                )
             }
 
-            let raw: string | null
-            try {
-                raw = await secureStoreFor(record.account).getSecret()
-            } catch (error) {
-                // A matching record exists but the keyring can't be read.
-                // Surface a typed failure instead of returning `null`, which
-                // would otherwise be indistinguishable from "no stored
-                // account" and trigger `ACCOUNT_NOT_FOUND` on `--user <ref>`.
-                // `attachLogoutCommand` catches this specific code so an
-                // explicit `logout --user <ref>` can still clear the matching
-                // record without needing the unreadable token.
-                if (error instanceof SecureStoreUnavailableError) {
-                    throw new CliError(
-                        'AUTH_STORE_READ_FAILED',
-                        `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
-                    )
-                }
-                throw error
-            }
-
-            const token = raw?.trim()
-            if (token) {
-                return { token, account: record.account }
-            }
-
-            // Record exists, no `fallbackToken`, and the keyring slot is
-            // empty — the credential was deleted out-of-band (user ran
-            // `security delete-generic-password`, `secret-tool clear`, …).
-            // This is corrupted state, not a miss; collapsing it to `null`
-            // would make `--user <ref>` surface as `ACCOUNT_NOT_FOUND` and
-            // hide the real problem.
-            throw new CliError(
-                'AUTH_STORE_READ_FAILED',
-                `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
-            )
+            return { token: bundle.accessToken, bundle, account: record.account }
         },
 
-        async set(account, token) {
+        async set(account, credentials) {
             // Reset the cached storage result up front so a caller that
             // catches a thrown `set()` doesn't observe the previous call's
             // warning leaking through `getLastStorageResult`.
             lastStorageResult = undefined
 
+            const bundle = toBundle(credentials)
             const { storedSecurely } = await writeRecordWithKeyringFallback({
-                secureStore: secureStoreFor(account),
+                secureStore: accessStoreFor(account),
+                refreshSecureStore: refreshStoreFor(account),
                 userRecords,
                 account,
-                token,
+                bundle,
             })
 
-            // Best-effort default promotion: the record is already persisted,
-            // so a failure here must not turn into `AUTH_STORE_WRITE_FAILED`
-            // (the user can recover by setting a default later).
+            // Best-effort default promotion — same rationale as before.
             try {
                 const existingDefault = await userRecords.getDefaultId()
                 if (!existingDefault) {
@@ -232,23 +261,14 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async clear(ref) {
-            // Reset up front for the same reason as `set` — and so a no-op
-            // (no matching record) clears any stale result from a previous
-            // call.
             lastClearResult = undefined
 
-            // `clear` always needs the pinned default to decide whether to
-            // un-pin after the removal, so we can't skip `getDefaultId()`
-            // even on the explicit-ref path.
             const snapshot = await readFullSnapshot()
             const record = resolveTarget(snapshot, ref)
             if (!record) return
 
             await userRecords.remove(record.account.id)
 
-            // Default un-pinning is best-effort: a failure here must not
-            // skip the keyring delete below, otherwise we leave an
-            // unreachable orphan secret behind for the just-removed record.
             if (snapshot.defaultId === record.account.id) {
                 try {
                     await userRecords.setDefaultId(null)
@@ -259,31 +279,31 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             const fallbackClear = fallbackResult('local auth state cleared in')
 
-            // Always attempt the keyring delete. Even when the record carried
-            // a `fallbackToken`, an older keyring entry may still be parked
-            // there from a prior keyring-online write that was later replaced
-            // by an offline-fallback write — skipping the delete would leak
-            // that orphan. Downgrade *any* failure to a warning: the record
-            // is already gone, so re-throwing would corrupt local state
-            // (caller sees an exception and assumes nothing was cleared,
-            // even though the next `account list` will show the user gone).
+            // Always attempt to delete both keyring slots. Either may have
+            // an orphan entry from a prior keyring-online write that was
+            // later replaced by an offline-fallback write.
+            let keyringClean = true
             try {
-                await secureStoreFor(record.account).deleteSecret()
+                await accessStoreFor(record.account).deleteSecret()
+            } catch {
+                keyringClean = false
+            }
+            try {
+                await refreshStoreFor(record.account).deleteSecret()
+            } catch {
+                keyringClean = false
+            }
+
+            if (!keyringClean) {
+                lastClearResult = fallbackClear
+            } else {
                 lastClearResult =
                     record.fallbackToken !== undefined ? fallbackClear : { storage: 'secure-store' }
-            } catch {
-                lastClearResult = fallbackClear
             }
         },
 
         async list() {
             const snapshot = await readFullSnapshot()
-            // Use `resolveTarget` to compute the *effective* default so the
-            // `isDefault` markers match what `active()` would resolve — that
-            // includes the implicit single-record case. `resolveTarget` can
-            // throw `NO_ACCOUNT_SELECTED`, which we want to swallow here
-            // (listing accounts is a diagnostic operation that must work
-            // even when no default is pinned).
             let implicitDefault: UserRecord<TAccount> | null = null
             try {
                 implicitDefault = resolveTarget(snapshot, undefined)
@@ -297,7 +317,6 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         },
 
         async setDefault(ref) {
-            // Ref-only path — skip `getDefaultId()` like `active(ref)`.
             const snapshot: Snapshot = { records: await userRecords.list(), defaultId: null }
             const record = resolveTarget(snapshot, ref)
             if (!record) {
@@ -312,6 +331,10 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
         getLastClearResult() {
             return lastClearResult
+        },
+
+        getRecordsLocation() {
+            return recordsLocation
         },
     }
 }

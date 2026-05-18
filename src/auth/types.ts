@@ -46,16 +46,46 @@ export type ExchangeInput = {
 export type ExchangeResult<TAccount extends AuthAccount = AuthAccount> = {
     accessToken: string
     refreshToken?: string
-    /** Unix-epoch ms. cli-core does not refresh today. */
-    expiresAt?: number
+    /** Unix-epoch ms when the access token expires. */
+    accessTokenExpiresAt?: number
+    /** Unix-epoch ms when the refresh token expires (rarely advertised). */
+    refreshTokenExpiresAt?: number
     /** Set when the token endpoint already identifies the account; skips `validateToken`. */
     account?: TAccount
+}
+
+/**
+ * Persisted credential triple. `refreshToken` and `accessTokenExpiresAt`
+ * are present only when the token endpoint returned them at login and the
+ * provider implements `refreshToken`. Read by `refreshAccessToken` to
+ * decide whether a proactive refresh is needed.
+ */
+export type TokenBundle = {
+    accessToken: string
+    refreshToken?: string
+    /** Unix-epoch ms. */
+    accessTokenExpiresAt?: number
+    /** Unix-epoch ms. */
+    refreshTokenExpiresAt?: number
 }
 
 export type ValidateInput = {
     token: string
     /** Same shape as `ExchangeInput.handshake` — carries the folded `flags` / `readOnly`. */
     handshake: Record<string, unknown>
+}
+
+export type RefreshInput<TAccount extends AuthAccount = AuthAccount> = {
+    refreshToken: string
+    /**
+     * Synthesised at refresh time from the stored account — providers that
+     * need a base URL or client_id at refresh should read it from here
+     * (mirrors the `authorize`/`exchangeCode` handshake but without PKCE
+     * state, which has long since been discarded).
+     */
+    handshake: Record<string, unknown>
+    /** The account whose token is being refreshed. */
+    account: TAccount
 }
 
 /**
@@ -70,6 +100,13 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
     exchangeCode(input: ExchangeInput): Promise<ExchangeResult<TAccount>>
     /** Skipped when `exchangeCode` already returned an `account`. */
     validateToken(input: ValidateInput): Promise<TAccount>
+    /**
+     * Optional. Exchange a refresh token for a fresh access token. Providers
+     * whose servers don't issue refresh tokens (Twist, Todoist today) omit
+     * this — `refreshAccessToken` will surface `AUTH_REFRESH_UNAVAILABLE`
+     * when called against such a provider.
+     */
+    refreshToken?(input: RefreshInput<TAccount>): Promise<ExchangeResult<TAccount>>
 }
 
 /** Opaque account selector. Stores own the matching rule (id, email, label, …). */
@@ -90,9 +127,25 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * explicit-ref path and proceeds with `clear(ref)`; `attachStatusCommand`
      * and `attachTokenViewCommand` propagate it.
      */
-    active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
-    /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
-    set(account: TAccount, token: string): Promise<void>
+    /**
+     * `bundle` is optional so consumers implementing their own `TokenStore`
+     * against a backend that doesn't track refresh tokens or expiry can
+     * keep returning just `{ token, account }`. cli-core's built-in
+     * `createKeyringTokenStore` always supplies it, and helpers that need
+     * the extras (`refreshAccessToken`, `status` rendering) fall back to a
+     * synthesised `{ accessToken: token }` when it's absent.
+     */
+    active(
+        ref?: AccountRef,
+    ): Promise<{ token: string; bundle?: TokenBundle; account: TAccount } | null>
+    /**
+     * Persist credentials for `account`, replacing any previous entry. Accepts
+     * either a bare access-token string (for providers without refresh) or a
+     * full `TokenBundle` (access + optional refresh + expiry). Throw
+     * `CliError` for typed failures; other thrown values become
+     * `AUTH_STORE_WRITE_FAILED`.
+     */
+    set(account: TAccount, credentials: string | TokenBundle): Promise<void>
     /** Remove a stored credential. No-op when `ref` doesn't match. */
     clear(ref?: AccountRef): Promise<void>
     /** Every stored account with a default marker. */

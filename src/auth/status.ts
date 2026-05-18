@@ -2,7 +2,7 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
-import type { AuthAccount, TokenStore } from './types.js'
+import type { AuthAccount, TokenBundle, TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
 export type AttachStatusContext<TAccount extends AuthAccount> = {
@@ -25,6 +25,8 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
     fetchLive?(ctx: {
         account: TAccount
         token: string
+        /** Full credential bundle (access + refresh + expiry). Same source as `token`. */
+        bundle: TokenBundle
         /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
         view: Required<ViewOptions>
         flags: Record<string, unknown>
@@ -84,6 +86,10 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
             ? await options.fetchLive({
                   account: snapshot.account,
                   token: snapshot.token,
+                  // Synthesise a minimal bundle for stores that don't track
+                  // refresh / expiry, so consumers can always destructure
+                  // `bundle.accessToken` without a null-check.
+                  bundle: snapshot.bundle ?? { accessToken: snapshot.token },
                   view,
                   flags,
               })

@@ -41,13 +41,22 @@ type SingleSlot = ReturnType<typeof buildSingleSlot>
 function fixture(
     opts: {
         keyring?: SingleSlot
+        /** Pre-seeded refresh-slot mock. Defaults to a fresh empty singleSlot. */
+        refreshKeyring?: SingleSlot
         records?: Record<string, UserRecord<Account>>
         defaultId?: string | null
         factoryOpts?: Partial<CreateKeyringTokenStoreOptions<Account>>
     } = {},
 ) {
     const keyring = opts.keyring ?? buildSingleSlot()
-    mockedCreateSecureStore.mockReturnValue(keyring)
+    const refreshKeyring = opts.refreshKeyring ?? buildSingleSlot()
+    // Route by account slug: anything ending with `/refresh` lands in the
+    // refresh slot mock; everything else in the access slot mock. Keeps
+    // single-user tests' assertions about `keyring.deleteSpy` honest by
+    // isolating refresh-slot side effects.
+    mockedCreateSecureStore.mockImplementation(({ account }) =>
+        account.endsWith('/refresh') ? refreshKeyring : keyring,
+    )
     const harness = buildUserRecords<Account>()
     for (const [id, rec] of Object.entries(opts.records ?? {})) {
         harness.state.records.set(id, rec)
@@ -61,6 +70,7 @@ function fixture(
     })
     return {
         keyring,
+        refreshKeyring,
         store,
         state: harness.state,
         upsertSpy: harness.upsertSpy,
@@ -79,11 +89,24 @@ describe('createKeyringTokenStore', () => {
 
         await store.set(account, 'tok_secret')
         expect(keyring.setSpy).toHaveBeenCalledWith('tok_secret')
-        expect(upsertSpy).toHaveBeenCalledWith({ account })
+        expect(upsertSpy).toHaveBeenCalledWith({
+            account,
+            accessTokenExpiresAt: undefined,
+            refreshTokenExpiresAt: undefined,
+        })
         expect(state.defaultId).toBe('42')
         expect(store.getLastStorageResult()).toEqual({ storage: 'secure-store' })
 
-        await expect(store.active()).resolves.toEqual({ token: 'tok_secret', account })
+        await expect(store.active()).resolves.toEqual({
+            token: 'tok_secret',
+            bundle: {
+                accessToken: 'tok_secret',
+                refreshToken: undefined,
+                accessTokenExpiresAt: undefined,
+                refreshTokenExpiresAt: undefined,
+            },
+            account,
+        })
 
         await store.clear()
         expect(keyring.deleteSpy).toHaveBeenCalledTimes(1)
@@ -106,7 +129,16 @@ describe('createKeyringTokenStore', () => {
                 'system credential manager unavailable; token saved as plaintext in /tmp/fake/config.json',
         })
 
-        await expect(store.active()).resolves.toEqual({ token: 'tok_plain', account })
+        await expect(store.active()).resolves.toEqual({
+            token: 'tok_plain',
+            bundle: {
+                accessToken: 'tok_plain',
+                refreshToken: undefined,
+                accessTokenExpiresAt: undefined,
+                refreshTokenExpiresAt: undefined,
+            },
+            account,
+        })
         expect(keyring.getSpy).not.toHaveBeenCalled()
     })
 
@@ -157,7 +189,16 @@ describe('createKeyringTokenStore', () => {
         const keyring = buildSingleSlot({ secret: 'tok' })
         const { store } = fixture({ keyring, records: { '42': { account } } })
 
-        await expect(store.active()).resolves.toEqual({ token: 'tok', account })
+        await expect(store.active()).resolves.toEqual({
+            token: 'tok',
+            bundle: {
+                accessToken: 'tok',
+                refreshToken: undefined,
+                accessTokenExpiresAt: undefined,
+                refreshTokenExpiresAt: undefined,
+            },
+            account,
+        })
     })
 
     it('throws NO_ACCOUNT_SELECTED when multiple users exist and no default is set', async () => {

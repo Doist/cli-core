@@ -12,8 +12,9 @@ const account: Account = { id: '1', label: 'me', email: 'a@b' }
 function buildStore(
     initial: { token: string; account: Account } | null = { token: 'tok', account },
 ): TokenStore<Account> {
+    const snapshot = initial && { ...initial, bundle: { accessToken: initial.token } }
     return {
-        active: vi.fn(async () => initial),
+        active: vi.fn(async () => snapshot),
         set: vi.fn(),
         clear: vi.fn(),
         list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
@@ -62,7 +63,7 @@ describe('requireSnapshotForRef', () => {
 
         const snapshot = await requireSnapshotForRef(store, 'alice')
 
-        expect(snapshot).toEqual({ token: 'tok', account })
+        expect(snapshot).toEqual({ token: 'tok', bundle: { accessToken: 'tok' }, account })
         expect(store.active).toHaveBeenCalledWith('alice')
     })
 
