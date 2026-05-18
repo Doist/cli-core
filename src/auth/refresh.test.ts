@@ -222,6 +222,53 @@ describe('refreshAccessToken', () => {
         expect(result.bundle.refreshToken).toBe('rt-A-rotated')
     })
 
+    it('re-reads the store after a lock-acquisition timeout and returns the rotated snapshot', async () => {
+        // Lock contention path with the holder NOT releasing in time:
+        // `acquireFileLock` returns null (timeout). The helper must still
+        // re-read the store — the holder may have completed the refresh
+        // while we were waiting, in which case POSTing our own refresh
+        // would yield `invalid_grant` (server rotated already). README
+        // promises this behaviour; previously the timeout path skipped
+        // the re-read and defeated the lock's load-saving purpose.
+        const { store, state } = buildStore({
+            accessToken: 'expired',
+            refreshToken: 'rt',
+            accessTokenExpiresAt: Date.now() - 1000,
+        })
+        const provider = refreshingProvider()
+
+        // Hold the lock for the entire test (never release it).
+        writeFileSync(lockPath, 'holder-pid')
+
+        // After acquireFileLock times out, the store re-read should see a
+        // rotated bundle (simulating the holder's completion).
+        const realActive = store.active.bind(store)
+        let firstRead = true
+        store.active = async (ref) => {
+            const snapshot = await realActive(ref)
+            if (firstRead) {
+                firstRead = false
+                state.bundle = {
+                    accessToken: 'rotated-by-holder',
+                    refreshToken: 'rt-new',
+                    accessTokenExpiresAt: Date.now() + 3_600_000,
+                }
+            }
+            return snapshot
+        }
+
+        const result = await refreshAccessToken({
+            store,
+            provider,
+            lockPath,
+            // Tight timeout keeps the test fast.
+            lockTimeoutMs: 200,
+        })
+
+        expect(provider.refreshSpy).not.toHaveBeenCalled()
+        expect(result.token).toBe('rotated-by-holder')
+    })
+
     it('skips its own refresh when another process refreshed enough headroom into the future (non-force)', async () => {
         // Lock contention path: we ARE past skew but another process beats us
         // to it. The re-read shows the fresh access token has plenty of life

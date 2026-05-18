@@ -348,6 +348,86 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         expect(lines).not.toContain('sensitive')
     })
 
+    it('uses atomic tryInsert when the consumer supplies it (no race on the existence check)', async () => {
+        // Without `tryInsert`, the migration does list-then-upsert which
+        // is racy: a parallel v2 login could complete between the two
+        // calls and we'd clobber it. With `tryInsert`, the consumer
+        // commits to an atomic check-and-insert and we trust their answer.
+        const tryInsert = vi.fn(async (_record: UserRecord<Account>) => true)
+        const harness = buildUserRecords<Account>()
+        harness.store.tryInsert = tryInsert
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        mockedCreateSecureStore.mockImplementation(km.create)
+
+        const result = await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords: harness.store,
+            hasMigrated: async () => false,
+            markMigrated: async () => {},
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => ({ id: '1', email: 'a@b' }),
+            silent: true,
+        })
+
+        expect(result).toMatchObject({ status: 'migrated' })
+        expect(tryInsert).toHaveBeenCalledTimes(1)
+        // The inserted record persists `hasRefreshToken: false` (legacy
+        // tokens never have a refresh slot) so `active()` skips the
+        // refresh-slot keyring round-trip per command for migrated users.
+        expect(tryInsert.mock.calls[0][0]).toMatchObject({
+            account: { id: '1' },
+            hasRefreshToken: false,
+        })
+        // Access secret landed in the per-user slot.
+        expect(km.slots.get('user-1')?.secret).toBe('legacy_tok')
+    })
+
+    it('leaves the v2 record alone when tryInsert returns false (existing v2 login)', async () => {
+        // The whole point of routing through `tryInsert`: when a v2
+        // login has already completed for the same account between
+        // postinstall attempts, the migration is a no-op on the record
+        // and never touches the per-user keyring slot. Without this guard
+        // the legacy access-only bundle would clobber `hasRefreshToken` /
+        // expiry on the v2 record.
+        const tryInsert = vi.fn(async (_record: UserRecord<Account>) => false)
+        const harness = buildUserRecords<Account>()
+        // Pre-seed a v2 record with a refresh token to prove it survives.
+        harness.state.records.set('1', {
+            account: { id: '1', email: 'a@b' },
+            hasRefreshToken: true,
+            accessTokenExpiresAt: 99999,
+        })
+        harness.store.tryInsert = tryInsert
+        const km = buildKeyringMap()
+        km.slots.set(LEGACY, { secret: 'legacy_tok' })
+        km.slots.set('user-1', { secret: 'v2_access_token' })
+        km.slots.set('user-1/refresh', { secret: 'v2_refresh_token' })
+        mockedCreateSecureStore.mockImplementation(km.create)
+
+        await migrateLegacyAuth<Account>({
+            serviceName: SERVICE,
+            legacyAccount: LEGACY,
+            userRecords: harness.store,
+            hasMigrated: async () => false,
+            markMigrated: async () => {},
+            loadLegacyPlaintextToken: async () => null,
+            identifyAccount: async () => ({ id: '1', email: 'a@b' }),
+            silent: true,
+        })
+
+        // V2 record unchanged.
+        expect(harness.state.records.get('1')).toMatchObject({
+            hasRefreshToken: true,
+            accessTokenExpiresAt: 99999,
+        })
+        // Per-user keyring slots untouched — the legacy access token
+        // never overwrote v2's.
+        expect(km.slots.get('user-1')?.secret).toBe('v2_access_token')
+        expect(km.slots.get('user-1/refresh')?.secret).toBe('v2_refresh_token')
+    })
+
     it('the skip line is generic and does not echo the raw exception text', async () => {
         const { result } = await runMigration({
             slots: { [LEGACY]: { secret: 'legacy_tok' } },

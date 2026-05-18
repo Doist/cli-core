@@ -11,12 +11,24 @@ const account: Account = { id: '1', email: 'a@b' }
  * exercise both the modern (bundle-aware) path and the legacy
  * (`set`-only) fallback.
  */
+/**
+ * `setBundleCalls[].setOptions` carries the literal argument the caller
+ * passed in — `undefined` when the options arg was omitted entirely,
+ * otherwise the object as-is. Tests that need to discriminate between
+ * "omitted" and "passed as { promoteDefault: undefined }" rely on this.
+ */
 function buildStore(opts: { withSetBundle: boolean }): TokenStore<Account> & {
     setCalls: Array<{ token: string }>
-    setBundleCalls: Array<{ bundle: TokenBundle; promoteDefault: boolean | undefined }>
+    setBundleCalls: Array<{
+        bundle: TokenBundle
+        setOptions: { promoteDefault?: boolean } | undefined
+    }>
 } {
     const setCalls: Array<{ token: string }> = []
-    const setBundleCalls: Array<{ bundle: TokenBundle; promoteDefault: boolean | undefined }> = []
+    const setBundleCalls: Array<{
+        bundle: TokenBundle
+        setOptions: { promoteDefault?: boolean } | undefined
+    }> = []
     const store: TokenStore<Account> = {
         async active() {
             return null
@@ -32,7 +44,7 @@ function buildStore(opts: { withSetBundle: boolean }): TokenStore<Account> & {
     }
     if (opts.withSetBundle) {
         store.setBundle = async (_account, bundle, setOptions) => {
-            setBundleCalls.push({ bundle, promoteDefault: setOptions?.promoteDefault })
+            setBundleCalls.push({ bundle, setOptions })
         }
     }
     return Object.assign(store, { setCalls, setBundleCalls })
@@ -59,18 +71,20 @@ describe('persistBundle', () => {
 
         await persistBundle(store, account, { accessToken: 'at' }, { promoteDefault: true })
 
-        expect(store.setBundleCalls[0].promoteDefault).toBe(true)
+        expect(store.setBundleCalls[0].setOptions).toEqual({ promoteDefault: true })
     })
 
-    it('passes promoteDefault: undefined to setBundle when omitted (silent refresh path)', async () => {
+    it('omits the options arg entirely on the silent-refresh path', async () => {
         // Silent refresh must NOT promote default. The shared helper
-        // forwards the missing flag as `undefined`; downstream stores must
-        // treat `undefined` and `false` identically.
+        // OMITS the third arg (rather than passing `{ promoteDefault:
+        // undefined }`) so a custom store using presence-based handling
+        // (`if (setOptions)`) can distinguish login from refresh on the
+        // option-presence axis — matches the documented contract.
         const store = buildStore({ withSetBundle: true })
 
         await persistBundle(store, account, { accessToken: 'at' })
 
-        expect(store.setBundleCalls[0].promoteDefault).toBeUndefined()
+        expect(store.setBundleCalls[0].setOptions).toBeUndefined()
     })
 
     it('falls back to set(token) when the store omits setBundle (legacy single-token store)', async () => {

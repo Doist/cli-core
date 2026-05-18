@@ -9,6 +9,7 @@ import {
     SecureStoreUnavailableError,
     type SecureStore,
 } from './secure-store.js'
+import { refreshAccountSlot } from './slot-naming.js'
 import type { TokenStorageResult, UserRecord, UserRecordStore } from './types.js'
 
 export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
@@ -36,6 +37,13 @@ export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
 }
 
 export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccount> & {
+    /**
+     * Override `TokenStore.setBundle?` as required — `createKeyringTokenStore`
+     * always provides it. Lets callers (and tests) drop the `store.setBundle!`
+     * non-null assertion when they know they're working with this concrete
+     * store.
+     */
+    setBundle: NonNullable<TokenStore<TAccount>['setBundle']>
     /** Storage result from the most recent `set()` / `setBundle()` call, or `undefined` before any (and reset to `undefined` when the most recent call threw). */
     getLastStorageResult(): TokenStorageResult | undefined
     /** Storage result from the most recent `clear()` call, or `undefined` before any (and reset to `undefined` when the most recent `clear()` threw or was a no-op). */
@@ -46,11 +54,6 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
     account: TAccount,
     ref: AccountRef,
 ): boolean => account.id === ref || account.label === ref
-
-/** Sibling keyring slot for the refresh token. Single source of truth for the wire format. */
-export function refreshAccountSlot(accessSlot: string): string {
-    return `${accessSlot}/refresh`
-}
 
 /**
  * Multi-account `TokenStore` that keeps secrets in the OS credential manager
@@ -165,11 +168,21 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         // has no authority over refresh state) means "unknown — try the
         // slot". Treating undefined as "no" here would silently hide a v2
         // refresh secret that a later v2 login put in the sibling slot.
+        //
+        // Refresh-slot read failures are tolerated **only** for the
+        // documented keyring-offline case (`SecureStoreUnavailableError`).
+        // Anything else (programming error, unexpected backend) propagates
+        // so it can't silently downgrade a real bug into "no refresh
+        // token". The access-token path runs in parallel and its own
+        // catch maps a keyring-offline failure to `AUTH_STORE_READ_FAILED`.
         const refreshPromise =
             record.hasRefreshToken !== false
                 ? refreshStoreFor(record.account)
                       .getSecret()
-                      .catch(() => null)
+                      .catch((error: unknown) => {
+                          if (error instanceof SecureStoreUnavailableError) return null
+                          throw error
+                      })
                 : Promise.resolve(null)
 
         const [rawAccess, rawRefresh] = await Promise.all([accessPromise, refreshPromise])

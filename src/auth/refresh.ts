@@ -92,17 +92,31 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         )
     }
 
-    const lock = options.lockPath ? await acquireFileLock(options.lockPath, lockTimeoutMs) : null
+    let lockOutcome:
+        | { kind: 'acquired'; release: () => void }
+        | { kind: 'timed-out' }
+        | { kind: 'no-lock' } = { kind: 'no-lock' }
+    if (options.lockPath) {
+        const lock = await acquireFileLock(options.lockPath, lockTimeoutMs)
+        lockOutcome = lock ? { kind: 'acquired', release: lock.release } : { kind: 'timed-out' }
+    }
 
     let bundle = initialBundle
     let account = snapshot.account
     try {
-        // Re-read inside the lock. Another process may have refreshed already;
-        // when that happened, its rotated access token will differ from ours
-        // and we MUST return the fresh result instead of firing our own
-        // refresh — even on the `force` path. Continuing would POST with our
+        // Re-read after the lock outcome regardless of whether we acquired
+        // it. Another process may have refreshed already; when that
+        // happened, its rotated access token will differ from ours and we
+        // MUST return the fresh result instead of firing our own refresh —
+        // even on the `force` path. Continuing would POST with our
         // (now-rotated, invalid) refresh token and yield `invalid_grant`.
-        if (lock) {
+        //
+        // The re-read also runs on lock-timeout because the holder may
+        // have completed the refresh while we were waiting. Skipping it
+        // would defeat the lock's main load-saving purpose (one POST per
+        // refresh window) and waste an extra round-trip per CLI run
+        // under contention.
+        if (lockOutcome.kind !== 'no-lock') {
             const fresh = await requireSnapshotForRef(options.store, options.ref)
             if (fresh) {
                 const freshBundle = fresh.bundle ?? { accessToken: fresh.token }
@@ -149,7 +163,7 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
             account: refreshedAccount,
         }
     } finally {
-        if (lock) lock.release()
+        if (lockOutcome.kind === 'acquired') lockOutcome.release()
     }
 }
 

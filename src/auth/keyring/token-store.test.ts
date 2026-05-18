@@ -6,6 +6,7 @@ import {
     buildUserRecords,
 } from '../../test-support/keyring-mocks.js'
 import { SecureStoreUnavailableError } from './secure-store.js'
+import { refreshAccountSlot } from './slot-naming.js'
 import { type CreateKeyringTokenStoreOptions, createKeyringTokenStore } from './token-store.js'
 import type { UserRecord } from './types.js'
 
@@ -50,12 +51,14 @@ function fixture(
 ) {
     const keyring = opts.keyring ?? buildSingleSlot()
     const refreshKeyring = opts.refreshKeyring ?? buildSingleSlot()
-    // Route by account slug: anything ending with `/refresh` lands in the
-    // refresh slot mock; everything else in the access slot mock. Keeps
-    // single-user tests' assertions about `keyring.deleteSpy` honest by
-    // isolating refresh-slot side effects.
+    // Route by account slug: anything matching `refreshAccountSlot(...)`
+    // lands in the refresh slot mock; everything else in the access slot
+    // mock. Routing via the shared helper (instead of hard-coding the
+    // suffix) means a future rename of the wire format breaks both
+    // production code and the fixture together, not just here.
+    const refreshSuffix = refreshAccountSlot('')
     mockedCreateSecureStore.mockImplementation(({ account }) =>
-        account.endsWith('/refresh') ? refreshKeyring : keyring,
+        account.endsWith(refreshSuffix) ? refreshKeyring : keyring,
     )
     const harness = buildUserRecords<Account>()
     for (const [id, rec] of Object.entries(opts.records ?? {})) {

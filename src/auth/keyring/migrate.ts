@@ -7,7 +7,7 @@ import {
     type SecureStore,
     SecureStoreUnavailableError,
 } from './secure-store.js'
-import { refreshAccountSlot } from './token-store.js'
+import { refreshAccountSlot } from './slot-naming.js'
 import type { UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
@@ -154,47 +154,74 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return skipped(silent, logPrefix, 'identify-failed', getErrorMessage(error))
     }
 
-    // Skip the write entirely when the v2 record already exists for this
-    // account. A `marker-write-failed` retry may land on a store where the
-    // user has since completed a v2 login (with a refresh token + expiry
-    // on the record). `userRecords.upsert` is replace-not-merge — writing
-    // here with a legacy access-only bundle would clobber that v2 metadata
-    // (`hasRefreshToken`, `accessTokenExpiresAt`, …) and silently disable
-    // silent refresh for the account. The legacy token has no authority
-    // over refresh state, so the safest answer is "don't touch a record
-    // that already exists — just complete the migration marker".
-    let existingRecords: Awaited<ReturnType<UserRecordStore<TAccount>['list']>>
+    // Don't clobber an existing v2 record. A `marker-write-failed` retry
+    // may land on a store where the user has since completed a v2 login
+    // (with a refresh token + expiry on the record). `userRecords.upsert`
+    // is replace-not-merge, so writing the legacy access-only bundle here
+    // would wipe `hasRefreshToken` / expiry and silently disable silent
+    // refresh. The legacy token has no authority over refresh state.
+    //
+    // Prefer the atomic `tryInsert` when the consumer supplies it —
+    // eliminates the TOCTOU race between a list-based existence check and
+    // the write. Fall back to list-then-write when not implemented; the
+    // race window is small (microseconds for in-process upserts) and
+    // acceptable for typical postinstall-style invocations.
     try {
-        existingRecords = await userRecords.list()
+        const accountSlot = accountForUser(account.id)
+        if (userRecords.tryInsert) {
+            // Migration writes access-only; refresh slot defensively
+            // cleared so a hand-edited stale secret can't shadow the
+            // legacy state. `hasRefreshToken: false` is persisted so
+            // `active()` skips the refresh-slot round-trip per command.
+            // When the record already exists, `tryInsert` returns false
+            // and we leave the v2 record alone.
+            const refreshStore = createSecureStore({
+                serviceName,
+                account: refreshAccountSlot(accountSlot),
+            })
+            const inserted = await userRecords.tryInsert({
+                account,
+                fallbackToken: undefined,
+                hasRefreshToken: false,
+            })
+            if (inserted) {
+                // Now persist the access secret + clear the refresh slot.
+                // Done after the record write because `tryInsert`'s
+                // atomicity guarantee is the load-bearing piece.
+                try {
+                    await createSecureStore({
+                        serviceName,
+                        account: accountSlot,
+                    }).setSecret(legacyToken.token)
+                } catch (error) {
+                    if (!(error instanceof SecureStoreUnavailableError)) throw error
+                    // Keyring offline: re-upsert with the plaintext fallback.
+                    await userRecords.upsert({
+                        account,
+                        fallbackToken: legacyToken.token,
+                        hasRefreshToken: false,
+                    })
+                }
+                // Best-effort cleanup of any stale refresh secret.
+                await refreshStore.deleteSecret().catch(() => undefined)
+            }
+        } else {
+            const existing = (await userRecords.list()).find((r) => r.account.id === account.id)
+            if (!existing) {
+                await writeRecordWithKeyringFallback({
+                    secureStore: createSecureStore({ serviceName, account: accountSlot }),
+                    refreshSecureStore: createSecureStore({
+                        serviceName,
+                        account: refreshAccountSlot(accountSlot),
+                    }),
+                    userRecords,
+                    account,
+                    bundle: { accessToken: legacyToken.token },
+                })
+            }
+        }
     } catch (error) {
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
-    }
-    const existing = existingRecords.find((r) => r.account.id === account.id)
-    if (!existing) {
-        // `writeRecordWithKeyringFallback` swallows `SecureStoreUnavailableError`
-        // internally (writing to `fallbackToken` instead), so any error here
-        // is a non-keyring failure — typically a `userRecords.upsert`
-        // rejection.
-        try {
-            const accountSlot = accountForUser(account.id)
-            await writeRecordWithKeyringFallback({
-                secureStore: createSecureStore({ serviceName, account: accountSlot }),
-                // Refresh slot wired through but never touched on the legacy
-                // path — `purgeRefreshSlot: false` opts out of the defensive
-                // delete so a hand-edited refresh secret survives (though
-                // legacy single-user state never had one).
-                refreshSecureStore: createSecureStore({
-                    serviceName,
-                    account: refreshAccountSlot(accountSlot),
-                }),
-                userRecords,
-                account,
-                bundle: { accessToken: legacyToken.token },
-                purgeRefreshSlot: false,
-            })
-        } catch (error) {
-            return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
-        }
     }
 
     // Default promotion is best-effort and **only fires when nothing is

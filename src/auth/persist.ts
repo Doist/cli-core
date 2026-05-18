@@ -34,7 +34,17 @@ export async function persistBundle<TAccount extends AuthAccount>(
     options: PersistBundleOptions = {},
 ): Promise<void> {
     if (store.setBundle) {
-        await store.setBundle(account, bundle, { promoteDefault: options.promoteDefault })
+        // Omit the third arg entirely when no options are set — keeps
+        // custom-store presence-based handling (`if (setOptions)`)
+        // honest. Forwarding `{ promoteDefault: undefined }` would make
+        // silent-refresh callers indistinguishable from login on the
+        // option-presence axis, even though our contract documents the
+        // flag as omitted on the refresh path.
+        if (options.promoteDefault === undefined) {
+            await store.setBundle(account, bundle)
+        } else {
+            await store.setBundle(account, bundle, { promoteDefault: options.promoteDefault })
+        }
     } else {
         await store.set(account, bundle.accessToken)
     }

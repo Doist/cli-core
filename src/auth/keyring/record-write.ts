@@ -119,9 +119,10 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
     // Whether the record should advertise a refresh token: the bundle's
     // refresh wins; when the caller asked us not to touch the refresh slot
     // and the bundle has none, we have no authority to flip the bit so
-    // leave the field unset (the upsert is `replace, not merge`, but
-    // `undefined` is the contract's "I don't know" — readers fall through
-    // to the access-token-only path).
+    // leave the field unset. `undefined` is the contract's "I don't
+    // know" — readers (`token-store.active()`) treat it as "try the slot
+    // anyway", which lets a v2-written refresh secret remain visible
+    // after a migration write that has no authority over it.
     const hasRefreshToken = Boolean(trimmedRefresh) || (!purgeRefreshSlot ? undefined : false)
 
     const baseRecord = {

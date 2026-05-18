@@ -63,6 +63,19 @@ export type UserRecordStore<TAccount extends AuthAccount> = {
      * `fallbackToken` over the keyring). Records are keyed by `account.id`.
      */
     upsert(record: UserRecord<TAccount>): Promise<void>
+    /**
+     * Optional atomic insert-if-absent. Returns `true` when the record was
+     * persisted, `false` when a record with the same `account.id` already
+     * existed (no write happened). Implementations that can guarantee
+     * atomicity (single-process file lock, DB transaction, …) should
+     * provide this so `migrateLegacyAuth` can avoid the TOCTOU race
+     * between its existence check and the upsert. When omitted,
+     * `migrateLegacyAuth` falls back to a list-then-upsert that has a
+     * tiny race window — acceptable for postinstall-style invocations
+     * but worth eliminating in production CLIs that run many concurrent
+     * processes.
+     */
+    tryInsert?(record: UserRecord<TAccount>): Promise<boolean>
     /** Remove the record whose `account.id` matches. */
     remove(id: string): Promise<void>
     /** The pinned default's `account.id`, or `null` when nothing is pinned. */

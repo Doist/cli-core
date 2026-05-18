@@ -25,12 +25,18 @@ import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenBundle, TokenStore } from './types.js'
 
 type Account = { id: string; label?: string; email: string }
-type FakeStoreState = { account: Account; bundle: TokenBundle }
+type FakeStoreState = {
+    account: Account
+    bundle: TokenBundle
+    /** Literal options arg seen by `setBundle` (`undefined` when omitted). */
+    setBundleOptions: { promoteDefault?: boolean } | undefined
+}
 
 /**
  * Tiny in-memory `TokenStore` so the flow tests don't need disk I/O. Keeps
- * the full `TokenBundle` so tests can verify that `runOAuthFlow` persists
- * refresh + expiry, not just the access token.
+ * the full `TokenBundle` and the literal `setBundle` options arg so tests
+ * can verify that `runOAuthFlow` persists refresh + expiry AND opts into
+ * `promoteDefault: true` on the explicit login path.
  */
 function fakeStore(): TokenStore<Account> & { last?: FakeStoreState } {
     const state: { last?: FakeStoreState } = {}
@@ -45,10 +51,14 @@ function fakeStore(): TokenStore<Account> & { last?: FakeStoreState } {
                 : null
         },
         async set(account, token) {
-            state.last = { account, bundle: { accessToken: token } }
+            state.last = {
+                account,
+                bundle: { accessToken: token },
+                setBundleOptions: undefined,
+            }
         },
-        async setBundle(account, bundle) {
-            state.last = { account, bundle }
+        async setBundle(account, bundle, setOptions) {
+            state.last = { account, bundle, setBundleOptions: setOptions }
         },
         async clear() {
             state.last = undefined
@@ -201,6 +211,11 @@ describe('runOAuthFlow', () => {
             accessTokenExpiresAt: accessExpiresAt,
             refreshTokenExpiresAt: refreshExpiresAt,
         })
+        // Login is the canonical default-promotion trigger — the helper
+        // must thread `promoteDefault: true` through. A regression that
+        // dropped the flag would let an empty-default config silently
+        // stay un-pinned after the first login.
+        expect(store.last?.setBundleOptions).toEqual({ promoteDefault: true })
     })
 
     it('falls back to set(token) when the store does not implement setBundle (custom-store back-compat)', async () => {
