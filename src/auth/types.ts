@@ -82,9 +82,23 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
     refreshToken?(input: RefreshInput): Promise<ExchangeResult<TAccount>>
 }
 
-/** Access + optional refresh token + optional expiries (all unix-epoch ms). */
+/** Write-side bundle for `setBundle`. Time fields are unix-epoch ms. */
 export type TokenBundle = {
     accessToken: string
+    refreshToken?: string
+    accessTokenExpiresAt?: number
+    refreshTokenExpiresAt?: number
+}
+
+/**
+ * Read-side snapshot returned by `TokenStore.active`. `token` is the access
+ * token (kept named that way for back-compat with the pre-bundle contract);
+ * refresh-state fields are flat siblings so consumers have a single source of
+ * truth per credential.
+ */
+export type ActiveTokenSnapshot<TAccount extends AuthAccount = AuthAccount> = {
+    token: string
+    account: TAccount
     refreshToken?: string
     accessTokenExpiresAt?: number
     refreshTokenExpiresAt?: number
@@ -108,9 +122,7 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * explicit-ref path and proceeds with `clear(ref)`; `attachStatusCommand`
      * and `attachTokenViewCommand` propagate it.
      */
-    active(
-        ref?: AccountRef,
-    ): Promise<{ token: string; account: TAccount; bundle?: TokenBundle } | null>
+    active(ref?: AccountRef): Promise<ActiveTokenSnapshot<TAccount> | null>
     /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
     /**

@@ -1,3 +1,4 @@
+import { CliError } from '../../errors.js'
 import type { AuthAccount, TokenBundle } from '../types.js'
 import { type SecureStore, SecureStoreUnavailableError } from './secure-store.js'
 import type { UserRecord, UserRecordStore } from './types.js'
@@ -5,6 +6,8 @@ import type { UserRecord, UserRecordStore } from './types.js'
 type WriteRecordOptions<TAccount extends AuthAccount> = {
     /** Per-account keyring slot, already configured by the caller (e.g. via `createSecureStore`). */
     secureStore: SecureStore
+    /** Optional refresh-token keyring slot to wipe alongside the access write. */
+    refreshStore?: SecureStore
     userRecords: UserRecordStore<TAccount>
     account: TAccount
     token: string
@@ -25,7 +28,7 @@ type WriteBundleOptions<TAccount extends AuthAccount> = {
     bundle: TokenBundle
 }
 
-export type WriteBundleResult = {
+type WriteBundleResult = {
     /** `true` when the access token landed in the OS keyring; `false` when it fell back to `fallbackToken`. */
     accessStoredSecurely: boolean
     /**
@@ -56,8 +59,11 @@ export type WriteBundleResult = {
 export async function writeRecordWithKeyringFallback<TAccount extends AuthAccount>(
     options: WriteRecordOptions<TAccount>,
 ): Promise<WriteRecordResult> {
-    const { secureStore, userRecords, account, token } = options
+    const { secureStore, refreshStore, userRecords, account, token } = options
     const trimmed = token.trim()
+    if (!trimmed) {
+        throw new CliError('AUTH_STORE_WRITE_FAILED', 'Refusing to persist an empty access token.')
+    }
 
     let storedSecurely = false
     try {
@@ -67,8 +73,22 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
         if (!(error instanceof SecureStoreUnavailableError)) throw error
     }
 
+    // Wipe any orphan refresh slot so a prior `setBundle` can't leave
+    // material behind after a `set()` replaces the credential. Best-effort:
+    // the cleanup is a security hardening on the contract's
+    // "replacing any previous entry" promise, not a hard correctness
+    // requirement (the `hasRefreshToken: false` gate already prevents
+    // readers from consulting it).
+    if (refreshStore) {
+        try {
+            await refreshStore.deleteSecret()
+        } catch {
+            // best-effort
+        }
+    }
+
     // Single-token path; assert no refresh state so `active()` skips the
-    // refresh-slot IPC instead of probing-then-backfilling.
+    // refresh-slot IPC instead of probing on every command.
     const record: UserRecord<TAccount> = storedSecurely
         ? { account, hasRefreshToken: false }
         : { account, fallbackToken: trimmed, hasRefreshToken: false }
@@ -105,6 +125,12 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
 ): Promise<WriteBundleResult> {
     const { accessStore, refreshStore, userRecords, account, bundle } = options
     const accessToken = bundle.accessToken.trim()
+    if (!accessToken) {
+        throw new CliError(
+            'AUTH_STORE_WRITE_FAILED',
+            'Refusing to persist a bundle with an empty access token.',
+        )
+    }
     const refreshToken = bundle.refreshToken?.trim()
 
     let accessStoredSecurely = false
@@ -156,7 +182,7 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
         ...(bundle.refreshTokenExpiresAt !== undefined
             ? { refreshTokenExpiresAt: bundle.refreshTokenExpiresAt }
             : {}),
-        hasRefreshToken: refreshToken !== undefined,
+        hasRefreshToken: !!refreshToken,
     }
 
     try {

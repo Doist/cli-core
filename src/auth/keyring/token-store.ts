@@ -1,4 +1,4 @@
-import { CliError } from '../../errors.js'
+import { CliError, getErrorMessage } from '../../errors.js'
 import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
 import { writeBundleWithKeyringFallback, writeRecordWithKeyringFallback } from './record-write.js'
@@ -179,7 +179,13 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                     `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
                 )
             }
-            throw error
+            // Symmetric with `readRefreshToken`: wrap unexpected backend
+            // failures so the CLI sees a typed error code instead of crashing
+            // with the raw exception.
+            throw new CliError(
+                'AUTH_STORE_READ_FAILED',
+                `Access-slot read failed (${getErrorMessage(error)})`,
+            )
         }
     }
 
@@ -188,6 +194,13 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
      * downgrades to `undefined` (silent-refresh callers re-prompt); other
      * errors propagate as `AUTH_STORE_READ_FAILED` — corruption shouldn't
      * masquerade as "no refresh".
+     *
+     * Legacy records (`hasRefreshToken === undefined`) probe the slot on
+     * every read. The previous fire-and-forget backfill raced with
+     * concurrent `setBundle` writes (replace-not-merge `upsert` would
+     * clobber bundle metadata). One IPC per command is an acceptable cost
+     * — a single `setBundle` call rewrites the record with an explicit
+     * gate and the probes stop.
      */
     async function readRefreshToken(record: UserRecord<TAccount>): Promise<string | undefined> {
         if (record.hasRefreshToken === false) return undefined
@@ -195,53 +208,15 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         const fallback = record.fallbackRefreshToken?.trim()
         if (fallback) return fallback
 
-        let raw: string | null
         try {
-            raw = await refreshSecureStoreFor(record.account).getSecret()
+            const raw = await refreshSecureStoreFor(record.account).getSecret()
+            return raw?.trim() || undefined
         } catch (error) {
             if (error instanceof SecureStoreUnavailableError) return undefined
             throw new CliError(
                 'AUTH_STORE_READ_FAILED',
-                `${SECURE_STORE_DESCRIPTION} read failed for refresh slot (${error instanceof Error ? error.message : String(error)})`,
+                `Refresh-slot read failed (${getErrorMessage(error)})`,
             )
-        }
-
-        const token = raw?.trim()
-        if (token) return token
-
-        // Legacy record probed empty: backfill so the next command skips
-        // the IPC. Fire-and-forget; concurrent setBundle race is fine.
-        if (record.hasRefreshToken === undefined) {
-            void backfillNoRefresh(record).catch(() => undefined)
-        }
-        return undefined
-    }
-
-    async function backfillNoRefresh(record: UserRecord<TAccount>): Promise<void> {
-        await userRecords.upsert({ ...record, hasRefreshToken: false })
-    }
-
-    function bundleFromRecord(
-        record: UserRecord<TAccount>,
-        accessToken: string,
-        refreshToken: string | undefined,
-    ): TokenBundle | undefined {
-        if (
-            refreshToken === undefined &&
-            record.accessTokenExpiresAt === undefined &&
-            record.refreshTokenExpiresAt === undefined
-        ) {
-            return undefined
-        }
-        return {
-            accessToken,
-            ...(refreshToken !== undefined ? { refreshToken } : {}),
-            ...(record.accessTokenExpiresAt !== undefined
-                ? { accessTokenExpiresAt: record.accessTokenExpiresAt }
-                : {}),
-            ...(record.refreshTokenExpiresAt !== undefined
-                ? { refreshTokenExpiresAt: record.refreshTokenExpiresAt }
-                : {}),
         }
     }
 
@@ -264,22 +239,26 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             ])
 
             if (!accessToken) {
-                // Record exists, no `fallbackToken`, and the keyring slot is
-                // empty — the credential was deleted out-of-band (user ran
-                // `security delete-generic-password`, `secret-tool clear`,
-                // …). This is corrupted state, not a miss; collapsing it to
-                // `null` would make `--user <ref>` surface as
-                // `ACCOUNT_NOT_FOUND` and hide the real problem.
+                // Record exists, no `fallbackToken`, slot empty — corruption
+                // (deleted out-of-band). Collapsing to `null` would surface as
+                // ACCOUNT_NOT_FOUND on `--user <ref>` and hide the real problem.
                 throw new CliError(
                     'AUTH_STORE_READ_FAILED',
                     `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
                 )
             }
 
-            const bundle = bundleFromRecord(record, accessToken, refreshToken)
-            return bundle
-                ? { token: accessToken, account: record.account, bundle }
-                : { token: accessToken, account: record.account }
+            return {
+                token: accessToken,
+                account: record.account,
+                ...(refreshToken !== undefined ? { refreshToken } : {}),
+                ...(record.accessTokenExpiresAt !== undefined
+                    ? { accessTokenExpiresAt: record.accessTokenExpiresAt }
+                    : {}),
+                ...(record.refreshTokenExpiresAt !== undefined
+                    ? { refreshTokenExpiresAt: record.refreshTokenExpiresAt }
+                    : {}),
+            }
         },
 
         async set(account, token) {
@@ -290,6 +269,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             const { storedSecurely } = await writeRecordWithKeyringFallback({
                 secureStore: secureStoreFor(account),
+                refreshStore: refreshSecureStoreFor(account),
                 userRecords,
                 account,
                 token,
@@ -315,14 +295,13 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         async setBundle(account, bundle, options) {
             lastStorageResult = undefined
 
-            const { accessStoredSecurely, refreshStoredSecurely } =
-                await writeBundleWithKeyringFallback({
-                    accessStore: secureStoreFor(account),
-                    refreshStore: refreshSecureStoreFor(account),
-                    userRecords,
-                    account,
-                    bundle,
-                })
+            const { accessStoredSecurely } = await writeBundleWithKeyringFallback({
+                accessStore: secureStoreFor(account),
+                refreshStore: refreshSecureStoreFor(account),
+                userRecords,
+                account,
+                bundle,
+            })
 
             // Opt-in: silent refresh omits `promoteDefault` so it can't
             // re-pin selection; login passes `true` to match `set()`.
@@ -337,12 +316,16 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 }
             }
 
-            // Either fallback warrants the warning — refresh-slot plaintext
-            // is just as security-relevant as access-slot plaintext.
-            const fellBack = !accessStoredSecurely || refreshStoredSecurely === false
-            lastStorageResult = fellBack
-                ? fallbackResult('token saved as plaintext in')
-                : { storage: 'secure-store' }
+            // Storage result is tied to the access slot — that's the
+            // user-visible credential the existing warning text describes.
+            // A refresh-only fallback is silent today; if we ever want to
+            // call it out it needs distinct phrasing (the current copy says
+            // "token", which implies access). The record itself carries
+            // `fallbackRefreshToken` so the runtime read picks it up
+            // transparently regardless.
+            lastStorageResult = accessStoredSecurely
+                ? { storage: 'secure-store' }
+                : fallbackResult('token saved as plaintext in')
         },
 
         async clear(ref) {

@@ -14,6 +14,13 @@ export type PersistBundleOptions<TAccount extends AuthAccount> = {
  * store implements it; otherwise falls back to `set(account, accessToken)`
  * and silently drops refresh state. Wraps non-`CliError` failures as
  * `AUTH_STORE_WRITE_FAILED`.
+ *
+ * `promoteDefault` is only honoured on the `setBundle` path — the base
+ * `set()` contract has no promotion control, so a custom multi-account
+ * store that opts out of `setBundle` will run its own promotion policy
+ * (typically first-account-wins). Multi-account stores that need
+ * silent-refresh-safe selection (no re-pinning on background rotation)
+ * MUST implement `setBundle`.
  */
 export async function persistBundle<TAccount extends AuthAccount>(
     options: PersistBundleOptions<TAccount>,
