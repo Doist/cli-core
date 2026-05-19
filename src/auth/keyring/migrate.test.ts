@@ -42,6 +42,8 @@ async function runMigration(
         seedRecords?: Record<string, UserRecord<Account>>
         seedDefaultId?: string
         marker?: MarkerState
+        /** Opt the harness into the atomic `tryInsert?` path. */
+        withTryInsert?: boolean
         options?: Partial<MigrateLegacyAuthOptions<Account>>
     } = {},
 ) {
@@ -51,7 +53,7 @@ async function runMigration(
     }
     mockedCreateSecureStore.mockImplementation(km.create)
 
-    const harness = buildUserRecords<Account>()
+    const harness = buildUserRecords<Account>({ withTryInsert: opts.withTryInsert })
     for (const [id, rec] of Object.entries(opts.seedRecords ?? {})) {
         harness.state.records.set(id, rec)
     }
@@ -110,7 +112,7 @@ describe('migrateLegacyAuth', () => {
 
     it('migrates a legacy keyring token into a per-user slot and clears the legacy entry', async () => {
         const cleanup = vi.fn(async () => undefined)
-        const { km, state, harness, result, marker, markMigrated } = await runMigration({
+        const { km, state, result, marker, markMigrated } = await runMigration({
             slots: { [LEGACY]: { secret: 'legacy_tok' } },
             options: {
                 identifyAccount: async (token) => {
@@ -127,9 +129,6 @@ describe('migrateLegacyAuth', () => {
         expect(km.slots.get(LEGACY)?.secret).toBeNull()
         expect(state.records.get('99')?.fallbackToken).toBeUndefined()
         expect(state.defaultId).toBe('99')
-        // Phase 1 writes the fallback record; Phase 2 upserts the clean
-        // keyring-backed record. Two upserts is the expected steady state.
-        expect(harness.upsertSpy).toHaveBeenCalledTimes(2)
         expect(cleanup).toHaveBeenCalledTimes(1)
         expect(markMigrated).toHaveBeenCalledTimes(1)
         expect(marker.migrated).toBe(true)
@@ -300,117 +299,114 @@ describe('migrateLegacyAuth', () => {
         expect(km.slots.get('user-99')?.secret).toBeUndefined()
     })
 
-    it('uses tryInsert (atomic) when the store implements it', async () => {
-        const km = buildKeyringMap()
-        km.slots.set(LEGACY, { secret: 'legacy_tok' })
-        mockedCreateSecureStore.mockImplementation(km.create)
-        const harness = buildUserRecords<Account>({ withTryInsert: true })
-        const marker = { migrated: false }
-
-        const result = await migrateLegacyAuth<Account>({
-            serviceName: SERVICE,
-            legacyAccount: LEGACY,
-            userRecords: harness.store,
-            hasMigrated: async () => marker.migrated,
-            markMigrated: async () => {
-                marker.migrated = true
+    it('uses tryInsert (atomic) and never calls list() when the store implements it', async () => {
+        // Atomic path must avoid the list-then-upsert TOCTOU race entirely.
+        const { km, harness, result } = await runMigration({
+            slots: { [LEGACY]: { secret: 'legacy_tok' } },
+            withTryInsert: true,
+            options: {
+                identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
             },
-            loadLegacyPlaintextToken: async () => null,
-            identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
-            silent: true,
         })
 
         expect(result.status).toBe('migrated')
         expect(harness.tryInsertSpy).toHaveBeenCalledTimes(1)
-        // Phase 2 still calls upsert once to clear `fallbackToken`.
+        // Phase 2 promotes the record to the clean (no-fallback) shape.
         expect(harness.upsertSpy).toHaveBeenCalledTimes(1)
+        // Atomic insert means `list()` is never consulted on Phase 1.
+        expect(harness.listSpy).not.toHaveBeenCalled()
         expect(km.slots.get('user-99')?.secret).toBe('legacy_tok')
     })
 
-    it('skips Phase 2 when a v2 record already exists (tryInsert returns false)', async () => {
-        // Retry scenario: a previous run wrote the v2 record + setDefaultId
-        // and persisted no marker; the user then logged in afresh, which
-        // mutated the record. On retry, the existence check (via tryInsert)
-        // returns false and we MUST NOT clobber the live record.
-        const km = buildKeyringMap()
-        km.slots.set(LEGACY, { secret: 'legacy_tok' })
-        km.slots.set('user-99', { secret: 'fresh_login_tok' })
-        mockedCreateSecureStore.mockImplementation(km.create)
-        const harness = buildUserRecords<Account>({ withTryInsert: true })
-        // Pre-existing v2 record from the fresh login.
-        const existing: UserRecord<Account> = {
-            account: { id: '99', email: 'me@x.io', label: 'updated-label' },
-            hasRefreshToken: false,
-        }
-        harness.state.records.set('99', existing)
-        const marker = { migrated: false }
+    it.each([true, false])(
+        'skips Phase 2 when a v2 record already exists (withTryInsert=%s)',
+        async (withTryInsert) => {
+            const existing: UserRecord<Account> = {
+                account: { id: '99', email: 'me@x.io', label: 'updated-label' },
+                hasRefreshToken: false,
+            }
+            const { km, state, result, marker, harness } = await runMigration({
+                slots: {
+                    [LEGACY]: { secret: 'legacy_tok' },
+                    'user-99': { secret: 'fresh_login_tok' },
+                },
+                seedRecords: { '99': existing },
+                withTryInsert,
+                options: {
+                    identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
+                },
+            })
 
-        const result = await migrateLegacyAuth<Account>({
-            serviceName: SERVICE,
-            legacyAccount: LEGACY,
-            userRecords: harness.store,
-            hasMigrated: async () => marker.migrated,
-            markMigrated: async () => {
-                marker.migrated = true
-            },
-            loadLegacyPlaintextToken: async () => null,
-            identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
-            silent: true,
-        })
+            expect(result.status).toBe('migrated')
+            expect(harness.upsertSpy).not.toHaveBeenCalled()
+            expect(state.records.get('99')).toBe(existing)
+            expect(km.slots.get('user-99')?.secret).toBe('fresh_login_tok')
+            expect(km.slots.get(LEGACY)?.secret).toBeNull()
+            expect(marker.migrated).toBe(true)
+        },
+    )
 
-        expect(result.status).toBe('migrated')
-        expect(harness.tryInsertSpy).toHaveBeenCalledTimes(1)
-        // Phase 2 must NOT run — the existing record (and its keyring slot)
-        // are preserved untouched. upsert never fires.
-        expect(harness.upsertSpy).not.toHaveBeenCalled()
-        expect(harness.state.records.get('99')).toBe(existing)
-        expect(km.slots.get('user-99')?.secret).toBe('fresh_login_tok')
-        // Cleanup still runs — the legacy state is being retired.
-        expect(km.slots.get(LEGACY)?.secret).toBeNull()
-        expect(marker.migrated).toBe(true)
-    })
-
-    it('skips Phase 2 when a v2 record already exists (no tryInsert path)', async () => {
-        const km = buildKeyringMap()
-        km.slots.set(LEGACY, { secret: 'legacy_tok' })
-        km.slots.set('user-99', { secret: 'fresh_login_tok' })
-        mockedCreateSecureStore.mockImplementation(km.create)
-        const harness = buildUserRecords<Account>()
+    it('returns skipped(legacy-keyring-unreachable) when an existing v2 record cannot be read', async () => {
+        // A clean v2 record from a prior set/setBundle has no fallbackToken
+        // and depends on the keyring being reachable. With the keyring
+        // offline, cleaning up the legacy state would brick the user — we
+        // must abort the migration and leave the legacy token in place.
         const existing: UserRecord<Account> = {
             account: { id: '99', email: 'me@x.io' },
             hasRefreshToken: false,
         }
-        harness.state.records.set('99', existing)
-        const marker = { migrated: false }
-
-        const result = await migrateLegacyAuth<Account>({
-            serviceName: SERVICE,
-            legacyAccount: LEGACY,
-            userRecords: harness.store,
-            hasMigrated: async () => marker.migrated,
-            markMigrated: async () => {
-                marker.migrated = true
-            },
-            loadLegacyPlaintextToken: async () => null,
-            identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
-            silent: true,
-        })
-
-        expect(result.status).toBe('migrated')
-        expect(harness.upsertSpy).not.toHaveBeenCalled()
-        expect(harness.state.records.get('99')).toBe(existing)
-        expect(km.slots.get('user-99')?.secret).toBe('fresh_login_tok')
-    })
-
-    it('still returns migrated when Phase 2 keyring write fails (Phase 1 fallback survives)', async () => {
-        // Phase 1 writes the fallback record; Phase 2 fails to move the
-        // token into the keyring slot. The Phase 1 record continues to
-        // serve reads via `fallbackToken`, so the migration is still
-        // functionally complete — marker is set, cleanup runs.
         const { km, state, result, marker } = await runMigration({
             slots: {
                 [LEGACY]: { secret: 'legacy_tok' },
-                'user-99': { setErr: new Error('keyring write blocked') },
+                'user-99': { getErr: new SecureStoreUnavailableError('no dbus') },
+            },
+            seedRecords: { '99': existing },
+            options: {
+                identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
+            },
+        })
+
+        expect(result).toMatchObject({
+            status: 'skipped',
+            reason: 'legacy-keyring-unreachable',
+        })
+        expect(marker.migrated).toBe(false)
+        expect(km.slots.get(LEGACY)?.secret).toBe('legacy_tok')
+        expect(state.records.get('99')).toBe(existing)
+    })
+
+    it('skips the readability check when an existing v2 record carries fallbackToken', async () => {
+        // Self-sufficient record — even if the keyring is offline, the
+        // fallbackToken serves reads. Migration proceeds with cleanup.
+        const existing: UserRecord<Account> = {
+            account: { id: '99', email: 'me@x.io' },
+            fallbackToken: 'external_plaintext',
+            hasRefreshToken: false,
+        }
+        const { km, result, marker } = await runMigration({
+            slots: {
+                [LEGACY]: { secret: 'legacy_tok' },
+                'user-99': { getErr: new SecureStoreUnavailableError('no dbus') },
+            },
+            seedRecords: { '99': existing },
+            options: {
+                identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
+            },
+        })
+
+        expect(result.status).toBe('migrated')
+        expect(marker.migrated).toBe(true)
+        expect(km.slots.get(LEGACY)?.secret).toBeNull()
+    })
+
+    it('Phase 2 SecureStoreUnavailable falls back silently; Phase 1 record survives', async () => {
+        // Headless / WSL: the per-user slot can't accept a write. Phase 1's
+        // fallback record is self-sufficient, so the migration completes
+        // with the token in plaintext (until a future login upgrades it).
+        const { km, state, result, marker, harness } = await runMigration({
+            slots: {
+                [LEGACY]: { secret: 'legacy_tok' },
+                'user-99': { setErr: new SecureStoreUnavailableError('no dbus') },
             },
             options: {
                 identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
@@ -418,12 +414,35 @@ describe('migrateLegacyAuth', () => {
         })
 
         expect(result.status).toBe('migrated')
-        // Phase 2 setSecret threw — the Phase 1 fallback remains in place.
         expect(state.records.get('99')?.fallbackToken).toBe('legacy_tok')
         expect(km.slots.get('user-99')?.secret).toBeNull()
-        // Marker + cleanup still ran.
         expect(marker.migrated).toBe(true)
         expect(km.slots.get(LEGACY)?.secret).toBeNull()
+        // No clean Phase 2 upsert in this branch — Phase 1 wrote the only
+        // record, with `fallbackToken` still populated.
+        expect(harness.upsertSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('Phase 2 non-keyring setSecret failure surfaces as skipped (marker stays unset)', async () => {
+        // A transient backend error must not be silently swallowed — the
+        // operator needs visibility, and the marker stays unset so a future
+        // retry can re-attempt Phase 2.
+        const { result, marker, km } = await runMigration({
+            slots: {
+                [LEGACY]: { secret: 'legacy_tok' },
+                'user-99': { setErr: new Error('keyring backend exploded') },
+            },
+            options: {
+                identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
+            },
+        })
+
+        expect(result).toMatchObject({
+            status: 'skipped',
+            reason: 'user-record-write-failed',
+        })
+        expect(marker.migrated).toBe(false)
+        expect(km.slots.get(LEGACY)?.secret).toBe('legacy_tok')
     })
 
     it('prefers the legacy keyring token over the plaintext fallback when both are populated', async () => {

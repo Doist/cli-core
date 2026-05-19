@@ -113,6 +113,7 @@ type UserRecordsHarness<TAccount extends AuthAccount> = {
         records: Map<string, UserRecord<TAccount>>
         defaultId: string | null
     }
+    listSpy: ReturnType<typeof vi.fn>
     upsertSpy: ReturnType<typeof vi.fn>
     removeSpy: ReturnType<typeof vi.fn>
     setDefaultSpy: ReturnType<typeof vi.fn>
@@ -132,6 +133,7 @@ export function buildUserRecords<TAccount extends AuthAccount>(
         records: new Map<string, UserRecord<TAccount>>(),
         defaultId: null as string | null,
     }
+    const listSpy = vi.fn(async () => [...state.records.values()])
     const upsertSpy = vi.fn(async (record: UserRecord<TAccount>) => {
         state.records.set(record.account.id, record)
     })
@@ -149,9 +151,7 @@ export function buildUserRecords<TAccount extends AuthAccount>(
           })
         : undefined
     const store: UserRecordStore<TAccount> = {
-        async list() {
-            return [...state.records.values()]
-        },
+        list: listSpy,
         upsert: upsertSpy,
         remove: removeSpy,
         async getDefaultId() {
@@ -160,5 +160,5 @@ export function buildUserRecords<TAccount extends AuthAccount>(
         setDefaultId: setDefaultSpy,
         ...(tryInsertSpy ? { tryInsert: tryInsertSpy } : {}),
     }
-    return { store, state, upsertSpy, removeSpy, setDefaultSpy, tryInsertSpy }
+    return { store, state, listSpy, upsertSpy, removeSpy, setDefaultSpy, tryInsertSpy }
 }

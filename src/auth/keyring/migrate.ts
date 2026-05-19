@@ -1,13 +1,13 @@
 import { getErrorMessage } from '../../errors.js'
 import type { AuthAccount } from '../types.js'
-import { writeRecordWithKeyringFallback } from './record-write.js'
+import { buildSingleTokenRecord } from './record-write.js'
 import {
     createSecureStore,
     DEFAULT_ACCOUNT_FOR_USER,
     type SecureStore,
     SecureStoreUnavailableError,
 } from './secure-store.js'
-import type { UserRecord, UserRecordStore } from './types.js'
+import type { UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
     serviceName: string
@@ -176,24 +176,56 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
     }
 
-    // Phase 2: move the token from `fallbackToken` to the per-user keyring
-    // slot. Best-effort — `writeRecordWithKeyringFallback` already degrades
-    // to a fallback record on `SecureStoreUnavailableError`, so this branch
-    // covers the rare non-keyring failure too. The Phase 1 record keeps
-    // serving reads regardless.
+    const userSlot = createSecureStore({
+        serviceName,
+        account: accountForUser(account.id),
+    })
+
     if (phase1Wrote) {
+        // Phase 2: move the token from `fallbackToken` into the per-user
+        // keyring slot. Inlined (rather than delegating to
+        // `writeRecordWithKeyringFallback`) so the offline-keyring path
+        // doesn't double-upsert — Phase 1 already wrote the fallback
+        // record. Only `SecureStoreUnavailableError` is swallowed; other
+        // failures leave the marker unset so the operator can retry.
+        let keyringStored = false
         try {
-            await writeRecordWithKeyringFallback({
-                secureStore: createSecureStore({
-                    serviceName,
-                    account: accountForUser(account.id),
-                }),
-                userRecords,
-                account,
-                token: legacyToken.token,
-            })
-        } catch {
-            // best-effort
+            await userSlot.setSecret(legacyToken.token)
+            keyringStored = true
+        } catch (error) {
+            if (!(error instanceof SecureStoreUnavailableError)) {
+                return skipped(
+                    silent,
+                    logPrefix,
+                    'user-record-write-failed',
+                    getErrorMessage(error),
+                )
+            }
+            // Phase 1's fallback record already serves reads. Fall through.
+        }
+        if (keyringStored) {
+            // Promote the record to the clean shape (no fallback) so the
+            // plaintext copy doesn't outlive the secure-store write.
+            try {
+                await userRecords.upsert(buildSingleTokenRecord(account))
+            } catch (error) {
+                return skipped(
+                    silent,
+                    logPrefix,
+                    'user-record-write-failed',
+                    getErrorMessage(error),
+                )
+            }
+        }
+    } else {
+        // Existing v2 record: verify it's readable in the current
+        // environment before retiring the legacy state. A record from a
+        // prior `set()` / `setBundle()` has no `fallbackToken` and depends
+        // on the keyring being reachable; if it isn't, cleaning up legacy
+        // would brick the user.
+        const readabilityError = await verifyExistingRecordReadable(userRecords, account, userSlot)
+        if (readabilityError) {
+            return skipped(silent, logPrefix, readabilityError.reason, readabilityError.detail)
         }
     }
 
@@ -263,21 +295,60 @@ async function ensureV2Record<TAccount extends AuthAccount>(
     account: TAccount,
     legacyToken: string,
 ): Promise<boolean> {
-    const record: UserRecord<TAccount> = {
-        account,
-        fallbackToken: legacyToken,
-        hasRefreshToken: false,
-    }
+    const record = buildSingleTokenRecord(account, legacyToken)
     if (userRecords.tryInsert) {
         return userRecords.tryInsert(record)
     }
-    // Non-atomic fallback. Narrow TOCTOU window between `list()` and
-    // `upsert()`; tolerable for a one-time migration since concurrent
-    // runs would write the same shape anyway.
+    // Non-atomic fallback. Narrow race window between `list()` and
+    // `upsert()` (time-of-check, time-of-use): a concurrent writer could
+    // sneak a record in between the two calls and our upsert would
+    // replace-not-merge it. Tolerable for one-time migration — concurrent
+    // migration runs would write the same shape anyway, and the user
+    // typically isn't running other auth writes simultaneously.
     const existing = await userRecords.list()
     if (existing.some((r) => r.account.id === account.id)) return false
     await userRecords.upsert(record)
     return true
+}
+
+/**
+ * After Phase 1 returns `false` (existing v2 record), verify the record is
+ * actually readable in the current environment before retiring the legacy
+ * state. A clean v2 record from a prior `set()` / `setBundle()` has no
+ * `fallbackToken` and depends on the keyring being reachable; if it isn't,
+ * cleaning up the legacy slot would brick the user.
+ *
+ * Returns `null` when the existing record is safely readable. Returns a
+ * skip descriptor when it isn't — the caller surfaces the migration as
+ * `skipped` without touching the legacy state, so the next retry has a
+ * working credential to fall back to.
+ */
+async function verifyExistingRecordReadable<TAccount extends AuthAccount>(
+    userRecords: UserRecordStore<TAccount>,
+    account: TAccount,
+    userSlot: SecureStore,
+): Promise<{ reason: MigrateSkipReason; detail: string } | null> {
+    const existing = (await userRecords.list()).find((r) => r.account.id === account.id)
+    if (existing?.fallbackToken?.trim()) return null
+    try {
+        const raw = await userSlot.getSecret()
+        if (raw?.trim()) return null
+        return {
+            reason: 'user-record-write-failed',
+            detail: 'existing v2 record has no fallback token and its keyring slot is empty',
+        }
+    } catch (error) {
+        if (error instanceof SecureStoreUnavailableError) {
+            return {
+                reason: 'legacy-keyring-unreachable',
+                detail: 'existing v2 record has no fallback token and the per-user keyring slot is unreachable',
+            }
+        }
+        return {
+            reason: 'user-record-write-failed',
+            detail: getErrorMessage(error),
+        }
+    }
 }
 
 async function readLegacyToken(
