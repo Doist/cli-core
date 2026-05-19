@@ -25,6 +25,32 @@ export type UserRecord<TAccount extends AuthAccount> = {
      * that would otherwise live in the OS credential manager.
      */
     fallbackToken?: string
+    /**
+     * Plaintext refresh-token fallback. Same lifecycle and security profile
+     * as `fallbackToken`, but for the refresh slot. Present only when the
+     * keyring write to the refresh slot failed; cleared on every successful
+     * keyring-backed refresh-slot write.
+     */
+    fallbackRefreshToken?: string
+    /** Access-token expiry, unix-epoch ms. */
+    accessTokenExpiresAt?: number
+    /** Refresh-token expiry, unix-epoch ms. */
+    refreshTokenExpiresAt?: number
+    /**
+     * Hot-path gate: avoids a second keyring IPC on every authenticated
+     * command. Tri-state interpretation by `KeyringTokenStore.active`:
+     *
+     * - `true`  → a refresh token is stored; read the refresh slot.
+     * - `false` → no refresh token; skip the slot entirely.
+     * - `undefined` → legacy/migrated record with no authority over refresh
+     *   state; probe the slot once and backfill `false` if it comes back
+     *   empty.
+     *
+     * Always set explicitly on records written by post-bundle code; left
+     * `undefined` only on records produced by older code paths or by
+     * migration.
+     */
+    hasRefreshToken?: boolean
 }
 
 /**
@@ -43,6 +69,14 @@ export type UserRecordStore<TAccount extends AuthAccount> = {
      * `fallbackToken` over the keyring). Records are keyed by `account.id`.
      */
     upsert(record: UserRecord<TAccount>): Promise<void>
+    /**
+     * Optional atomic insert. When implemented, returns `true` if the record
+     * was written or `false` if a record with the same `account.id` already
+     * existed (no write). Migration prefers this over list-then-upsert to
+     * eliminate the TOCTOU race between existence check and write. Stores
+     * that can't offer atomicity may omit it; callers must fall back.
+     */
+    tryInsert?(record: UserRecord<TAccount>): Promise<boolean>
     /** Remove the record whose `account.id` matches. */
     remove(id: string): Promise<void>
     /** The pinned default's `account.id`, or `null` when nothing is pinned. */
