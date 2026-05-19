@@ -116,10 +116,18 @@ type UserRecordsHarness<TAccount extends AuthAccount> = {
     upsertSpy: ReturnType<typeof vi.fn>
     removeSpy: ReturnType<typeof vi.fn>
     setDefaultSpy: ReturnType<typeof vi.fn>
+    /** Defined only when the harness was built with `withTryInsert: true`. */
+    tryInsertSpy?: ReturnType<typeof vi.fn>
 }
 
-/** In-memory `UserRecordStore` with spies on the mutating methods. */
-export function buildUserRecords<TAccount extends AuthAccount>(): UserRecordsHarness<TAccount> {
+/**
+ * In-memory `UserRecordStore` with spies on the mutating methods. Opt into
+ * the atomic `tryInsert` path via `withTryInsert: true` — the default
+ * preserves the legacy list-then-upsert shape exercised by older tests.
+ */
+export function buildUserRecords<TAccount extends AuthAccount>(
+    options: { withTryInsert?: boolean } = {},
+): UserRecordsHarness<TAccount> {
     const state = {
         records: new Map<string, UserRecord<TAccount>>(),
         defaultId: null as string | null,
@@ -133,6 +141,13 @@ export function buildUserRecords<TAccount extends AuthAccount>(): UserRecordsHar
     const setDefaultSpy = vi.fn(async (id: string | null) => {
         state.defaultId = id
     })
+    const tryInsertSpy = options.withTryInsert
+        ? vi.fn(async (record: UserRecord<TAccount>) => {
+              if (state.records.has(record.account.id)) return false
+              state.records.set(record.account.id, record)
+              return true
+          })
+        : undefined
     const store: UserRecordStore<TAccount> = {
         async list() {
             return [...state.records.values()]
@@ -143,6 +158,7 @@ export function buildUserRecords<TAccount extends AuthAccount>(): UserRecordsHar
             return state.defaultId
         },
         setDefaultId: setDefaultSpy,
+        ...(tryInsertSpy ? { tryInsert: tryInsertSpy } : {}),
     }
-    return { store, state, upsertSpy, removeSpy, setDefaultSpy }
+    return { store, state, upsertSpy, removeSpy, setDefaultSpy, tryInsertSpy }
 }
