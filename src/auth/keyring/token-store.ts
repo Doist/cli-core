@@ -1,7 +1,7 @@
-import { CliError } from '../../errors.js'
-import type { AccountRef, AuthAccount, TokenStore } from '../types.js'
+import { CliError, getErrorMessage } from '../../errors.js'
+import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
-import { writeRecordWithKeyringFallback } from './record-write.js'
+import { writeBundleWithKeyringFallback, writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
     DEFAULT_ACCOUNT_FOR_USER,
@@ -9,6 +9,7 @@ import {
     SecureStoreUnavailableError,
     type SecureStore,
 } from './secure-store.js'
+import { refreshAccountSlot } from './slot-naming.js'
 import type { TokenStorageResult, UserRecord, UserRecordStore } from './types.js'
 
 export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
@@ -36,7 +37,17 @@ export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
 }
 
 export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccount> & {
-    /** Storage result from the most recent `set()` call, or `undefined` before any (and reset to `undefined` when the most recent `set()` threw). */
+    /**
+     * Override `setBundle` as required (not optional) — the keyring store
+     * always knows how to persist refresh state. Lets cli-core helpers
+     * (`persistBundle`) call it without a non-null assertion.
+     */
+    setBundle(
+        account: TAccount,
+        bundle: TokenBundle,
+        options?: { promoteDefault?: boolean },
+    ): Promise<void>
+    /** Storage result from the most recent `set()` / `setBundle()` call, or `undefined` before any (and reset to `undefined` when the most recent write threw). */
     getLastStorageResult(): TokenStorageResult | undefined
     /** Storage result from the most recent `clear()` call, or `undefined` before any (and reset to `undefined` when the most recent `clear()` threw or was a no-op). */
     getLastClearResult(): TokenStorageResult | undefined
@@ -84,6 +95,13 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
     function secureStoreFor(account: TAccount): SecureStore {
         return createSecureStore({ serviceName, account: accountForUser(account.id) })
+    }
+
+    function refreshSecureStoreFor(account: TAccount): SecureStore {
+        return createSecureStore({
+            serviceName,
+            account: refreshAccountSlot(accountForUser(account.id)),
+        })
     }
 
     type Snapshot = { records: UserRecord<TAccount>[]; defaultId: string | null }
@@ -147,6 +165,47 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         }
     }
 
+    /**
+     * Compose a storage result for a write that may have fallen back on
+     * either slot. `accessStored === false` indicates the access token went
+     * to `fallbackToken`; `refreshStored === false` indicates the refresh
+     * token went to `fallbackRefreshToken`. Either falsy slot downgrades
+     * the result to `config-file` so consumers see the warning — refresh
+     * plaintext is just as security-relevant as access plaintext.
+     */
+    function bundleStorageResult(
+        accessStored: boolean,
+        refreshStored: boolean | undefined,
+    ): TokenStorageResult {
+        const accessFallback = !accessStored
+        const refreshFallback = refreshStored === false
+        if (!accessFallback && !refreshFallback) return { storage: 'secure-store' }
+        const subject =
+            accessFallback && refreshFallback
+                ? 'access + refresh tokens'
+                : accessFallback
+                  ? 'access token'
+                  : 'refresh token'
+        return fallbackResult(`${subject} saved as plaintext in`)
+    }
+
+    /**
+     * Best-effort default promotion shared by `set` and `setBundle`. The
+     * record is already persisted, so a failure here must not surface as
+     * `AUTH_STORE_WRITE_FAILED` — the user can recover by setting a
+     * default later.
+     */
+    async function promoteDefaultIfNeeded(accountId: string): Promise<void> {
+        try {
+            const existingDefault = await userRecords.getDefaultId()
+            if (!existingDefault) {
+                await userRecords.setDefaultId(accountId)
+            }
+        } catch {
+            // best-effort
+        }
+    }
+
     return {
         async active(ref) {
             // Ref-only path skips `getDefaultId()` — `resolveTarget` never
@@ -159,42 +218,37 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             const record = resolveTarget(snapshot, ref)
             if (!record) return null
 
+            // Reads the access slot only. Refresh-state material lives in
+            // the keyring and on the record, but `active()` stays cheap and
+            // returns the pre-PR1 snapshot shape — a future bundle-aware
+            // read path lights up the refresh slot only when callers
+            // actually need it (silent refresh).
             const fallback = record.fallbackToken?.trim()
-            if (fallback) {
-                return { token: fallback, account: record.account }
-            }
+            if (fallback) return { token: fallback, account: record.account }
 
             let raw: string | null
             try {
                 raw = await secureStoreFor(record.account).getSecret()
             } catch (error) {
-                // A matching record exists but the keyring can't be read.
-                // Surface a typed failure instead of returning `null`, which
-                // would otherwise be indistinguishable from "no stored
-                // account" and trigger `ACCOUNT_NOT_FOUND` on `--user <ref>`.
-                // `attachLogoutCommand` catches this specific code so an
-                // explicit `logout --user <ref>` can still clear the matching
-                // record without needing the unreadable token.
                 if (error instanceof SecureStoreUnavailableError) {
                     throw new CliError(
                         'AUTH_STORE_READ_FAILED',
                         `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
                     )
                 }
-                throw error
+                // Non-keyring backend failures wrap into the typed code too —
+                // a raw exception escaping `active()` would crash the CLI
+                // with no useful exit signal.
+                throw new CliError(
+                    'AUTH_STORE_READ_FAILED',
+                    `Access-slot read failed (${getErrorMessage(error)})`,
+                )
             }
 
             const token = raw?.trim()
-            if (token) {
-                return { token, account: record.account }
-            }
+            if (token) return { token, account: record.account }
 
-            // Record exists, no `fallbackToken`, and the keyring slot is
-            // empty — the credential was deleted out-of-band (user ran
-            // `security delete-generic-password`, `secret-tool clear`, …).
-            // This is corrupted state, not a miss; collapsing it to `null`
-            // would make `--user <ref>` surface as `ACCOUNT_NOT_FOUND` and
-            // hide the real problem.
+            // Record exists, no `fallbackToken`, slot empty — corruption.
             throw new CliError(
                 'AUTH_STORE_READ_FAILED',
                 `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
@@ -209,26 +263,36 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             const { storedSecurely } = await writeRecordWithKeyringFallback({
                 secureStore: secureStoreFor(account),
+                refreshStore: refreshSecureStoreFor(account),
                 userRecords,
                 account,
                 token,
             })
 
-            // Best-effort default promotion: the record is already persisted,
-            // so a failure here must not turn into `AUTH_STORE_WRITE_FAILED`
-            // (the user can recover by setting a default later).
-            try {
-                const existingDefault = await userRecords.getDefaultId()
-                if (!existingDefault) {
-                    await userRecords.setDefaultId(account.id)
-                }
-            } catch {
-                // best-effort
+            await promoteDefaultIfNeeded(account.id)
+
+            lastStorageResult = bundleStorageResult(storedSecurely, undefined)
+        },
+
+        async setBundle(account, bundle, options) {
+            lastStorageResult = undefined
+
+            const { accessStoredSecurely, refreshStoredSecurely } =
+                await writeBundleWithKeyringFallback({
+                    accessStore: secureStoreFor(account),
+                    refreshStore: refreshSecureStoreFor(account),
+                    userRecords,
+                    account,
+                    bundle,
+                })
+
+            // Opt-in: silent refresh omits `promoteDefault` so it can't
+            // re-pin selection; login passes `true` to match `set()`.
+            if (options?.promoteDefault) {
+                await promoteDefaultIfNeeded(account.id)
             }
 
-            lastStorageResult = storedSecurely
-                ? { storage: 'secure-store' }
-                : fallbackResult('token saved as plaintext in')
+            lastStorageResult = bundleStorageResult(accessStoredSecurely, refreshStoredSecurely)
         },
 
         async clear(ref) {
@@ -259,21 +323,20 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             const fallbackClear = fallbackResult('local auth state cleared in')
 
-            // Always attempt the keyring delete. Even when the record carried
-            // a `fallbackToken`, an older keyring entry may still be parked
-            // there from a prior keyring-online write that was later replaced
-            // by an offline-fallback write — skipping the delete would leak
-            // that orphan. Downgrade *any* failure to a warning: the record
-            // is already gone, so re-throwing would corrupt local state
-            // (caller sees an exception and assumes nothing was cleared,
-            // even though the next `account list` will show the user gone).
-            try {
-                await secureStoreFor(record.account).deleteSecret()
-                lastClearResult =
-                    record.fallbackToken !== undefined ? fallbackClear : { storage: 'secure-store' }
-            } catch {
-                lastClearResult = fallbackClear
-            }
+            // Always attempt both deletes — a record's `fallbackToken`
+            // doesn't rule out an orphan keyring entry from a prior online
+            // write. Failures downgrade to a warning: the record is already
+            // gone, re-throwing would corrupt the caller's state.
+            const [accessOutcome, refreshOutcome] = await Promise.allSettled([
+                secureStoreFor(record.account).deleteSecret(),
+                refreshSecureStoreFor(record.account).deleteSecret(),
+            ])
+            const fellBack =
+                accessOutcome.status === 'rejected' ||
+                refreshOutcome.status === 'rejected' ||
+                record.fallbackToken !== undefined ||
+                record.fallbackRefreshToken !== undefined
+            lastClearResult = fellBack ? fallbackClear : { storage: 'secure-store' }
         },
 
         async list() {

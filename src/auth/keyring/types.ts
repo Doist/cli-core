@@ -25,6 +25,20 @@ export type UserRecord<TAccount extends AuthAccount> = {
      * that would otherwise live in the OS credential manager.
      */
     fallbackToken?: string
+    /** Same lifecycle and security profile as `fallbackToken`, for the refresh slot. */
+    fallbackRefreshToken?: string
+    /** Access-token expiry, unix-epoch ms. */
+    accessTokenExpiresAt?: number
+    /** Refresh-token expiry, unix-epoch ms. */
+    refreshTokenExpiresAt?: number
+    /**
+     * `true` when a refresh secret is stored (in the keyring or as
+     * `fallbackRefreshToken`); `false` when explicitly cleared by `set()`
+     * or by a no-refresh `setBundle`; `undefined` on legacy records that
+     * predate the bundle contract. Read by future bundle-aware accessors;
+     * `active()` itself doesn't consult it.
+     */
+    hasRefreshToken?: boolean
 }
 
 /**
@@ -43,6 +57,12 @@ export type UserRecordStore<TAccount extends AuthAccount> = {
      * `fallbackToken` over the keyring). Records are keyed by `account.id`.
      */
     upsert(record: UserRecord<TAccount>): Promise<void>
+    /**
+     * Optional atomic insert. Returns `true` on write, `false` if `account.id`
+     * already exists. Migration prefers it to eliminate the existence-check
+     * TOCTOU race; callers fall back to list-then-upsert when absent.
+     */
+    tryInsert?(record: UserRecord<TAccount>): Promise<boolean>
     /** Remove the record whose `account.id` matches. */
     remove(id: string): Promise<void>
     /** The pinned default's `account.id`, or `null` when nothing is pinned. */

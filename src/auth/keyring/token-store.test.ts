@@ -5,7 +5,9 @@ import {
     buildSingleSlot,
     buildUserRecords,
 } from '../../test-support/keyring-mocks.js'
+import type { TokenBundle } from '../types.js'
 import { SecureStoreUnavailableError } from './secure-store.js'
+import { refreshAccountSlot } from './slot-naming.js'
 import { type CreateKeyringTokenStoreOptions, createKeyringTokenStore } from './token-store.js'
 import type { UserRecord } from './types.js'
 
@@ -69,24 +71,51 @@ function fixture(
     }
 }
 
+/**
+ * Per-slot keyring routing — required whenever a test exercises both the
+ * access slot and the refresh slot (otherwise the single-slot mock would
+ * conflate them).
+ */
+function mapFixture(
+    records: Record<string, UserRecord<Account>> = {},
+    defaultId: string | null = null,
+) {
+    const km = buildKeyringMap()
+    mockedCreateSecureStore.mockImplementation(km.create)
+    const harness = buildUserRecords<Account>()
+    for (const [id, rec] of Object.entries(records)) {
+        harness.state.records.set(id, rec)
+    }
+    harness.state.defaultId = defaultId
+    const store = createKeyringTokenStore<Account>({
+        serviceName: SERVICE,
+        userRecords: harness.store,
+        recordsLocation: LOCATION,
+    })
+    return { km, store, state: harness.state, upsertSpy: harness.upsertSpy }
+}
+
 describe('createKeyringTokenStore', () => {
     beforeEach(() => {
         mockedCreateSecureStore.mockReset()
     })
 
     it('round-trips set → active → clear when the keyring is online', async () => {
-        const { keyring, store, state, upsertSpy } = fixture()
+        // Per-slot map: set() wipes the refresh slot too, so a single-slot
+        // mock would clobber the access secret.
+        const { km, store, state, upsertSpy } = mapFixture()
 
         await store.set(account, 'tok_secret')
-        expect(keyring.setSpy).toHaveBeenCalledWith('tok_secret')
-        expect(upsertSpy).toHaveBeenCalledWith({ account })
+        expect(km.slots.get('user-42')?.secret).toBe('tok_secret')
+        expect(upsertSpy).toHaveBeenCalledWith({ account, hasRefreshToken: false })
         expect(state.defaultId).toBe('42')
         expect(store.getLastStorageResult()).toEqual({ storage: 'secure-store' })
 
         await expect(store.active()).resolves.toEqual({ token: 'tok_secret', account })
 
         await store.clear()
-        expect(keyring.deleteSpy).toHaveBeenCalledTimes(1)
+        expect(km.slots.get('user-42')?.secret).toBeNull()
+        expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBeNull()
         expect(state.records.size).toBe(0)
         expect(state.defaultId).toBeNull()
         expect(store.getLastClearResult()).toEqual({ storage: 'secure-store' })
@@ -100,10 +129,13 @@ describe('createKeyringTokenStore', () => {
         await store.set(account, 'tok_plain')
 
         expect(state.records.get('42')?.fallbackToken).toBe('tok_plain')
+        // `set()` writes `hasRefreshToken: false` definitively, so the next
+        // `active()` skips the refresh-slot IPC entirely.
+        expect(state.records.get('42')?.hasRefreshToken).toBe(false)
         expect(store.getLastStorageResult()).toEqual({
             storage: 'config-file',
             warning:
-                'system credential manager unavailable; token saved as plaintext in /tmp/fake/config.json',
+                'system credential manager unavailable; access token saved as plaintext in /tmp/fake/config.json',
         })
 
         await expect(store.active()).resolves.toEqual({ token: 'tok_plain', account })
@@ -133,9 +165,17 @@ describe('createKeyringTokenStore', () => {
 
     it.each([
         [
-            'the keyring read throws',
+            'the keyring read throws SecureStoreUnavailableError',
             (k: SingleSlot) => {
                 k.getSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('locked'))
+            },
+        ],
+        [
+            'the keyring read throws a non-keyring backend error',
+            (k: SingleSlot) => {
+                // Generic backend failure must also wrap into the typed code;
+                // a raw exception would crash the CLI with no exit signal.
+                k.getSpy.mockRejectedValueOnce(new Error('disk fried'))
             },
         ],
         [
@@ -154,8 +194,8 @@ describe('createKeyringTokenStore', () => {
     })
 
     it('picks the lone user when no default is set', async () => {
-        const keyring = buildSingleSlot({ secret: 'tok' })
-        const { store } = fixture({ keyring, records: { '42': { account } } })
+        const { km, store } = mapFixture({ '42': { account } })
+        km.slots.set('user-42', { secret: 'tok' })
 
         await expect(store.active()).resolves.toEqual({ token: 'tok', account })
     })
@@ -209,7 +249,8 @@ describe('createKeyringTokenStore', () => {
 
         await store.clear()
 
-        expect(keyring.deleteSpy).toHaveBeenCalledTimes(1)
+        // Both slots wiped — access + refresh. Single-slot mock counts both.
+        expect(keyring.deleteSpy).toHaveBeenCalledTimes(2)
         expect(state.records.size).toBe(0)
         expect(store.getLastClearResult()).toEqual({
             storage: 'config-file',
@@ -255,16 +296,17 @@ describe('createKeyringTokenStore', () => {
         const keyring = buildSingleSlot({ secret: 'tok' })
         const { store, state, setDefaultSpy } = fixture({
             keyring,
-            records: { '42': { account } },
+            records: { '42': { account, hasRefreshToken: false } },
             defaultId: '42',
         })
         setDefaultSpy.mockRejectedValueOnce(new Error('disk full'))
 
         await store.clear()
 
-        // Default pointer write blew up, but the keyring entry was still
-        // cleaned up — otherwise the credential becomes an unreachable orphan.
-        expect(keyring.deleteSpy).toHaveBeenCalledTimes(1)
+        // Default pointer write blew up, but the keyring entries were still
+        // cleaned up — otherwise the credentials become unreachable orphans.
+        // Both slots (access + refresh) are wiped.
+        expect(keyring.deleteSpy).toHaveBeenCalledTimes(2)
         expect(state.records.size).toBe(0)
     })
 
@@ -407,6 +449,76 @@ describe('createKeyringTokenStore', () => {
             await expect(store.setDefault('nope')).rejects.toMatchObject({
                 code: 'ACCOUNT_NOT_FOUND',
             })
+        })
+    })
+
+    describe('setBundle storage', () => {
+        const bundle: TokenBundle = {
+            accessToken: 'tok_a',
+            refreshToken: 'tok_r',
+            accessTokenExpiresAt: 1_700_000_000_000,
+        }
+
+        it('persists access slot, refresh slot, and record metadata; active() returns the access snapshot', async () => {
+            const { km, store, state } = mapFixture()
+
+            await store.setBundle(account, bundle, { promoteDefault: true })
+
+            // Storage: both slots written, record carries gate + expiry.
+            expect(km.slots.get('user-42')?.secret).toBe('tok_a')
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBe('tok_r')
+            const record = state.records.get('42')
+            expect(record?.hasRefreshToken).toBe(true)
+            expect(record?.accessTokenExpiresAt).toBe(1_700_000_000_000)
+            expect(record?.fallbackToken).toBeUndefined()
+            expect(record?.fallbackRefreshToken).toBeUndefined()
+            expect(state.defaultId).toBe('42')
+
+            // Read side stays narrow: active() returns only token + account.
+            // Reading the stored refresh state is a PR3 concern.
+            await expect(store.active()).resolves.toEqual({ token: 'tok_a', account })
+        })
+
+        it('omits promoteDefault by default (silent-refresh path does not re-pin)', async () => {
+            const { store, state } = mapFixture({
+                '42': { account, hasRefreshToken: false },
+            })
+
+            await store.setBundle(account, bundle)
+
+            expect(state.defaultId).toBeNull()
+        })
+
+        it('set() wipes the refresh slot left behind by a prior setBundle', async () => {
+            // Regression: `set(account, token)` is documented as "replacing
+            // any previous entry". A later set() must leave no orphan
+            // refresh material — otherwise a future bundle-aware reader
+            // would see stale data.
+            const { km, store, state } = mapFixture()
+
+            await store.setBundle(account, bundle, { promoteDefault: true })
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBe('tok_r')
+
+            await store.set(account, 'tok_a_replacement')
+
+            expect(km.slots.get('user-42')?.secret).toBe('tok_a_replacement')
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBeNull()
+            expect(state.records.get('42')?.hasRefreshToken).toBe(false)
+        })
+
+        it('clear() wipes both keyring slots', async () => {
+            const { km, store, state } = mapFixture({
+                '42': { account, hasRefreshToken: true },
+            })
+            km.slots.set('user-42', { secret: 'tok_a' })
+            km.slots.set(refreshAccountSlot('user-42'), { secret: 'tok_r' })
+            state.defaultId = '42'
+
+            await store.clear()
+
+            expect(state.records.size).toBe(0)
+            expect(km.slots.get('user-42')?.secret).toBeNull()
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBeNull()
         })
     })
 })

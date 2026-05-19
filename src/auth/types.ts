@@ -46,8 +46,10 @@ export type ExchangeInput = {
 export type ExchangeResult<TAccount extends AuthAccount = AuthAccount> = {
     accessToken: string
     refreshToken?: string
-    /** Unix-epoch ms. cli-core does not refresh today. */
+    /** Access-token expiry, unix-epoch ms. */
     expiresAt?: number
+    /** Refresh-token expiry, unix-epoch ms. */
+    refreshTokenExpiresAt?: number
     /** Set when the token endpoint already identifies the account; skips `validateToken`. */
     account?: TAccount
 }
@@ -55,6 +57,12 @@ export type ExchangeResult<TAccount extends AuthAccount = AuthAccount> = {
 export type ValidateInput = {
     token: string
     /** Same shape as `ExchangeInput.handshake` — carries the folded `flags` / `readOnly`. */
+    handshake: Record<string, unknown>
+}
+
+export type RefreshInput = {
+    refreshToken: string
+    /** Same shape as `ExchangeInput.handshake` — empty when called outside `runOAuthFlow`. */
     handshake: Record<string, unknown>
 }
 
@@ -70,6 +78,16 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
     exchangeCode(input: ExchangeInput): Promise<ExchangeResult<TAccount>>
     /** Skipped when `exchangeCode` already returned an `account`. */
     validateToken(input: ValidateInput): Promise<TAccount>
+    /** Optional: exchange a refresh token for a fresh bundle. */
+    refreshToken?(input: RefreshInput): Promise<ExchangeResult<TAccount>>
+}
+
+/** Write-side bundle for `setBundle`. Time fields are unix-epoch ms. */
+export type TokenBundle = {
+    accessToken: string
+    refreshToken?: string
+    accessTokenExpiresAt?: number
+    refreshTokenExpiresAt?: number
 }
 
 /** Opaque account selector. Stores own the matching rule (id, email, label, …). */
@@ -93,6 +111,18 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
     active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
     /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
+    /**
+     * Persist a full bundle. Optional on the contract — stores that don't
+     * implement it get `bundle.accessToken` via `set()` instead (cli-core
+     * helpers handle the fallback). Pass `promoteDefault: true` on first
+     * login; omit on silent refresh so a background rotation can't re-pin
+     * account selection.
+     */
+    setBundle?(
+        account: TAccount,
+        bundle: TokenBundle,
+        options?: { promoteDefault?: boolean },
+    ): Promise<void>
     /** Remove a stored credential. No-op when `ref` doesn't match. */
     clear(ref?: AccountRef): Promise<void>
     /** Every stored account with a default marker. */

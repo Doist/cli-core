@@ -18,6 +18,8 @@ type KeyringSlot = {
 type KeyringMap = {
     create: (args: { serviceName: string; account: string }) => SecureStore
     slots: Map<string, KeyringSlot>
+    /** Per-slot count of `getSecret()` invocations. */
+    getCalls: Map<string, number>
     deleteCalls: Map<string, number>
 }
 
@@ -28,6 +30,7 @@ type KeyringMap = {
  */
 export function buildKeyringMap(): KeyringMap {
     const slots = new Map<string, KeyringSlot>()
+    const getCalls = new Map<string, number>()
     const deleteCalls = new Map<string, number>()
     function getSlot(account: string): KeyringSlot {
         let slot = slots.get(account)
@@ -39,10 +42,12 @@ export function buildKeyringMap(): KeyringMap {
     }
     return {
         slots,
+        getCalls,
         deleteCalls,
         create({ account }) {
             return {
                 async getSecret() {
+                    getCalls.set(account, (getCalls.get(account) ?? 0) + 1)
                     const slot = getSlot(account)
                     if (slot.getErr) throw slot.getErr
                     return slot.secret
