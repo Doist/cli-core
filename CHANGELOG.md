@@ -1,3 +1,9 @@
+## [0.18.0](https://github.com/Doist/cli-core/compare/v0.17.0...v0.18.0) (2026-05-19)
+
+### Features
+
+* **auth:** two-phase migrate write for the bundle-shape contract ([#38](https://github.com/Doist/cli-core/issues/38)) ([9cf5e9c](https://github.com/Doist/cli-core/commit/9cf5e9caaed30ec0a989a026bf5b00f6815a2512))
+
 ## [0.17.0](https://github.com/Doist/cli-core/compare/v0.16.1...v0.17.0) (2026-05-19)
 
 ### Features
