@@ -182,7 +182,7 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
         ...(bundle.refreshTokenExpiresAt !== undefined
             ? { refreshTokenExpiresAt: bundle.refreshTokenExpiresAt }
             : {}),
-        hasRefreshToken: !!refreshToken,
+        hasRefreshToken: Boolean(refreshToken),
     }
 
     try {
