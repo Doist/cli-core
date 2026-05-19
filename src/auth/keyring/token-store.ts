@@ -1,12 +1,12 @@
-import { CliError, getErrorMessage } from '../../errors.js'
+import { CliError } from '../../errors.js'
 import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
+import { readAccessTokenForRecord } from './internal.js'
 import { writeBundleWithKeyringFallback, writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
     DEFAULT_ACCOUNT_FOR_USER,
     SECURE_STORE_DESCRIPTION,
-    SecureStoreUnavailableError,
     type SecureStore,
 } from './secure-store.js'
 import { refreshAccountSlot } from './slot-naming.js'
@@ -223,36 +223,16 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             // returns the pre-PR1 snapshot shape — a future bundle-aware
             // read path lights up the refresh slot only when callers
             // actually need it (silent refresh).
-            const fallback = record.fallbackToken?.trim()
-            if (fallback) return { token: fallback, account: record.account }
-
-            let raw: string | null
-            try {
-                raw = await secureStoreFor(record.account).getSecret()
-            } catch (error) {
-                if (error instanceof SecureStoreUnavailableError) {
-                    throw new CliError(
-                        'AUTH_STORE_READ_FAILED',
-                        `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${error.message})`,
-                    )
-                }
-                // Non-keyring backend failures wrap into the typed code too —
-                // a raw exception escaping `active()` would crash the CLI
-                // with no useful exit signal.
-                throw new CliError(
-                    'AUTH_STORE_READ_FAILED',
-                    `Access-slot read failed (${getErrorMessage(error)})`,
-                )
-            }
-
-            const token = raw?.trim()
-            if (token) return { token, account: record.account }
-
-            // Record exists, no `fallbackToken`, slot empty — corruption.
-            throw new CliError(
-                'AUTH_STORE_READ_FAILED',
-                `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`,
-            )
+            const outcome = await readAccessTokenForRecord(record, secureStoreFor(record.account))
+            if (outcome.ok) return { token: outcome.token, account: record.account }
+            // Map structured outcomes to the typed error contract.
+            const message =
+                outcome.reason === 'slot-empty'
+                    ? `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`
+                    : outcome.reason === 'slot-unavailable'
+                      ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${outcome.detail})`
+                      : `Access-slot read failed (${outcome.detail})`
+            throw new CliError('AUTH_STORE_READ_FAILED', message)
         },
 
         async set(account, token) {

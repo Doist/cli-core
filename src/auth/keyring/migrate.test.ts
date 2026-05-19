@@ -346,7 +346,7 @@ describe('migrateLegacyAuth', () => {
         },
     )
 
-    it('returns skipped(legacy-keyring-unreachable) when an existing v2 record cannot be read', async () => {
+    it('returns skipped(user-keyring-unreachable) when an existing v2 record cannot be read', async () => {
         // A clean v2 record from a prior set/setBundle has no fallbackToken
         // and depends on the keyring being reachable. With the keyring
         // offline, cleaning up the legacy state would brick the user — we
@@ -368,16 +368,46 @@ describe('migrateLegacyAuth', () => {
 
         expect(result).toMatchObject({
             status: 'skipped',
-            reason: 'legacy-keyring-unreachable',
+            reason: 'user-keyring-unreachable',
         })
         expect(marker.migrated).toBe(false)
         expect(km.slots.get(LEGACY)?.secret).toBe('legacy_tok')
         expect(state.records.get('99')).toBe(existing)
     })
 
-    it('skips the readability check when an existing v2 record carries fallbackToken', async () => {
-        // Self-sufficient record — even if the keyring is offline, the
-        // fallbackToken serves reads. Migration proceeds with cleanup.
+    it('returns skipped(user-record-write-failed) when an existing v2 record has empty fallback AND empty slot', async () => {
+        // Corrupted state: the record carries no plaintext fallback and
+        // the per-user keyring slot is empty (deleted out of band). We
+        // must NOT cleanup legacy — the user has no readable credential.
+        const existing: UserRecord<Account> = {
+            account: { id: '99', email: 'me@x.io' },
+            hasRefreshToken: false,
+        }
+        const { km, state, result, marker } = await runMigration({
+            slots: {
+                [LEGACY]: { secret: 'legacy_tok' },
+                // No `secret` and no `getErr` → getSecret returns null.
+                'user-99': {},
+            },
+            seedRecords: { '99': existing },
+            options: {
+                identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
+            },
+        })
+
+        expect(result).toMatchObject({
+            status: 'skipped',
+            reason: 'user-record-write-failed',
+        })
+        expect(marker.migrated).toBe(false)
+        expect(km.slots.get(LEGACY)?.secret).toBe('legacy_tok')
+        expect(state.records.get('99')).toBe(existing)
+    })
+
+    it('skips the readability check when an existing v2 record carries an external fallbackToken', async () => {
+        // External record's fallback differs from the legacy token → not a
+        // prior-run Phase 1 → don't attempt Phase 2. The fallback alone
+        // makes the record readable, so the per-user slot is never probed.
         const existing: UserRecord<Account> = {
             account: { id: '99', email: 'me@x.io' },
             fallbackToken: 'external_plaintext',
@@ -397,13 +427,41 @@ describe('migrateLegacyAuth', () => {
         expect(result.status).toBe('migrated')
         expect(marker.migrated).toBe(true)
         expect(km.slots.get(LEGACY)?.secret).toBeNull()
+        // Per-user slot must NEVER have been read — the fallback short-circuits.
+        expect(km.getCalls.has('user-99')).toBe(false)
+    })
+
+    it('retries Phase 2 when the existing record carries our legacy token (prior incomplete migration)', async () => {
+        // Scenario: a previous run wrote the Phase 1 fallback record but
+        // Phase 2 failed (transient backend error). Marker stayed unset.
+        // On retry, the existence check finds the record, recognises the
+        // fallback token as our own legacy token, and finishes Phase 2.
+        const existing: UserRecord<Account> = {
+            account: { id: '99', email: 'me@x.io' },
+            fallbackToken: 'legacy_tok',
+            hasRefreshToken: false,
+        }
+        const { km, state, result, marker, harness } = await runMigration({
+            slots: { [LEGACY]: { secret: 'legacy_tok' } },
+            seedRecords: { '99': existing },
+            options: {
+                identifyAccount: async () => ({ id: '99', email: 'me@x.io' }),
+            },
+        })
+
+        expect(result.status).toBe('migrated')
+        expect(km.slots.get('user-99')?.secret).toBe('legacy_tok')
+        expect(state.records.get('99')?.fallbackToken).toBeUndefined()
+        expect(marker.migrated).toBe(true)
+        // Phase 2 ran exactly once: setSecret + clean upsert.
+        expect(harness.upsertSpy).toHaveBeenCalledTimes(1)
     })
 
     it('Phase 2 SecureStoreUnavailable falls back silently; Phase 1 record survives', async () => {
         // Headless / WSL: the per-user slot can't accept a write. Phase 1's
         // fallback record is self-sufficient, so the migration completes
         // with the token in plaintext (until a future login upgrades it).
-        const { km, state, result, marker, harness } = await runMigration({
+        const { km, state, result, marker } = await runMigration({
             slots: {
                 [LEGACY]: { secret: 'legacy_tok' },
                 'user-99': { setErr: new SecureStoreUnavailableError('no dbus') },
@@ -418,9 +476,6 @@ describe('migrateLegacyAuth', () => {
         expect(km.slots.get('user-99')?.secret).toBeNull()
         expect(marker.migrated).toBe(true)
         expect(km.slots.get(LEGACY)?.secret).toBeNull()
-        // No clean Phase 2 upsert in this branch — Phase 1 wrote the only
-        // record, with `fallbackToken` still populated.
-        expect(harness.upsertSpy).toHaveBeenCalledTimes(1)
     })
 
     it('Phase 2 non-keyring setSecret failure surfaces as skipped (marker stays unset)', async () => {

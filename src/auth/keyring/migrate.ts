@@ -1,5 +1,6 @@
 import { getErrorMessage } from '../../errors.js'
 import type { AuthAccount } from '../types.js'
+import { readAccessTokenForRecord } from './internal.js'
 import { buildSingleTokenRecord } from './record-write.js'
 import {
     createSecureStore,
@@ -7,7 +8,7 @@ import {
     type SecureStore,
     SecureStoreUnavailableError,
 } from './secure-store.js'
-import type { UserRecordStore } from './types.js'
+import type { UserRecord, UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
     serviceName: string
@@ -59,18 +60,21 @@ export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
 }
 
 /**
- * Stable skip reasons. `legacy-keyring-unreachable` is retryable (a later
- * run with the keyring online would succeed); the others are diagnostic.
+ * Stable skip reasons. `*-keyring-unreachable` variants are retryable (a
+ * later run with the keyring online would succeed); the others are
+ * diagnostic.
  */
 export type MigrateSkipReason =
     | 'identify-failed'
     | 'legacy-keyring-unreachable'
+    | 'user-keyring-unreachable'
     | 'user-record-write-failed'
     | 'marker-write-failed'
 
 const SKIP_REASON_MESSAGES: Record<MigrateSkipReason, string> = {
     'identify-failed': 'could not identify user',
     'legacy-keyring-unreachable': 'legacy credential is unreachable (keyring offline)',
+    'user-keyring-unreachable': 'per-user credential slot is unreachable (keyring offline)',
     'user-record-write-failed': 'failed to update user records',
     'marker-write-failed': 'failed to persist migration marker',
 }
@@ -132,7 +136,6 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return { status: 'already-migrated' }
     }
 
-    // One handle for both the initial read and the cleanup delete.
     const legacyStore = createSecureStore({ serviceName, account: legacyAccount })
 
     const legacyToken = await readLegacyToken(legacyStore, loadLegacyPlaintextToken)
@@ -153,9 +156,9 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return skipped(silent, logPrefix, 'identify-failed', getErrorMessage(error))
     }
 
-    let phase1Written: boolean
+    let phase1: Phase1Result<TAccount>
     try {
-        phase1Written = await ensureV2Record(userRecords, account, legacyToken.token)
+        phase1 = await ensureV2Record(userRecords, account, legacyToken.token)
     } catch (error) {
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
     }
@@ -165,43 +168,27 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         account: accountForUser(account.id),
     })
 
-    if (phase1Written) {
-        // Phase 2 inlined (not via `writeRecordWithKeyringFallback`) so the
-        // offline-keyring branch doesn't double-upsert the same fallback
-        // record Phase 1 just wrote. Only `SecureStoreUnavailableError` is
-        // swallowed — other failures leave the marker unset so a retry
-        // re-attempts the keyring move.
-        let keyringStored = false
-        try {
-            await userSlot.setSecret(legacyToken.token)
-            keyringStored = true
-        } catch (error) {
-            if (!(error instanceof SecureStoreUnavailableError)) {
-                return skipped(
-                    silent,
-                    logPrefix,
-                    'user-record-write-failed',
-                    getErrorMessage(error),
-                )
-            }
-        }
-        if (keyringStored) {
-            // Clear `fallbackToken` so plaintext doesn't outlive the keyring write.
-            try {
-                await userRecords.upsert(buildSingleTokenRecord(account))
-            } catch (error) {
-                return skipped(
-                    silent,
-                    logPrefix,
-                    'user-record-write-failed',
-                    getErrorMessage(error),
-                )
-            }
+    // Run Phase 2 when EITHER Phase 1 just wrote the fallback record OR
+    // the existing record's fallback matches our legacy token — that's a
+    // prior-run Phase 1 we owe an upgrade. Other existing records are
+    // external state and get a readability check instead.
+    const isOurPriorPhase1 =
+        !phase1.written && phase1.existing.fallbackToken?.trim() === legacyToken.token
+    if (phase1.written || isOurPriorPhase1) {
+        const phase2Error = await runPhase2(userRecords, userSlot, account, legacyToken.token)
+        if (phase2Error) {
+            return skipped(silent, logPrefix, phase2Error.reason, phase2Error.detail)
         }
     } else {
-        const readabilityError = await verifyExistingRecordReadable(userRecords, account, userSlot)
-        if (readabilityError) {
-            return skipped(silent, logPrefix, readabilityError.reason, readabilityError.detail)
+        // External record — cleaning up legacy is safe only if it can be
+        // read in the current environment.
+        const outcome = await readAccessTokenForRecord(phase1.existing, userSlot)
+        if (!outcome.ok) {
+            const reason: MigrateSkipReason =
+                outcome.reason === 'slot-unavailable'
+                    ? 'user-keyring-unreachable'
+                    : 'user-record-write-failed'
+            return skipped(silent, logPrefix, reason, outcome.detail)
         }
     }
 
@@ -240,63 +227,72 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     return { status: 'migrated', account }
 }
 
+type Phase1Result<TAccount extends AuthAccount> =
+    | { written: true }
+    | { written: false; existing: UserRecord<TAccount> }
+
 /**
  * Phase 1. Writes a `fallbackToken`-bearing record so a crash before
- * Phase 2 still leaves a working credential. Returns `true` when this
- * call wrote (Phase 2 proceeds), `false` when a v2 record already existed
- * (Phase 2 skipped — preserves later state).
+ * Phase 2 still leaves a working credential. Returns `{ written: true }`
+ * when this call wrote, or `{ written: false, existing }` when a v2
+ * record already existed — the existing record is returned so callers
+ * decide whether to upgrade it (Phase 2 retry) or treat it as external
+ * state, without paying a second `list()`.
  */
 async function ensureV2Record<TAccount extends AuthAccount>(
     userRecords: UserRecordStore<TAccount>,
     account: TAccount,
     legacyToken: string,
-): Promise<boolean> {
+): Promise<Phase1Result<TAccount>> {
     const record = buildSingleTokenRecord(account, legacyToken)
     if (userRecords.tryInsert) {
-        return userRecords.tryInsert(record)
+        const wrote = await userRecords.tryInsert(record)
+        if (wrote) return { written: true }
+        const existing = (await userRecords.list()).find((r) => r.account.id === account.id)
+        if (!existing) {
+            throw new Error('tryInsert returned false but no matching record was listed')
+        }
+        return { written: false, existing }
     }
     // Non-atomic path. Narrow time-of-check, time-of-use race between
     // `list()` and `upsert()`; acceptable for one-time migration since
     // concurrent runs would write the same shape.
-    const existing = await userRecords.list()
-    if (existing.some((r) => r.account.id === account.id)) return false
+    const all = await userRecords.list()
+    const existing = all.find((r) => r.account.id === account.id)
+    if (existing) return { written: false, existing }
     await userRecords.upsert(record)
-    return true
+    return { written: true }
 }
 
 /**
- * Before retiring legacy state for an existing v2 record, confirm reads
- * still work. A record from a prior `set()` / `setBundle()` has no
- * `fallbackToken` and needs the keyring online; if it's offline, cleaning
- * up would brick the user. Returns `null` when safe, or a skip descriptor
- * the caller surfaces (leaving legacy state intact for retry).
+ * Phase 2: move the legacy token into the per-user keyring slot and
+ * upsert a clean (no `fallbackToken`) record. Inlined rather than
+ * delegating to `writeRecordWithKeyringFallback` so the offline-keyring
+ * branch doesn't double-upsert the same fallback record Phase 1 just
+ * wrote. Returns `null` on success (including the silently-handled
+ * SecureStoreUnavailable case); a skip descriptor when a non-keyring
+ * failure leaves the marker unset for retry.
  */
-async function verifyExistingRecordReadable<TAccount extends AuthAccount>(
+async function runPhase2<TAccount extends AuthAccount>(
     userRecords: UserRecordStore<TAccount>,
-    account: TAccount,
     userSlot: SecureStore,
+    account: TAccount,
+    legacyToken: string,
 ): Promise<{ reason: MigrateSkipReason; detail: string } | null> {
-    const existing = (await userRecords.list()).find((r) => r.account.id === account.id)
-    if (existing?.fallbackToken?.trim()) return null
     try {
-        const raw = await userSlot.getSecret()
-        if (raw?.trim()) return null
-        return {
-            reason: 'user-record-write-failed',
-            detail: 'existing v2 record has no fallback token and its keyring slot is empty',
-        }
+        await userSlot.setSecret(legacyToken)
     } catch (error) {
         if (error instanceof SecureStoreUnavailableError) {
-            return {
-                reason: 'legacy-keyring-unreachable',
-                detail: 'existing v2 record has no fallback token and the per-user keyring slot is unreachable',
-            }
+            return null // Phase 1 fallback record continues to serve reads.
         }
-        return {
-            reason: 'user-record-write-failed',
-            detail: getErrorMessage(error),
-        }
+        return { reason: 'user-record-write-failed', detail: getErrorMessage(error) }
     }
+    try {
+        await userRecords.upsert(buildSingleTokenRecord(account))
+    } catch (error) {
+        return { reason: 'user-record-write-failed', detail: getErrorMessage(error) }
+    }
+    return null
 }
 
 async function readLegacyToken(
