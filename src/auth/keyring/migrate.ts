@@ -1,14 +1,7 @@
 import { getErrorMessage } from '../../errors.js'
 import type { AuthAccount } from '../types.js'
-import { findById, trySetSecret } from './internal.js'
-import { writeRecordWithKeyringFallback } from './record-write.js'
-import {
-    createSecureStore,
-    DEFAULT_ACCOUNT_FOR_USER,
-    type SecureStore,
-    SecureStoreUnavailableError,
-} from './secure-store.js'
-import { refreshAccountSlot } from './slot-naming.js'
+import { findById } from './internal.js'
+import { createSecureStore, type SecureStore, SecureStoreUnavailableError } from './secure-store.js'
 import type { UserRecordStore } from './types.js'
 
 export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
@@ -17,7 +10,15 @@ export type MigrateLegacyAuthOptions<TAccount extends AuthAccount> = {
     legacyAccount: string
     /** v2 user-record store the migrated record is written into. */
     userRecords: UserRecordStore<TAccount>
-    /** Per-user keyring slug for the new entry. Defaults to `user-${id}`. */
+    /**
+     * @deprecated No longer consulted: migration now writes a v2 record
+     * with `fallbackToken` instead of moving the secret into a per-user
+     * keyring slot, so the slot name doesn't matter to this helper. Kept
+     * on the type for back-compat; consumers that still pass it will be
+     * silently ignored. The first subsequent v2 login moves the secret
+     * into the keyring via the standard write path, which respects the
+     * consumer's `createKeyringTokenStore({ accountForUser })`.
+     */
     accountForUser?: (id: string) => string
     /**
      * Reads the durable "migration already ran" marker the consumer owns
@@ -126,7 +127,6 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         cleanupLegacyConfig,
         silent,
     } = options
-    const accountForUser = options.accountForUser ?? DEFAULT_ACCOUNT_FOR_USER
     const logPrefix = options.logPrefix ?? 'cli'
 
     if (await hasMigrated()) {
@@ -155,125 +155,41 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return skipped(silent, logPrefix, 'identify-failed', getErrorMessage(error))
     }
 
-    // Don't clobber an existing v2 record. A `marker-write-failed` retry
-    // may land on a store where the user has since completed a v2 login
-    // (with a refresh token + expiry on the record). `userRecords.upsert`
-    // is replace-not-merge, so writing the legacy access-only bundle here
-    // would wipe `hasRefreshToken` / expiry and silently disable silent
-    // refresh. The legacy token has no authority over refresh state.
+    // Write a v2 record carrying the legacy token as `fallbackToken`.
+    // This is a FULLY valid v2 state: the runtime reads `fallbackToken`
+    // before any keyring slot, so the user is functional immediately.
+    // The first subsequent v2 login (`runOAuthFlow` → `setBundle`) will
+    // atomically move the secret into the keyring and clear the
+    // fallback via the standard write path.
     //
-    // Prefer the atomic `tryInsert` when the consumer supplies it —
-    // eliminates the TOCTOU race between a list-based existence check and
-    // the write. Fall back to list-then-write when not implemented; the
-    // race window is small (microseconds for in-process upserts) and
-    // acceptable for typical postinstall-style invocations.
+    // We deliberately do NOT move the secret into the per-user keyring
+    // slot here. Earlier revisions tried to and walked through a series
+    // of races (tryInsert gives no ongoing ownership; ownership-check
+    // re-reads close one window and open another; rollback delete can
+    // wipe a concurrent v2 login's credential). The simplification
+    // trades "secret already in keyring after migration" for a complete
+    // elimination of those races — the same trade-off the WSL/headless-
+    // Linux path already makes, and the only thing on the line is one
+    // login-cycle of plaintext-on-disk for the legacy token, which was
+    // already plaintext in v1 config.
+    //
+    // `tryInsert` is preferred when the consumer supplies it (atomic
+    // insert-if-absent). Without it, fall back to a list-then-upsert
+    // existence check — small race window, acceptable for postinstall.
+    const record = {
+        account,
+        fallbackToken: legacyToken.token,
+        hasRefreshToken: false,
+    }
     try {
-        const accountSlot = accountForUser(account.id)
-        const accessStore = createSecureStore({ serviceName, account: accountSlot })
-        const refreshStore = createSecureStore({
-            serviceName,
-            account: refreshAccountSlot(accountSlot),
-        })
-
         if (userRecords.tryInsert) {
-            // `tryInsert` proves the record was absent at insert time but
-            // gives no exclusive ownership afterward — a v2 login can
-            // start, complete `setSecret` + `upsert`, and reach the
-            // refresh slot all while we're between our own steps.
-            // Without ownership checks the migration would clobber the
-            // very v2 login it's meant to preserve: our `setSecret`
-            // would overwrite their access token, our follow-up `upsert`
-            // would reset their record, our `deleteSecret` would wipe
-            // their refresh slot.
-            //
-            // We re-read before each follow-up and abort the rest if the
-            // record is no longer the placeholder we inserted (matched
-            // by `fallbackToken === legacyToken.token` AND no
-            // `hasRefreshToken` advertised — together a unique signature
-            // of our migration's tryInsert payload, never produced by a
-            // v2 login). The race window is now bounded by the gap
-            // between re-read and the very next call, not the entire
-            // multi-step sequence.
-            //
-            // If we already moved the secret into the keyring before
-            // discovering we lost ownership, roll that write back so we
-            // don't leave a stale access token in the slot. The v2
-            // login's `setSecret` may have run after ours; rolling back
-            // to "no entry" is the only safe end-state we can guarantee
-            // without contract-level CAS, and v2 login's keyring-write
-            // path is happy to re-create.
-            const legacyTokenStr = legacyToken.token
-            const placeholder = {
-                account,
-                fallbackToken: legacyTokenStr,
-                hasRefreshToken: undefined,
-            }
-            async function recordStillOurs(): Promise<boolean> {
-                const current = findById(await userRecords.list(), account.id)
-                return (
-                    current?.fallbackToken === legacyTokenStr &&
-                    current?.hasRefreshToken === undefined
-                )
-            }
-            const inserted = await userRecords.tryInsert(placeholder)
-            if (inserted && (await recordStillOurs())) {
-                // Shared keyring-online/offline policy with
-                // `writeRecordWithKeyringFallback`: only the documented
-                // `SecureStoreUnavailableError` downgrades to "keep the
-                // plaintext fallback"; everything else propagates.
-                const movedToKeyring = await trySetSecret(accessStore, legacyTokenStr)
-                // One ownership re-read after the keyring write; cache the
-                // result so the follow-up upsert AND the refresh-slot
-                // cleanup share the same answer. The earlier code re-read
-                // again after the upsert, but the upsert flips
-                // `hasRefreshToken` away from the placeholder signature
-                // so that check was guaranteed to return false (and the
-                // cleanup silently skipped).
-                const stillOurs = await recordStillOurs()
-                if (movedToKeyring && stillOurs) {
-                    await userRecords.upsert({ account, hasRefreshToken: false })
-                } else if (movedToKeyring) {
-                    // V2 login took over after our setSecret. Only roll
-                    // the keyring write back when the slot still contains
-                    // OUR legacy token — a blind delete would otherwise
-                    // remove v2's credential (their setSecret may have
-                    // run after ours), leaving the v2 record permanently
-                    // unreadable.
-                    try {
-                        const current = (await accessStore.getSecret())?.trim()
-                        if (current === legacyTokenStr) {
-                            await accessStore.deleteSecret().catch(() => undefined)
-                        }
-                    } catch {
-                        // best-effort: if we can't read the slot, don't
-                        // risk a destructive delete.
-                    }
-                }
-                if (stillOurs) {
-                    // Best-effort cleanup of any stale refresh secret
-                    // (legacy single-user state never had one, but a
-                    // hand-edit might). Skipped when v2 owns the record.
-                    await refreshStore.deleteSecret().catch(() => undefined)
-                }
-            }
+            // `false` means a v2 record already exists for this account
+            // — leave it alone (it may carry refresh + expiry that the
+            // legacy token has no authority over).
+            await userRecords.tryInsert(record)
         } else {
-            const existing = findById(await userRecords.list(), account.id)
-            if (!existing) {
-                await writeRecordWithKeyringFallback({
-                    secureStore: accessStore,
-                    refreshSecureStore: refreshStore,
-                    userRecords,
-                    account,
-                    bundle: { accessToken: legacyToken.token },
-                    // The list-then-write fallback can still race with a
-                    // parallel v2 login that writes a refresh secret
-                    // between our `list()` and the helper's `upsert`.
-                    // `purgeRefreshSlot: false` keeps the refresh slot
-                    // untouched and persists `hasRefreshToken: undefined`
-                    // ("unknown" — readers probe the slot) so a v2
-                    // refresh secret written mid-race remains visible.
-                    purgeRefreshSlot: false,
-                })
+            if (!findById(await userRecords.list(), account.id)) {
+                await userRecords.upsert(record)
             }
         }
     } catch (error) {

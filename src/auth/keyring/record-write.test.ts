@@ -133,11 +133,14 @@ describe('writeRecordWithKeyringFallback', () => {
         expect(state.records.size).toBe(0)
     })
 
-    it('treats a refresh-slot delete failure on a no-refresh bundle as a write failure (no resurrection)', async () => {
-        // Without this rollback, a stale refresh secret from an earlier
-        // login would survive a re-login that didn't return one, and
-        // `active()` would later surface it. Belt-and-braces: roll back
-        // access too so the on-disk and in-keyring state stay aligned.
+    it('tolerates a post-upsert refresh-slot delete failure (best-effort, no rollback)', async () => {
+        // The post-upsert refresh-slot purge for no-refresh bundles is
+        // best-effort: with `hasRefreshToken: false` on the upserted
+        // record, `active()` skips the slot read entirely, so a stale
+        // secret in the slot can't shadow anything. Crucially, the
+        // delete happens AFTER the upsert commits, so a failed delete
+        // can never destroy a refresh secret the caller might want to
+        // recover with on retry (the round-9 P1 we used to have).
         const secureStore = buildSingleSlot()
         const refreshSecureStore = buildSingleSlot()
         refreshSecureStore.deleteSpy.mockRejectedValueOnce(
@@ -153,10 +156,13 @@ describe('writeRecordWithKeyringFallback', () => {
             bundle: { accessToken: 'at_only' },
         })
 
-        // Fell through to fallback because the refresh-slot delete failed.
-        expect(result.storedSecurely).toBe(false)
-        expect(secureStore.deleteSpy).toHaveBeenCalledTimes(1)
-        expect(state.records.get('42')?.fallbackToken).toBe('at_only')
+        // Record write succeeded — failed cleanup doesn't roll back.
+        expect(result.storedSecurely).toBe(true)
+        // Access slot not rolled back.
+        expect(secureStore.deleteSpy).not.toHaveBeenCalled()
+        // Record persists keyring-backed shape with hasRefreshToken:
+        // false (readers skip the slot).
+        expect(state.records.get('42')?.fallbackToken).toBeUndefined()
         expect(state.records.get('42')?.hasRefreshToken).toBe(false)
     })
 

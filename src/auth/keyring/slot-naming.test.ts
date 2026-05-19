@@ -3,14 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { refreshAccountSlot } from './slot-naming.js'
 
 describe('refreshAccountSlot', () => {
-    it('derives a per-access-slot refresh slot name that includes the access slot', () => {
-        // The contract: the returned slot name is a function of the
-        // access slot name AND uniquely identifies the refresh slot for
-        // it. We don't pin the exact suffix here — the wire format is
-        // free to change as long as the property holds.
-        const result = refreshAccountSlot('user-42')
-        expect(result).toContain('user-42')
-        expect(result).not.toBe('user-42')
+    it('pins the literal wire format `<accessSlot>/refresh`', () => {
+        // The suffix is persisted state in the OS keyring: a rename
+        // (e.g. `/refresh` → `:refresh`) would orphan every existing
+        // user's refresh secret because their record would still point
+        // at the old slot. Pin the exact format here so an unintended
+        // change loudly breaks this test instead of silently breaking
+        // upgraders. Intentional renames require a migration plan AND
+        // updating this assertion.
+        expect(refreshAccountSlot('user-42')).toBe('user-42/refresh')
     })
 
     it('is deterministic — same access slot maps to the same refresh slot', () => {
