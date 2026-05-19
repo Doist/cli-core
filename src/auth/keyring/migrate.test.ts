@@ -1,9 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { buildKeyringMap, buildUserRecords } from '../../test-support/keyring-mocks.js'
+import {
+    buildKeyringMap,
+    buildUserRecords,
+    type UserRecordsHarness,
+} from '../../test-support/keyring-mocks.js'
 import { migrateLegacyAuth, type MigrateLegacyAuthOptions } from './migrate.js'
 import { SecureStoreUnavailableError } from './secure-store.js'
 import type { UserRecord } from './types.js'
+
+/**
+ * Stub `tryInsert` for a harness so that successful inserts actually land
+ * in the harness state — the migration's ownership-check re-reads need to
+ * see the placeholder. Returns the spy so tests can assert call args and
+ * (optionally) that the legacy fallback `list()` path was avoided.
+ */
+function stubTryInsert(
+    harness: UserRecordsHarness<Account>,
+): ReturnType<typeof vi.fn<(record: UserRecord<Account>) => Promise<boolean>>> {
+    const spy = vi.fn(async (record: UserRecord<Account>) => {
+        if (harness.state.records.has(record.account.id)) return false
+        harness.state.records.set(record.account.id, record)
+        return true
+    })
+    harness.store.tryInsert = spy
+    return spy
+}
 
 vi.mock('./secure-store.js', async () => {
     const actual = await vi.importActual<typeof import('./secure-store.js')>('./secure-store.js')
@@ -354,14 +376,9 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         // calls and we'd clobber it. With `tryInsert`, the consumer
         // commits to an atomic check-and-insert and we trust their answer.
         const harness = buildUserRecords<Account>()
-        // Stub tryInsert that ALSO actually inserts into the harness so
-        // the migration's ownership-check re-reads see the placeholder.
-        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
-            if (harness.state.records.has(record.account.id)) return false
-            harness.state.records.set(record.account.id, record)
-            return true
-        })
-        harness.store.tryInsert = tryInsert
+        const tryInsert = stubTryInsert(harness)
+        // Spy on `list()` to assert the racy fallback path was avoided.
+        const listSpy = vi.spyOn(harness.store, 'list')
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })
         mockedCreateSecureStore.mockImplementation(km.create)
@@ -394,6 +411,13 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         // Follow-up upsert flipped hasRefreshToken to false (so future
         // active() reads skip the refresh-slot IPC).
         expect(harness.state.records.get('1')?.hasRefreshToken).toBe(false)
+        // Crucially, the racy `list()`-then-check existence path is
+        // bypassed entirely when `tryInsert` is available — only the
+        // ownership-check re-reads call `list()`, not the initial
+        // existence check.
+        const listCalls = listSpy.mock.calls.length
+        expect(listCalls).toBeGreaterThan(0) // re-reads happen
+        expect(tryInsert).toHaveBeenCalledTimes(1) // proves the atomic path ran
     })
 
     it('keeps the plaintext fallback on the record when tryInsert succeeds but setSecret hits a keyring-offline error', async () => {
@@ -405,13 +429,8 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         // `tryInsert: false` (record exists) and the CLI would surface
         // AUTH_STORE_READ_FAILED forever.
         const harness = buildUserRecords<Account>()
-        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
-            if (harness.state.records.has(record.account.id)) return false
-            harness.state.records.set(record.account.id, record)
-            return true
-        })
+        const tryInsert = stubTryInsert(harness)
         const upsertSpy = vi.fn(async (_record: UserRecord<Account>) => {})
-        harness.store.tryInsert = tryInsert
         // Intercept upsert too so we can verify it isn't called to clear
         // the fallback (would happen on success).
         const originalUpsert = harness.store.upsert
@@ -511,12 +530,7 @@ describe('migrateLegacyAuth — stderr privacy', () => {
         // The rollback must check the slot still contains OUR token
         // before deleting.
         const harness = buildUserRecords<Account>()
-        const tryInsert = vi.fn(async (record: UserRecord<Account>) => {
-            if (harness.state.records.has(record.account.id)) return false
-            harness.state.records.set(record.account.id, record)
-            return true
-        })
-        harness.store.tryInsert = tryInsert
+        stubTryInsert(harness)
         const km = buildKeyringMap()
         km.slots.set(LEGACY, { secret: 'legacy_tok' })
         mockedCreateSecureStore.mockImplementation(km.create)

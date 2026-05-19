@@ -1,6 +1,7 @@
 import { CliError } from '../../errors.js'
 import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
+import { findById } from './internal.js'
 import { writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
@@ -204,19 +205,23 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
         const refreshToken = rawRefresh?.trim() || undefined
 
-        // Backfill `hasRefreshToken: false` best-effort when we probed the
-        // refresh slot (record said `undefined` — "unknown") and found
-        // nothing. Pre-PR records didn't have this field; without the
-        // backfill they'd pay an extra keyring IPC per `active()` call
-        // forever. Doing it on a read isn't strictly race-safe — a
-        // concurrent `setBundle` could be writing a fresh refresh secret
-        // at the same instant — but for an account whose record says
-        // "no refresh yet known", such concurrency is vanishingly rare
-        // (login is foreground; silent refresh requires an already-stored
-        // refresh token). Failures here are swallowed: the worst case is
-        // the next `active()` pays the same extra IPC and tries again.
-        if (record.hasRefreshToken === undefined && refreshToken === undefined) {
-            void userRecords.upsert({ ...record, hasRefreshToken: false }).catch(() => undefined)
+        // Backfill `hasRefreshToken` best-effort when we probed the refresh
+        // slot (record said `undefined` — "unknown") and now know whether
+        // a secret is there. Pre-PR records didn't carry this bit; without
+        // the backfill they'd pay an extra keyring IPC per `active()`
+        // call forever (when the slot is empty) or get the right answer
+        // by luck of probing it every time (when populated).
+        //
+        // The upsert is `replace, not merge` per the contract, so spreading
+        // `record` (a stale snapshot from the earlier `list()`) would risk
+        // overwriting a concurrent `setBundle`'s richer record. Re-read
+        // inside the backfill helper, then compare the freshly-read shape
+        // against the snapshot we made the read decision on: only flip the
+        // bit when the record is STILL the "undefined" placeholder we
+        // just probed. Anything else (a v2 login landed, the user logged
+        // out, …) means our state is stale and we leave it alone.
+        if (record.hasRefreshToken === undefined) {
+            void backfillHasRefreshToken(record, refreshToken !== undefined).catch(() => undefined)
         }
 
         return {
@@ -230,6 +235,34 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     /** Snapshot for a ref-only resolve path; skips the `getDefaultId` read. */
     function refOnlySnapshot(records: UserRecord<TAccount>[]): Snapshot {
         return { records, defaultId: null }
+    }
+
+    /**
+     * Re-read the record before backfilling `hasRefreshToken` so the
+     * upsert can't clobber a concurrent `setBundle`'s richer state
+     * (`UserRecordStore.upsert` is replace-not-merge per the contract).
+     * Only writes when the record still matches the placeholder shape
+     * we made the backfill decision on — same fields, same `undefined`
+     * `hasRefreshToken`, same fallbacks. Any divergence means a
+     * concurrent write landed between our `list()` read and now, and
+     * the right thing is to leave the fresh state alone.
+     */
+    async function backfillHasRefreshToken(
+        staleRecord: UserRecord<TAccount>,
+        present: boolean,
+    ): Promise<void> {
+        const fresh = findById(await userRecords.list(), staleRecord.account.id)
+        if (!fresh) return
+        if (
+            fresh.hasRefreshToken !== undefined ||
+            fresh.fallbackToken !== staleRecord.fallbackToken ||
+            fresh.fallbackRefreshToken !== staleRecord.fallbackRefreshToken ||
+            fresh.accessTokenExpiresAt !== staleRecord.accessTokenExpiresAt ||
+            fresh.refreshTokenExpiresAt !== staleRecord.refreshTokenExpiresAt
+        ) {
+            return
+        }
+        await userRecords.upsert({ ...fresh, hasRefreshToken: present })
     }
 
     /**

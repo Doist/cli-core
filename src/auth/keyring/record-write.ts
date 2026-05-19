@@ -1,4 +1,5 @@
 import type { AuthAccount, TokenBundle } from '../types.js'
+import { trySetSecret } from './internal.js'
 import { type SecureStore, SecureStoreUnavailableError } from './secure-store.js'
 import type { UserRecord, UserRecordStore } from './types.js'
 
@@ -81,13 +82,7 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
         if (!(error instanceof SecureStoreUnavailableError)) throw error
     }
 
-    let storedSecurely = false
-    try {
-        await secureStore.setSecret(trimmedAccess)
-        storedSecurely = true
-    } catch (error) {
-        if (!(error instanceof SecureStoreUnavailableError)) throw error
-    }
+    let storedSecurely = await trySetSecret(secureStore, trimmedAccess)
 
     let wroteRefreshSecurely = false
     if (storedSecurely) {

@@ -211,6 +211,80 @@ describe('createKeyringTokenStore', () => {
         await expect(store.active()).rejects.toThrow(/boom/)
     })
 
+    it('promotes hasRefreshToken: undefined → true when the refresh slot is populated', async () => {
+        // Symmetric backfill to the `→ false` path. Pre-PR records have
+        // `hasRefreshToken: undefined`; without this promotion they'd
+        // keep probing the slot every active() call even after the slot
+        // is confirmed populated. The `true` write is just as race-aware
+        // as the `false` one (re-read + signature check inside the
+        // helper).
+        const refreshKeyring = buildSingleSlot({ secret: 'rt_in_slot' })
+        const { store, state, upsertSpy } = fixture({
+            keyring: buildSingleSlot({ secret: 'at-old' }),
+            refreshKeyring,
+            records: { '42': { account } }, // hasRefreshToken: undefined
+            defaultId: '42',
+        })
+
+        const snapshot = await store.active()
+        expect(snapshot?.bundle?.refreshToken).toBe('rt_in_slot')
+
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(upsertSpy).toHaveBeenCalled()
+        expect(state.records.get('42')?.hasRefreshToken).toBe(true)
+    })
+
+    it('skips the backfill when a concurrent write changed the record between list() and upsert', async () => {
+        // The backfill is `replace, not merge` (contract), so it must
+        // detect when the record it's about to flip has been replaced by
+        // a richer write (e.g. a parallel `setBundle`). A naive
+        // `upsert({ ...staleRecord, hasRefreshToken: false })` would
+        // clobber the concurrent write's expiry / refresh-token
+        // metadata. The helper re-reads inside the upsert and compares
+        // signatures; on mismatch it bails.
+        const harness = buildUserRecords<Account>()
+        harness.state.records.set('42', { account }) // initial undefined record
+        const realList = harness.store.list.bind(harness.store)
+        // After active()'s first list(), the next list() (inside the
+        // backfill) sees a richer concurrent write — simulate by
+        // mutating the harness state.
+        let listCalls = 0
+        harness.store.list = async () => {
+            listCalls += 1
+            if (listCalls === 2) {
+                // Concurrent setBundle landed: full bundle written.
+                harness.state.records.set('42', {
+                    account,
+                    hasRefreshToken: true,
+                    accessTokenExpiresAt: 999,
+                })
+            }
+            return realList()
+        }
+
+        const refreshKeyring = buildSingleSlot()
+        mockedCreateSecureStore.mockImplementation(({ account: slot }) =>
+            slot.endsWith(refreshAccountSlot(''))
+                ? refreshKeyring
+                : buildSingleSlot({ secret: 'at' }),
+        )
+        const store = createKeyringTokenStore<Account>({
+            serviceName: SERVICE,
+            userRecords: harness.store,
+            recordsLocation: LOCATION,
+        })
+
+        await store.active()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        // Concurrent write survives: hasRefreshToken stays true, expiry
+        // is preserved. Without the re-read guard, our backfill would
+        // have stomped these to `false`/`undefined`.
+        expect(harness.state.records.get('42')?.hasRefreshToken).toBe(true)
+        expect(harness.state.records.get('42')?.accessTokenExpiresAt).toBe(999)
+    })
+
     it('backfills hasRefreshToken: false on the record when undefined and the refresh slot is empty', async () => {
         // Pre-PR keyring-backed records have `hasRefreshToken: undefined`
         // because the field didn't exist. Treating undefined as "try the

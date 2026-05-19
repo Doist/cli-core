@@ -102,7 +102,7 @@ export function buildSingleSlot(initial: { secret?: string | null } = {}): Singl
     }
 }
 
-type UserRecordsHarness<TAccount extends AuthAccount> = {
+export type UserRecordsHarness<TAccount extends AuthAccount> = {
     store: UserRecordStore<TAccount>
     state: {
         records: Map<string, UserRecord<TAccount>>

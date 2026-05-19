@@ -1,5 +1,6 @@
 import { getErrorMessage } from '../../errors.js'
 import type { AuthAccount } from '../types.js'
+import { findById, trySetSecret } from './internal.js'
 import { writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
@@ -208,7 +209,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
                 hasRefreshToken: undefined,
             }
             async function recordStillOurs(): Promise<boolean> {
-                const current = (await userRecords.list()).find((r) => r.account.id === account.id)
+                const current = findById(await userRecords.list(), account.id)
                 return (
                     current?.fallbackToken === legacyTokenStr &&
                     current?.hasRefreshToken === undefined
@@ -216,14 +217,11 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
             }
             const inserted = await userRecords.tryInsert(placeholder)
             if (inserted && (await recordStillOurs())) {
-                let movedToKeyring = false
-                try {
-                    await accessStore.setSecret(legacyTokenStr)
-                    movedToKeyring = true
-                } catch (error) {
-                    if (!(error instanceof SecureStoreUnavailableError)) throw error
-                    // Keyring offline — keep the plaintext fallback.
-                }
+                // Shared keyring-online/offline policy with
+                // `writeRecordWithKeyringFallback`: only the documented
+                // `SecureStoreUnavailableError` downgrades to "keep the
+                // plaintext fallback"; everything else propagates.
+                const movedToKeyring = await trySetSecret(accessStore, legacyTokenStr)
                 // One ownership re-read after the keyring write; cache the
                 // result so the follow-up upsert AND the refresh-slot
                 // cleanup share the same answer. The earlier code re-read
@@ -259,7 +257,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
                 }
             }
         } else {
-            const existing = (await userRecords.list()).find((r) => r.account.id === account.id)
+            const existing = findById(await userRecords.list(), account.id)
             if (!existing) {
                 await writeRecordWithKeyringFallback({
                     secureStore: accessStore,
