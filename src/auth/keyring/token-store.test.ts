@@ -506,6 +506,60 @@ describe('createKeyringTokenStore', () => {
             expect(state.records.get('42')?.hasRefreshToken).toBe(false)
         })
 
+        it('activeBundle round-trips the persisted bundle (account + access + refresh + expiry)', async () => {
+            const { km, store } = mapFixture()
+            await store.setBundle(account, bundle, { promoteDefault: true })
+
+            const snapshot = await store.activeBundle()
+            expect(snapshot).toEqual({
+                account,
+                bundle: {
+                    accessToken: 'tok_a',
+                    refreshToken: 'tok_r',
+                    accessTokenExpiresAt: 1_700_000_000_000,
+                },
+            })
+            // Sanity: both slots read, refresh slot was actually populated.
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBe('tok_r')
+        })
+
+        it('activeBundle skips the refresh-slot IPC when hasRefreshToken is false', async () => {
+            const { km, store } = mapFixture({
+                '42': { account, hasRefreshToken: false },
+            })
+            km.slots.set('user-42', { secret: 'tok_a' })
+
+            const snapshot = await store.activeBundle()
+            expect(snapshot?.bundle).toEqual({ accessToken: 'tok_a' })
+            // Refresh slot must not have been read (no IPC).
+            expect(km.getCalls.get(refreshAccountSlot('user-42'))).toBeUndefined()
+        })
+
+        it('activeBundle returns a refresh-less bundle when the refresh slot is unavailable', async () => {
+            // Legacy record (no hasRefreshToken gate) where the refresh slot
+            // is offline (SecureStoreUnavailableError). The bundle returns
+            // without refreshToken; the silent-refresh helper translates
+            // that to AUTH_REFRESH_UNAVAILABLE.
+            const km = buildKeyringMap()
+            mockedCreateSecureStore.mockImplementation(km.create)
+            const harness = buildUserRecords<Account>()
+            harness.state.records.set('42', { account })
+            km.slots.set('user-42', { secret: 'tok_a' })
+            km.slots.set(refreshAccountSlot('user-42'), {
+                secret: null,
+                getErr: new SecureStoreUnavailableError('locked'),
+            })
+
+            const store = createKeyringTokenStore<Account>({
+                serviceName: SERVICE,
+                userRecords: harness.store,
+                recordsLocation: LOCATION,
+            })
+
+            const snapshot = await store.activeBundle()
+            expect(snapshot?.bundle).toEqual({ accessToken: 'tok_a' })
+        })
+
         it('clear() wipes both keyring slots', async () => {
             const { km, store, state } = mapFixture({
                 '42': { account, hasRefreshToken: true },

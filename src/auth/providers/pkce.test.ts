@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createPkceProvider } from './pkce.js'
 
@@ -143,5 +143,109 @@ describe('createPkceProvider', () => {
                 handshake: {},
             }),
         ).rejects.toMatchObject({ code: 'AUTH_TOKEN_EXCHANGE_FAILED' })
+    })
+})
+
+// `oauth4webapi` is lazy-imported by provider.refreshToken and uses the
+// global `fetch`. Each refresh test stubs `globalThis.fetch` to drive the
+// request; real `oauth4webapi` enforces https for the token endpoint, so
+// all URLs below use https.
+describe('createPkceProvider.refreshToken', () => {
+    const tokenUrl = 'https://example.com/oauth/token'
+
+    function refreshProvider() {
+        return createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl,
+            clientId: 'client-xyz',
+            validate,
+        })
+    }
+
+    function stubFetch(impl: typeof fetch): ReturnType<typeof vi.spyOn> {
+        return vi.spyOn(globalThis, 'fetch').mockImplementation(impl)
+    }
+
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    it('POSTs the refresh grant and returns the rotated bundle (no client_secret)', async () => {
+        let captured: { url: string; body: string } | undefined
+        stubFetch((async (input: RequestInfo | URL, init: RequestInit = {}) => {
+            captured = { url: String(input), body: String(init.body ?? '') }
+            return new Response(
+                JSON.stringify({
+                    access_token: 'tok-new',
+                    refresh_token: 'r-new',
+                    expires_in: 3600,
+                    token_type: 'bearer',
+                }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } },
+            )
+        }) as typeof fetch)
+
+        const result = await refreshProvider().refreshToken!({
+            refreshToken: 'r-old',
+            handshake: {},
+        })
+
+        expect(result.accessToken).toBe('tok-new')
+        expect(result.refreshToken).toBe('r-new')
+        expect(result.expiresAt).toBeGreaterThan(Date.now())
+        expect(captured?.url).toBe(tokenUrl)
+        const body = new URLSearchParams(captured!.body)
+        expect(body.get('grant_type')).toBe('refresh_token')
+        expect(body.get('refresh_token')).toBe('r-old')
+        expect(body.get('client_id')).toBe('client-xyz')
+        expect(body.has('client_secret')).toBe(false)
+    })
+
+    it.each([
+        ['400', 400],
+        ['401 (reverse-proxy remap)', 401],
+    ])('maps invalid_grant %s to AUTH_REFRESH_EXPIRED', async (_label, status) => {
+        stubFetch(
+            (async () =>
+                new Response(JSON.stringify({ error: 'invalid_grant' }), {
+                    status,
+                    headers: { 'Content-Type': 'application/json' },
+                })) as typeof fetch,
+        )
+
+        await expect(
+            refreshProvider().refreshToken!({ refreshToken: 'r-old', handshake: {} }),
+        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
+    })
+
+    it.each([
+        [
+            '500',
+            async () =>
+                new Response(JSON.stringify({ error: 'server_error' }), {
+                    status: 500,
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+        ],
+        [
+            'non-JSON 2xx',
+            async () =>
+                new Response('<html>oops</html>', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/html' },
+                }),
+        ],
+        [
+            'network failure',
+            async () => {
+                throw new Error('connection reset')
+            },
+        ],
+    ])('maps %s to AUTH_REFRESH_TRANSIENT', async (_label, impl) => {
+        stubFetch(impl as typeof fetch)
+
+        await expect(
+            refreshProvider().refreshToken!({ refreshToken: 'r-old', handshake: {} }),
+        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_TRANSIENT' })
     })
 })

@@ -2,8 +2,27 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
-import type { AuthAccount, TokenStore } from './types.js'
+import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
+
+/**
+ * Opportunistic bundle read for `fetchLive`. Stores that don't implement
+ * `activeBundle` get `undefined`; any error during the bundle read is
+ * swallowed so a refresh-slot fault can't break the status command, which
+ * is the user's first port of call when something is wrong.
+ */
+async function readBundleBestEffort<TAccount extends AuthAccount>(
+    store: TokenStore<TAccount>,
+    ref: AccountRef | undefined,
+): Promise<TokenBundle | undefined> {
+    if (!store.activeBundle) return undefined
+    try {
+        const snapshot = await store.activeBundle(ref)
+        return snapshot?.bundle
+    } catch {
+        return undefined
+    }
+}
 
 export type AttachStatusContext<TAccount extends AuthAccount> = {
     account: TAccount
@@ -25,6 +44,12 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
     fetchLive?(ctx: {
         account: TAccount
         token: string
+        /**
+         * Full bundle when the store implements `activeBundle` — lets a
+         * consumer render expiry without a second read. Absent when the
+         * store only exposes `active()` (no refresh-side metadata available).
+         */
+        bundle?: TokenBundle
         /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
         view: Required<ViewOptions>
         flags: Record<string, unknown>
@@ -80,10 +105,14 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
             }
             throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
         }
+        const bundle = options.fetchLive
+            ? await readBundleBestEffort(options.store, ref)
+            : undefined
         const account = options.fetchLive
             ? await options.fetchLive({
                   account: snapshot.account,
                   token: snapshot.token,
+                  ...(bundle ? { bundle } : {}),
                   view,
                   flags,
               })

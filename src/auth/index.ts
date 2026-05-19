@@ -20,12 +20,15 @@ export {
     generateVerifier,
 } from './pkce.js'
 export type { GenerateVerifierOptions } from './pkce.js'
-export { persistBundle } from './persist.js'
+export { bundleFromExchange, persistBundle } from './persist.js'
 export type { PersistBundleOptions } from './persist.js'
 export { createPkceProvider } from './providers/pkce.js'
 export type { PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
+export { refreshAccessToken } from './refresh.js'
+export type { RefreshAccessTokenOptions, RefreshAccessTokenResult } from './refresh.js'
 export type {
     AccountRef,
+    ActiveBundleSnapshot,
     AuthAccount,
     AuthorizeInput,
     AuthorizeResult,

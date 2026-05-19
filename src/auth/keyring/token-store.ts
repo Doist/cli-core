@@ -1,7 +1,13 @@
 import { CliError } from '../../errors.js'
-import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from '../types.js'
+import type {
+    AccountRef,
+    ActiveBundleSnapshot,
+    AuthAccount,
+    TokenBundle,
+    TokenStore,
+} from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
-import { readAccessTokenForRecord } from './internal.js'
+import { readAccessTokenForRecord, readRefreshTokenForRecord } from './internal.js'
 import { writeBundleWithKeyringFallback, writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
@@ -47,6 +53,12 @@ export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccoun
         bundle: TokenBundle,
         options?: { promoteDefault?: boolean },
     ): Promise<void>
+    /**
+     * Override `activeBundle` as required (not optional) — the keyring store
+     * always knows how to read refresh state. Lets cli-core helpers
+     * (`refreshAccessToken`) call it without a non-null assertion.
+     */
+    activeBundle(ref?: AccountRef): Promise<ActiveBundleSnapshot<TAccount> | null>
     /** Storage result from the most recent `set()` / `setBundle()` call, or `undefined` before any (and reset to `undefined` when the most recent write threw). */
     getLastStorageResult(): TokenStorageResult | undefined
     /** Storage result from the most recent `clear()` call, or `undefined` before any (and reset to `undefined` when the most recent `clear()` threw or was a no-op). */
@@ -233,6 +245,54 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                       ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${outcome.detail})`
                       : `Access-slot read failed (${outcome.detail})`
             throw new CliError('AUTH_STORE_READ_FAILED', message)
+        },
+
+        async activeBundle(ref) {
+            const snapshot: Snapshot =
+                ref === undefined
+                    ? await readFullSnapshot()
+                    : { records: await userRecords.list(), defaultId: null }
+            const record = resolveTarget(snapshot, ref)
+            if (!record) return null
+
+            // Read both slots in parallel. The refresh side honours the
+            // `hasRefreshToken: false` gate inside `readRefreshTokenForRecord`,
+            // so an access-only record short-circuits without a refresh-slot
+            // IPC. Access-slot failures map to the same typed error as
+            // `active()`; a refresh-slot failure degrades silently — the
+            // bundle returns without `refreshToken` and the silent-refresh
+            // helper translates that to `AUTH_REFRESH_UNAVAILABLE`.
+            const [accessOutcome, refreshOutcome] = await Promise.all([
+                readAccessTokenForRecord(record, secureStoreFor(record.account)),
+                readRefreshTokenForRecord(record, refreshSecureStoreFor(record.account)),
+            ])
+            if (!accessOutcome.ok) {
+                const message =
+                    accessOutcome.reason === 'slot-empty'
+                        ? `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`
+                        : accessOutcome.reason === 'slot-unavailable'
+                          ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${accessOutcome.detail})`
+                          : `Access-slot read failed (${accessOutcome.detail})`
+                throw new CliError('AUTH_STORE_READ_FAILED', message)
+            }
+            if (refreshOutcome.ok === false && refreshOutcome.reason === 'slot-error') {
+                throw new CliError(
+                    'AUTH_STORE_READ_FAILED',
+                    `Refresh-slot read failed (${refreshOutcome.detail})`,
+                )
+            }
+
+            const bundle: TokenBundle = {
+                accessToken: accessOutcome.token,
+                ...(refreshOutcome.ok ? { refreshToken: refreshOutcome.token } : {}),
+                ...(record.accessTokenExpiresAt !== undefined
+                    ? { accessTokenExpiresAt: record.accessTokenExpiresAt }
+                    : {}),
+                ...(record.refreshTokenExpiresAt !== undefined
+                    ? { refreshTokenExpiresAt: record.refreshTokenExpiresAt }
+                    : {}),
+            }
+            return { account: record.account, bundle }
         },
 
         async set(account, token) {

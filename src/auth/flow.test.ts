@@ -22,7 +22,7 @@ import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import openBrowserModule from 'open'
 import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
-import type { AuthProvider, TokenStore } from './types.js'
+import type { AuthProvider, TokenBundle, TokenStore } from './types.js'
 
 type Account = { id: string; label?: string; email: string }
 
@@ -358,6 +358,87 @@ describe('runOAuthFlow', () => {
         expect(onAuthorizeUrl).toHaveBeenCalledTimes(1)
         expect(onAuthorizeUrl.mock.calls[0][0]).toMatch(/^https:\/\/example\.com\/oauth\/authorize/)
         expect(result.token).toBe('tok-1')
+    })
+
+    it('persists the full bundle via setBundle when the store implements it (promoteDefault: true)', async () => {
+        const setBundle = vi.fn(
+            async (
+                _account: Account,
+                _bundle: TokenBundle,
+                _options?: { promoteDefault?: boolean },
+            ) => undefined,
+        )
+        const set = vi.fn(async () => undefined)
+        const store: TokenStore<Account> = {
+            async active() {
+                return null
+            },
+            set,
+            setBundle,
+            async clear() {},
+            async list() {
+                return []
+            },
+            async setDefault() {},
+        }
+        const { provider, getRedirect } = instrument({
+            exchangeCode: async () => ({
+                accessToken: 'tok-1',
+                refreshToken: 'r-1',
+                expiresAt: 1_700_000_000_000,
+                refreshTokenExpiresAt: 1_800_000_000_000,
+            }),
+        })
+
+        await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: driveCallback(getRedirect),
+                onAuthorizeUrl: () => undefined,
+            }),
+        )
+
+        expect(set).not.toHaveBeenCalled()
+        expect(setBundle).toHaveBeenCalledTimes(1)
+        const [, persistedBundle, opts] = setBundle.mock.calls[0]
+        expect(persistedBundle).toEqual({
+            accessToken: 'tok-1',
+            refreshToken: 'r-1',
+            accessTokenExpiresAt: 1_700_000_000_000,
+            refreshTokenExpiresAt: 1_800_000_000_000,
+        })
+        expect(opts).toEqual({ promoteDefault: true })
+    })
+
+    it('falls back to set(accessToken) when the store does not implement setBundle (refresh state dropped)', async () => {
+        const set = vi.fn(async () => undefined)
+        const store: TokenStore<Account> = {
+            async active() {
+                return null
+            },
+            set,
+            async clear() {},
+            async list() {
+                return []
+            },
+            async setDefault() {},
+        }
+        const { provider, getRedirect } = instrument({
+            exchangeCode: async () => ({ accessToken: 'tok-1', refreshToken: 'r-1' }),
+        })
+
+        const result = await runOAuthFlow<Account>(
+            flowOptions({
+                provider,
+                store,
+                openBrowser: driveCallback(getRedirect),
+                onAuthorizeUrl: () => undefined,
+            }),
+        )
+
+        expect(result.token).toBe('tok-1')
+        expect(set).toHaveBeenCalledWith(expect.objectContaining({ id: '1' }), 'tok-1')
     })
 
     it('wraps non-CliError store.set failures in AUTH_STORE_WRITE_FAILED', async () => {

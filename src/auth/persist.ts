@@ -1,5 +1,5 @@
 import { CliError, getErrorMessage } from '../errors.js'
-import type { AuthAccount, TokenBundle, TokenStore } from './types.js'
+import type { AuthAccount, ExchangeResult, TokenBundle, TokenStore } from './types.js'
 
 export type PersistBundleOptions<TAccount extends AuthAccount> = {
     store: TokenStore<TAccount>
@@ -22,6 +22,30 @@ export type PersistBundleOptions<TAccount extends AuthAccount> = {
  * silent-refresh-safe selection (no re-pinning on background rotation)
  * MUST implement `setBundle`.
  */
+/**
+ * Build a `TokenBundle` from an `ExchangeResult`. `prev` carries forward
+ * any refresh-side state the server omitted from the response — most
+ * servers don't reissue the refresh token on a refresh-grant, and few
+ * include `refresh_token_expires_in`, so the previous values stay
+ * authoritative until the server sends an explicit replacement.
+ */
+export function bundleFromExchange<TAccount extends AuthAccount>(
+    exchange: ExchangeResult<TAccount>,
+    prev?: TokenBundle,
+): TokenBundle {
+    const refreshToken = exchange.refreshToken ?? prev?.refreshToken
+    return {
+        accessToken: exchange.accessToken,
+        ...(refreshToken !== undefined ? { refreshToken } : {}),
+        ...(exchange.expiresAt !== undefined ? { accessTokenExpiresAt: exchange.expiresAt } : {}),
+        ...(exchange.refreshTokenExpiresAt !== undefined
+            ? { refreshTokenExpiresAt: exchange.refreshTokenExpiresAt }
+            : prev?.refreshTokenExpiresAt !== undefined
+              ? { refreshTokenExpiresAt: prev.refreshTokenExpiresAt }
+              : {}),
+    }
+}
+
 export async function persistBundle<TAccount extends AuthAccount>(
     options: PersistBundleOptions<TAccount>,
 ): Promise<void> {
