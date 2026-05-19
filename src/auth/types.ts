@@ -48,10 +48,7 @@ export type ExchangeResult<TAccount extends AuthAccount = AuthAccount> = {
     refreshToken?: string
     /** Access-token expiry, unix-epoch ms. */
     expiresAt?: number
-    /**
-     * Refresh-token expiry, unix-epoch ms. Most servers don't return one;
-     * the refresh helper carries the previous value forward when set.
-     */
+    /** Refresh-token expiry, unix-epoch ms. */
     refreshTokenExpiresAt?: number
     /** Set when the token endpoint already identifies the account; skips `validateToken`. */
     account?: TAccount
@@ -63,13 +60,9 @@ export type ValidateInput = {
     handshake: Record<string, unknown>
 }
 
-/**
- * Input to `AuthProvider.refreshToken`. Symmetric with `ExchangeInput` so
- * providers can share helpers; `handshake` is empty unless a future
- * orchestrator threads state through.
- */
 export type RefreshInput = {
     refreshToken: string
+    /** Same shape as `ExchangeInput.handshake` — empty when called outside `runOAuthFlow`. */
     handshake: Record<string, unknown>
 }
 
@@ -85,20 +78,11 @@ export type AuthProvider<TAccount extends AuthAccount = AuthAccount> = {
     exchangeCode(input: ExchangeInput): Promise<ExchangeResult<TAccount>>
     /** Skipped when `exchangeCode` already returned an `account`. */
     validateToken(input: ValidateInput): Promise<TAccount>
-    /**
-     * Optional: exchange a refresh token for a fresh bundle. Implemented by
-     * providers that target servers issuing refresh tokens (e.g. Outline).
-     * `refreshAccessToken` throws `AUTH_REFRESH_UNAVAILABLE` when this is
-     * absent or when the stored bundle carries no refresh token.
-     */
+    /** Optional: exchange a refresh token for a fresh bundle. */
     refreshToken?(input: RefreshInput): Promise<ExchangeResult<TAccount>>
 }
 
-/**
- * The shape `KeyringTokenStore` persists per account. Custom `TokenStore`
- * implementations that opt into refresh-token support return this from
- * `active()` and accept it on `setBundle`. All time fields are unix-epoch ms.
- */
+/** Access + optional refresh token + optional expiries (all unix-epoch ms). */
 export type TokenBundle = {
     accessToken: string
     refreshToken?: string
@@ -130,15 +114,11 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
     /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
     /**
-     * Persist a full bundle (access + optional refresh + optional expiries).
-     * Optional on the contract — custom consumer stores that never carry
-     * refresh tokens can leave this unimplemented and cli-core helpers fall
-     * back to `set(account, bundle.accessToken)`. `KeyringTokenStore`
-     * implements it as a required override.
-     *
-     * `promoteDefault` is true on first-login persistence (initial account
-     * gets pinned as default) and omitted on silent refresh paths so a
-     * background rotation can't mutate account selection.
+     * Persist a full bundle. Optional on the contract — stores that don't
+     * implement it get `bundle.accessToken` via `set()` instead (cli-core
+     * helpers handle the fallback). Pass `promoteDefault: true` on first
+     * login; omit on silent refresh so a background rotation can't re-pin
+     * account selection.
      */
     setBundle?(
         account: TAccount,

@@ -165,11 +165,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         }
     }
 
-    /**
-     * Resolve the access token for a record. Returns `null` when the record
-     * exists but the keyring slot is empty (corruption surfaced by the caller
-     * as `AUTH_STORE_READ_FAILED`).
-     */
+    /** Returns `null` on corruption (record exists, slot empty); caller throws `AUTH_STORE_READ_FAILED`. */
     async function readAccessToken(record: UserRecord<TAccount>): Promise<string | null> {
         const fallback = record.fallbackToken?.trim()
         if (fallback) return fallback
@@ -188,13 +184,10 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     }
 
     /**
-     * Resolve the refresh token for a record, honouring the `hasRefreshToken`
-     * gate. Returns `undefined` when no refresh token is stored. Downgrades
-     * `SecureStoreUnavailableError` on the refresh slot to "no refresh"
-     * (silent-refresh callers will re-prompt for login when the helper
-     * eventually fails). Any other read error propagates as
-     * `AUTH_STORE_READ_FAILED` — corruption shouldn't masquerade as "no
-     * refresh available".
+     * Honours the `hasRefreshToken` gate. `SecureStoreUnavailableError`
+     * downgrades to `undefined` (silent-refresh callers re-prompt); other
+     * errors propagate as `AUTH_STORE_READ_FAILED` — corruption shouldn't
+     * masquerade as "no refresh".
      */
     async function readRefreshToken(record: UserRecord<TAccount>): Promise<string | undefined> {
         if (record.hasRefreshToken === false) return undefined
@@ -216,11 +209,8 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         const token = raw?.trim()
         if (token) return token
 
-        // Legacy / migrated record (`hasRefreshToken === undefined`) probed
-        // the slot once and came back empty — backfill `false` so the next
-        // command skips the IPC. Best-effort; a concurrent setBundle is
-        // vanishingly unlikely (silent refresh requires a stored refresh
-        // token in the first place).
+        // Legacy record probed empty: backfill so the next command skips
+        // the IPC. Fire-and-forget; concurrent setBundle race is fine.
         if (record.hasRefreshToken === undefined) {
             void backfillNoRefresh(record).catch(() => undefined)
         }
@@ -267,12 +257,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             const record = resolveTarget(snapshot, ref)
             if (!record) return null
 
-            // Read access + refresh slots in parallel — they're independent
-            // IPC round-trips and serial reads doubled `active()` latency.
-            // Access read drives the error path; refresh-read errors are
-            // already collapsed (SecureStoreUnavailable → undefined) inside
-            // `readRefreshToken`, so the only thing that throws here is the
-            // access read or a non-keyring refresh-read failure.
+            // Parallel: serial reads doubled `active()` latency.
             const [accessToken, refreshToken] = await Promise.all([
                 readAccessToken(record),
                 readRefreshToken(record),
@@ -339,10 +324,8 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                     bundle,
                 })
 
-            // Default promotion is opt-in for `setBundle` — silent refresh
-            // paths omit `promoteDefault` so a background rotation can't
-            // re-pin account selection. Login passes `promoteDefault: true`
-            // to keep the first-account-wins behaviour `set()` has today.
+            // Opt-in: silent refresh omits `promoteDefault` so it can't
+            // re-pin selection; login passes `true` to match `set()`.
             if (options?.promoteDefault) {
                 try {
                     const existingDefault = await userRecords.getDefaultId()
@@ -354,13 +337,8 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 }
             }
 
-            // Storage result reflects the access slot since the access token
-            // is the primary user-visible credential; a refresh-slot
-            // fallback alone doesn't downgrade the warning text (we don't
-            // surface separate refresh-state warnings today). When the
-            // refresh slot fell back but access landed in the keyring, the
-            // record carries `fallbackRefreshToken` and the next read picks
-            // it up transparently.
+            // Either fallback warrants the warning — refresh-slot plaintext
+            // is just as security-relevant as access-slot plaintext.
             const fellBack = !accessStoredSecurely || refreshStoredSecurely === false
             lastStorageResult = fellBack
                 ? fallbackResult('token saved as plaintext in')
@@ -395,19 +373,10 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
 
             const fallbackClear = fallbackResult('local auth state cleared in')
 
-            // Always attempt both keyring deletes. Even when the record
-            // carried a `fallbackToken`, an older keyring entry may still be
-            // parked there from a prior keyring-online write that was later
-            // replaced by an offline-fallback write — skipping the delete
-            // would leak that orphan. Likewise, the refresh slot is wiped
-            // unconditionally so a previous bundle's refresh token can't
-            // resurface for a different user (slot names hash on the user
-            // id, but defensive-in-depth: a corrupted local state shouldn't
-            // leave any cleartext refresh material behind). Downgrade *any*
-            // failure to a warning: the record is already gone, so
-            // re-throwing would corrupt local state (caller sees an
-            // exception and assumes nothing was cleared, even though the
-            // next `account list` will show the user gone).
+            // Always attempt both deletes — a record's `fallbackToken`
+            // doesn't rule out an orphan keyring entry from a prior online
+            // write. Failures downgrade to a warning: the record is already
+            // gone, re-throwing would corrupt the caller's state.
             const [accessOutcome, refreshOutcome] = await Promise.allSettled([
                 secureStoreFor(record.account).deleteSecret(),
                 refreshSecureStoreFor(record.account).deleteSecret(),

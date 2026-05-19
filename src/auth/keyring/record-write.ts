@@ -67,10 +67,8 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
         if (!(error instanceof SecureStoreUnavailableError)) throw error
     }
 
-    // Mark the record as definitively having no refresh token. `set()` is
-    // the single-token path — no refresh state is ever associated with it,
-    // so the runtime's `active()` can skip the refresh-slot IPC instead of
-    // probing-then-backfilling on every legacy record's first read.
+    // Single-token path; assert no refresh state so `active()` skips the
+    // refresh-slot IPC instead of probing-then-backfilling.
     const record: UserRecord<TAccount> = storedSecurely
         ? { account, hasRefreshToken: false }
         : { account, fallbackToken: trimmed, hasRefreshToken: false }
@@ -92,25 +90,15 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
 }
 
 /**
- * Bundle-aware write. Mirrors `writeRecordWithKeyringFallback`'s order — keyring
- * first, record second — extended for two slots:
- *
- *   1. `accessStore.setSecret` (access slot). `SecureStoreUnavailableError`
- *      degrades to `fallbackToken`; any other error rethrows.
- *   2. `refreshStore.setSecret` when the bundle carries a refresh token.
- *      `SecureStoreUnavailableError` degrades to `fallbackRefreshToken`. Any
- *      other error rolls back the access slot (best-effort) before rethrowing
- *      — orphaning the access slot under a refresh-only failure would leave
- *      partial credentials behind.
- *   3. `refreshStore.deleteSecret` when the bundle has no refresh token.
- *      Clears any stale slot left from a prior bundle so the next read can't
- *      resurrect it. Best-effort.
- *   4. `userRecords.upsert(record)`. On failure, best-effort `Promise.allSettled`
- *      rollback of any keyring writes that succeeded so we never leak orphan
- *      credentials for a user the consumer never registered.
- *
- * Like the single-slot helper, default promotion is deliberately external —
- * preference, not correctness.
+ * Two-slot variant of `writeRecordWithKeyringFallback`. Order: access slot →
+ * refresh slot → upsert. `SecureStoreUnavailableError` on either slot degrades
+ * to the matching `fallback*Token` field. A non-keyring refresh-slot failure
+ * rolls back the access slot before rethrowing (no partial credentials). An
+ * upsert failure rolls back both slots via `Promise.allSettled` (no orphan
+ * credentials for an unregistered user). When the bundle has no refresh
+ * token, the refresh slot is wiped best-effort so a prior bundle can't
+ * resurface on the next read. Default promotion is external (same as the
+ * single-slot helper).
  */
 export async function writeBundleWithKeyringFallback<TAccount extends AuthAccount>(
     options: WriteBundleOptions<TAccount>,
