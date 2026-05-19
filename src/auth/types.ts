@@ -90,20 +90,6 @@ export type TokenBundle = {
     refreshTokenExpiresAt?: number
 }
 
-/**
- * Read-side snapshot returned by `TokenStore.active`. `token` is the access
- * token (kept named that way for back-compat with the pre-bundle contract);
- * refresh-state fields are flat siblings so consumers have a single source of
- * truth per credential.
- */
-export type ActiveTokenSnapshot<TAccount extends AuthAccount = AuthAccount> = {
-    token: string
-    account: TAccount
-    refreshToken?: string
-    accessTokenExpiresAt?: number
-    refreshTokenExpiresAt?: number
-}
-
 /** Opaque account selector. Stores own the matching rule (id, email, label, …). */
 export type AccountRef = string
 
@@ -122,7 +108,7 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * explicit-ref path and proceeds with `clear(ref)`; `attachStatusCommand`
      * and `attachTokenViewCommand` propagate it.
      */
-    active(ref?: AccountRef): Promise<ActiveTokenSnapshot<TAccount> | null>
+    active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
     /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
     /**

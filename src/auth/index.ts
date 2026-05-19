@@ -26,7 +26,6 @@ export { createPkceProvider } from './providers/pkce.js'
 export type { PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
 export type {
     AccountRef,
-    ActiveTokenSnapshot,
     AuthAccount,
     AuthorizeInput,
     AuthorizeResult,

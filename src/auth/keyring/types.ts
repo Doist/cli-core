@@ -32,10 +32,11 @@ export type UserRecord<TAccount extends AuthAccount> = {
     /** Refresh-token expiry, unix-epoch ms. */
     refreshTokenExpiresAt?: number
     /**
-     * Gate on the refresh-slot keyring read in `active()`:
-     * - `true`  → read the slot.
-     * - `false` → skip the IPC.
-     * - `undefined` → legacy record; probe once and backfill `false` on empty.
+     * `true` when a refresh secret is stored (in the keyring or as
+     * `fallbackRefreshToken`); `false` when explicitly cleared by `set()`
+     * or by a no-refresh `setBundle`; `undefined` on legacy records that
+     * predate the bundle contract. Read by future bundle-aware accessors;
+     * `active()` itself doesn't consult it.
      */
     hasRefreshToken?: boolean
 }

@@ -206,4 +206,50 @@ describe('writeBundleWithKeyringFallback', () => {
         expect(accessStore.deleteSpy).toHaveBeenCalledTimes(1)
         expect(refreshStore.deleteSpy).toHaveBeenCalledTimes(1)
     })
+
+    it('falls back to fallbackToken when the access slot is offline (headless/WSL bundle path)', async () => {
+        // Real-world headless / WSL / locked-Keychain scenario: D-Bus is
+        // unavailable, so BOTH slot writes throw SecureStoreUnavailable.
+        // The record must persist both tokens as plaintext fallbacks.
+        const { accessStore, refreshStore, store: userRecords, state } = harness()
+        accessStore.setSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no dbus'))
+        refreshStore.setSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no dbus'))
+
+        const result = await writeBundleWithKeyringFallback({
+            accessStore,
+            refreshStore,
+            userRecords,
+            account,
+            bundle,
+        })
+
+        expect(result).toEqual({ accessStoredSecurely: false, refreshStoredSecurely: false })
+        expect(state.records.get('42')?.fallbackToken).toBe('tok_a')
+        expect(state.records.get('42')?.fallbackRefreshToken).toBe('tok_r')
+        expect(state.records.get('42')?.hasRefreshToken).toBe(true)
+    })
+
+    it('defers the no-refresh slot wipe until after upsert succeeds', async () => {
+        // Regression: wiping before upsert would lose refresh state if the
+        // upsert then rejected. Order must be set-access → upsert → wipe.
+        const { accessStore, refreshStore, store: userRecords, upsertSpy } = harness()
+        const callOrder: string[] = []
+        refreshStore.deleteSpy.mockImplementationOnce(async () => {
+            callOrder.push('refresh-delete')
+            return false
+        })
+        upsertSpy.mockImplementationOnce(async () => {
+            callOrder.push('upsert')
+        })
+
+        await writeBundleWithKeyringFallback({
+            accessStore,
+            refreshStore,
+            userRecords,
+            account,
+            bundle: { accessToken: 'tok_a' },
+        })
+
+        expect(callOrder).toEqual(['upsert', 'refresh-delete'])
+    })
 })
