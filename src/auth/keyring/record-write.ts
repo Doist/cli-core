@@ -179,6 +179,28 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
     return { accessStoredSecurely, refreshStoredSecurely }
 }
 
+/**
+ * Build a `UserRecord` for an access-only credential (no refresh state).
+ * Used by `migrateLegacyAuth`'s Phase 1 / Phase 2 record writes; both call
+ * sites then agree on the explicit `hasRefreshToken: false` that lets
+ * future bundle-aware readers skip the refresh-slot IPC.
+ *
+ * `writeBundleWithKeyringFallback` builds its own record shape inline
+ * because the bundle path also carries expiry fields; the structural
+ * overlap is the `hasRefreshToken: false` + optional `fallbackToken`
+ * pair, which is what this helper isolates.
+ */
+export function buildSingleTokenRecord<TAccount extends AuthAccount>(
+    account: TAccount,
+    fallbackToken?: string,
+): UserRecord<TAccount> {
+    return {
+        account,
+        ...(fallbackToken ? { fallbackToken } : {}),
+        hasRefreshToken: false,
+    }
+}
+
 const NOOP_SECURE_STORE: SecureStore = {
     async getSecret() {
         return null
