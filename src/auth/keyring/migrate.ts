@@ -93,35 +93,23 @@ type LegacyTokenResult =
 
 /**
  * One-time migration of a v1 single-user auth state into a v2 multi-user
- * shape. Best-effort: any failure (offline keyring, network error fetching
- * the user, …) leaves the v1 state untouched so the consumer's runtime
- * fallback can keep serving the legacy token until the next attempt.
+ * shape. Best-effort: any failure leaves v1 untouched so the runtime
+ * fallback keeps serving the legacy token until the next attempt.
  *
- * Order of operations is deliberate so the migration is genuinely one-way
- * AND safe under retry:
+ * Order is deliberate so the migration is one-way AND safe under retry:
  *
- *   1. `hasMigrated()` short-circuits if the durable marker is already set.
- *   2. Read the v1 token (legacy keyring slot first, then plaintext).
- *   3. `identifyAccount(token)` resolves the v2 `account` shape.
- *   4. **Phase 1 (record-first)**: ensure a v2 record exists for the
- *      account, written with `fallbackToken: legacyToken` so reads work
- *      even before Phase 2 lands. Atomic via `UserRecordStore.tryInsert?`
- *      when available; otherwise list-then-upsert (narrow TOCTOU window,
- *      tolerable for one-time migration). When a v2 record for the
- *      account already exists, Phase 1 is a no-op and Phase 2 is
- *      skipped — preserving any later state that may have landed via a
- *      fresh login.
- *   5. **Phase 2 (keyring move)**: only when Phase 1 wrote the record.
- *      `setSecret` moves the token into the per-user keyring slot, then
- *      a clean `upsert` clears `fallbackToken`. Best-effort throughout —
- *      a failure leaves the Phase 1 fallback in place and reads continue
- *      to work; a later `set()` or `setBundle()` upgrades the credential.
- *   6. Best-effort `setDefaultId(account.id)` so the new record is active.
- *   7. `markMigrated()` persists the marker. **If this fails, we return
- *      `skipped` even though the v2 record is on disk** — the marker is
- *      what prevents re-migration on the next run.
- *   8. Best-effort legacy keyring delete + `cleanupLegacyConfig()` run
- *      concurrently. Failures here are harmless because the marker is set.
+ *   1. `hasMigrated()` short-circuits when the marker is set.
+ *   2. Read the v1 token (legacy keyring first, then plaintext).
+ *   3. `identifyAccount(token)` resolves the v2 `account`.
+ *   4. **Phase 1** — `ensureV2Record` writes a fallback-bearing record (or
+ *      no-ops when a v2 record already exists).
+ *   5. **Phase 2** — when Phase 1 wrote: move the token to the per-user
+ *      keyring slot and upsert the clean record. When Phase 1 didn't:
+ *      verify the existing record is readable before retiring legacy.
+ *   6. Best-effort `setDefaultId(account.id)`.
+ *   7. `markMigrated()` — the one-way gate. Failure here surfaces as
+ *      `skipped(marker-write-failed)` so the caller retries.
+ *   8. Best-effort legacy cleanup runs concurrently.
  */
 export async function migrateLegacyAuth<TAccount extends AuthAccount>(
     options: MigrateLegacyAuthOptions<TAccount>,
@@ -144,8 +132,7 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return { status: 'already-migrated' }
     }
 
-    // One legacy-keyring handle covers both the initial read and the
-    // post-success cleanup delete.
+    // One handle for both the initial read and the cleanup delete.
     const legacyStore = createSecureStore({ serviceName, account: legacyAccount })
 
     const legacyToken = await readLegacyToken(legacyStore, loadLegacyPlaintextToken)
@@ -166,12 +153,9 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         return skipped(silent, logPrefix, 'identify-failed', getErrorMessage(error))
     }
 
-    // Phase 1: ensure a v2 record exists. Either we write a self-sufficient
-    // fallback-bearing record (the token survives a Phase 2 crash), or a
-    // v2 record was already there from a fresh login and we leave it alone.
-    let phase1Wrote: boolean
+    let phase1Written: boolean
     try {
-        phase1Wrote = await ensureV2Record(userRecords, account, legacyToken.token)
+        phase1Written = await ensureV2Record(userRecords, account, legacyToken.token)
     } catch (error) {
         return skipped(silent, logPrefix, 'user-record-write-failed', getErrorMessage(error))
     }
@@ -181,13 +165,12 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         account: accountForUser(account.id),
     })
 
-    if (phase1Wrote) {
-        // Phase 2: move the token from `fallbackToken` into the per-user
-        // keyring slot. Inlined (rather than delegating to
-        // `writeRecordWithKeyringFallback`) so the offline-keyring path
-        // doesn't double-upsert — Phase 1 already wrote the fallback
-        // record. Only `SecureStoreUnavailableError` is swallowed; other
-        // failures leave the marker unset so the operator can retry.
+    if (phase1Written) {
+        // Phase 2 inlined (not via `writeRecordWithKeyringFallback`) so the
+        // offline-keyring branch doesn't double-upsert the same fallback
+        // record Phase 1 just wrote. Only `SecureStoreUnavailableError` is
+        // swallowed — other failures leave the marker unset so a retry
+        // re-attempts the keyring move.
         let keyringStored = false
         try {
             await userSlot.setSecret(legacyToken.token)
@@ -201,11 +184,9 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
                     getErrorMessage(error),
                 )
             }
-            // Phase 1's fallback record already serves reads. Fall through.
         }
         if (keyringStored) {
-            // Promote the record to the clean shape (no fallback) so the
-            // plaintext copy doesn't outlive the secure-store write.
+            // Clear `fallbackToken` so plaintext doesn't outlive the keyring write.
             try {
                 await userRecords.upsert(buildSingleTokenRecord(account))
             } catch (error) {
@@ -218,22 +199,14 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
             }
         }
     } else {
-        // Existing v2 record: verify it's readable in the current
-        // environment before retiring the legacy state. A record from a
-        // prior `set()` / `setBundle()` has no `fallbackToken` and depends
-        // on the keyring being reachable; if it isn't, cleaning up legacy
-        // would brick the user.
         const readabilityError = await verifyExistingRecordReadable(userRecords, account, userSlot)
         if (readabilityError) {
             return skipped(silent, logPrefix, readabilityError.reason, readabilityError.detail)
         }
     }
 
-    // Default promotion is best-effort and **only fires when nothing is
-    // already pinned**. A retry after a previous `markMigrated()` failure
-    // can land on a store where the user has since logged in to a different
-    // account and picked it as default — blindly setting the legacy account
-    // back as default would silently switch the user.
+    // Only promote when nothing is pinned — a retry must not overwrite a
+    // default the user chose between attempts.
     try {
         const existingDefault = await userRecords.getDefaultId()
         if (!existingDefault) {
@@ -243,33 +216,24 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
         // best-effort
     }
 
-    // Persist the one-way marker BEFORE legacy cleanup. If this fails, the
-    // v2 record is already written but the gate is unset — surface as
-    // `skipped` so the caller retries. Without this ordering, a later
-    // `logout` could let the next run re-migrate the stale v1 token.
+    // Marker BEFORE cleanup: the gate, not cleanup, is what prevents the
+    // next run from re-migrating after a later `logout`.
     try {
         await markMigrated()
     } catch (error) {
         return skipped(silent, logPrefix, 'marker-write-failed', getErrorMessage(error))
     }
 
-    // Best-effort legacy cleanup — runs concurrently so we don't pay
-    // keyring latency followed by config-write latency on every install.
-    // The marker is already set, so a failure here can't cause
-    // re-migration on the next run. The `Promise.resolve().then(...)`
-    // wrappers convert any *synchronous* throw from a consumer-supplied
-    // `cleanupLegacyConfig` (or an oddly-implemented `SecureStore`) into
-    // a rejected promise that `Promise.allSettled` can swallow.
+    // `Promise.resolve().then(...)` converts any *synchronous* throw from
+    // a consumer's `cleanupLegacyConfig` into a rejection that
+    // `allSettled` can swallow.
     await Promise.allSettled([
         Promise.resolve().then(() => legacyStore.deleteSecret()),
         Promise.resolve().then(() => cleanupLegacyConfig?.()),
     ])
 
     if (!silent) {
-        // No identifier in the log line — `account.id` is typed as `string`
-        // but consumers can legitimately use an email or other PII there.
-        // Callers that need richer telemetry can compose it from the
-        // returned `account`.
+        // Account id may carry PII (email, etc.) — keep it out of logs.
         console.error(`${logPrefix}: migrated existing token to multi-user store.`)
     }
 
@@ -277,18 +241,10 @@ export async function migrateLegacyAuth<TAccount extends AuthAccount>(
 }
 
 /**
- * Phase 1 of the migration write. Atomic when the store exposes
- * `tryInsert?`; otherwise list-then-upsert.
- *
- * Returns `true` when this call wrote the record (Phase 2 should proceed);
- * `false` when a v2 record for the account already existed (Phase 2 must be
- * skipped to preserve any later state).
- *
- * The Phase 1 shape is deliberately `fallbackToken`-bearing rather than
- * keyring-first: a crash between Phase 1 and Phase 2 leaves a record that
- * already works for reads. Phase 2 promotes the credential to the keyring;
- * if it crashes too, the next migration retry will pick up where this one
- * left off.
+ * Phase 1. Writes a `fallbackToken`-bearing record so a crash before
+ * Phase 2 still leaves a working credential. Returns `true` when this
+ * call wrote (Phase 2 proceeds), `false` when a v2 record already existed
+ * (Phase 2 skipped — preserves later state).
  */
 async function ensureV2Record<TAccount extends AuthAccount>(
     userRecords: UserRecordStore<TAccount>,
@@ -299,12 +255,9 @@ async function ensureV2Record<TAccount extends AuthAccount>(
     if (userRecords.tryInsert) {
         return userRecords.tryInsert(record)
     }
-    // Non-atomic fallback. Narrow race window between `list()` and
-    // `upsert()` (time-of-check, time-of-use): a concurrent writer could
-    // sneak a record in between the two calls and our upsert would
-    // replace-not-merge it. Tolerable for one-time migration — concurrent
-    // migration runs would write the same shape anyway, and the user
-    // typically isn't running other auth writes simultaneously.
+    // Non-atomic path. Narrow time-of-check, time-of-use race between
+    // `list()` and `upsert()`; acceptable for one-time migration since
+    // concurrent runs would write the same shape.
     const existing = await userRecords.list()
     if (existing.some((r) => r.account.id === account.id)) return false
     await userRecords.upsert(record)
@@ -312,16 +265,11 @@ async function ensureV2Record<TAccount extends AuthAccount>(
 }
 
 /**
- * After Phase 1 returns `false` (existing v2 record), verify the record is
- * actually readable in the current environment before retiring the legacy
- * state. A clean v2 record from a prior `set()` / `setBundle()` has no
- * `fallbackToken` and depends on the keyring being reachable; if it isn't,
- * cleaning up the legacy slot would brick the user.
- *
- * Returns `null` when the existing record is safely readable. Returns a
- * skip descriptor when it isn't — the caller surfaces the migration as
- * `skipped` without touching the legacy state, so the next retry has a
- * working credential to fall back to.
+ * Before retiring legacy state for an existing v2 record, confirm reads
+ * still work. A record from a prior `set()` / `setBundle()` has no
+ * `fallbackToken` and needs the keyring online; if it's offline, cleaning
+ * up would brick the user. Returns `null` when safe, or a skip descriptor
+ * the caller surfaces (leaving legacy state intact for retry).
  */
 async function verifyExistingRecordReadable<TAccount extends AuthAccount>(
     userRecords: UserRecordStore<TAccount>,
