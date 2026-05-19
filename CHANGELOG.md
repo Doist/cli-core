@@ -1,3 +1,9 @@
+## [0.17.0](https://github.com/Doist/cli-core/compare/v0.16.1...v0.17.0) (2026-05-19)
+
+### Features
+
+* **auth:** add TokenBundle storage contract to TokenStore ([#37](https://github.com/Doist/cli-core/issues/37)) ([6513aaa](https://github.com/Doist/cli-core/commit/6513aaa8b6222eb421239f6e41ec63b12cf946e9))
+
 ## [0.16.1](https://github.com/Doist/cli-core/compare/v0.16.0...v0.16.1) (2026-05-16)
 
 ### Bug Fixes
