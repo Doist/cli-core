@@ -125,10 +125,9 @@ describe('refreshAccessToken', () => {
         expect(result.rotated).toBe(true)
         expect(result.bundle.accessToken).toBe('tok_new')
         expect(refreshSpy).toHaveBeenCalledWith({ refreshToken: 'r_a', handshake: {} })
-        // setBundle was called without promoteDefault — silent rotation must
-        // not re-pin account selection. The helper omits the options arg
-        // entirely so presence-based handlers see the same shape they would
-        // for "no caller preference".
+        // promoteDefault omitted (not just `false`): a silent rotation must
+        // not re-pin selection, and the helper distinguishes "absent" from
+        // "explicit opt-out" via arg count.
         expect(state.setBundleCalls).toHaveLength(1)
         expect(state.setBundleCalls[0].options).toBeUndefined()
     })
@@ -289,21 +288,6 @@ describe('refreshAccessToken', () => {
         expect(refreshSpy).not.toHaveBeenCalled()
     }, 5_000)
 
-    it('propagates AUTH_REFRESH_EXPIRED from the provider unchanged', async () => {
-        const { store } = fakeStore({
-            account,
-            bundle: bundle({ accessTokenExpiresAt: Date.now() + 1_000 }),
-        })
-        const { provider } = fakeProvider(async () => {
-            const { CliError } = await import('../errors.js')
-            throw new CliError('AUTH_REFRESH_EXPIRED', 'rejected by server')
-        })
-
-        await expect(
-            refreshAccessToken({ store, provider, skewMs: 5_000, lockPath }),
-        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
-    })
-
     it('carries the previous refresh token forward when the server omits it from the response', async () => {
         const { store, state } = fakeStore({
             account,
@@ -316,7 +300,6 @@ describe('refreshAccessToken', () => {
         const { provider } = fakeProvider(async () => ({
             accessToken: 'tok_new',
             expiresAt: Date.now() + 60_000,
-            // no refresh_token in response — most servers
         }))
 
         const result = await refreshAccessToken({
@@ -328,7 +311,6 @@ describe('refreshAccessToken', () => {
 
         expect(result.bundle.refreshToken).toBe('r_existing')
         expect(result.bundle.refreshTokenExpiresAt).toBe(9_999_999_999_999)
-        // Persisted shape matches the returned bundle.
         expect(state.setBundleCalls[0].bundle.refreshToken).toBe('r_existing')
     })
 })

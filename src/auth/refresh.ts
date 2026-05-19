@@ -134,28 +134,21 @@ type LockOutcome<TAccount extends AuthAccount> =
     | { kind: 'rotated-by-holder'; snapshot: ActiveBundleSnapshot<TAccount> }
     | { kind: 'timeout' }
 
-/**
- * Try to acquire the `O_EXCL` lock. On `EEXIST`, poll for the lock file to
- * disappear (up to `LOCK_WAIT_TIMEOUT_MS`). Whether the wait ends via
- * acquisition, lock-released, or timeout, re-read the bundle: if the holder
- * has rotated, return the new snapshot so the waiter doesn't POST.
- */
+// Re-reading the bundle after a contested wait — on acquire OR timeout —
+// is load-bearing: the holder may have rotated then crashed before
+// unlinking, and the waiter should still benefit from the new bundle.
 async function acquireLock<TAccount extends AuthAccount>(
     lockPath: string,
     store: TokenStore<TAccount>,
     ref: AccountRef | undefined,
     snapshotBefore: ActiveBundleSnapshot<TAccount>,
 ): Promise<LockOutcome<TAccount>> {
-    if (await tryCreateLockFile(lockPath)) {
-        return { kind: 'acquired' }
-    }
+    if (await tryCreateLockFile(lockPath)) return { kind: 'acquired' }
 
     const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS
     while (Date.now() < deadline) {
         await sleep(LOCK_POLL_INTERVAL_MS)
         if (await tryCreateLockFile(lockPath)) {
-            // Lock acquired — but the holder may have completed a rotation
-            // before releasing. Re-check the store before POSTing.
             const fresh = await store.activeBundle?.(ref)
             if (fresh && hasRotated(snapshotBefore.bundle, fresh.bundle)) {
                 await releaseLock(lockPath)
@@ -165,9 +158,6 @@ async function acquireLock<TAccount extends AuthAccount>(
         }
     }
 
-    // Timed out: holder didn't release. Re-read once more — they may have
-    // rotated then crashed before unlinking, in which case the waiter should
-    // still benefit from the new bundle.
     const fresh = await store.activeBundle?.(ref)
     if (fresh && hasRotated(snapshotBefore.bundle, fresh.bundle)) {
         return { kind: 'rotated-by-holder', snapshot: fresh }

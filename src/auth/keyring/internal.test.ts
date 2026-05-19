@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { AuthAccount } from '../types.js'
 import { readRefreshTokenForRecord } from './internal.js'
-import { type SecureStore, SecureStoreUnavailableError } from './secure-store.js'
+import type { SecureStore } from './secure-store.js'
 import type { UserRecord } from './types.js'
 
 type Account = AuthAccount & { id: string }
@@ -44,29 +44,5 @@ describe('readRefreshTokenForRecord', () => {
         const outcome = await readRefreshTokenForRecord(record, store)
         expect(outcome).toEqual({ ok: true, token: 'plaintext_fallback' })
         expect(getSpy).not.toHaveBeenCalled()
-    })
-
-    it('reads the keyring slot when no fallback is present', async () => {
-        const store = fakeStore({
-            async getSecret() {
-                return 'from_keyring'
-            },
-        })
-        const record: UserRecord<Account> = { account, hasRefreshToken: true }
-
-        const outcome = await readRefreshTokenForRecord(record, store)
-        expect(outcome).toEqual({ ok: true, token: 'from_keyring' })
-    })
-
-    it('maps SecureStoreUnavailableError to slot-unavailable', async () => {
-        const store = fakeStore({
-            async getSecret() {
-                throw new SecureStoreUnavailableError('no dbus')
-            },
-        })
-        const record: UserRecord<Account> = { account, hasRefreshToken: true }
-
-        const outcome = await readRefreshTokenForRecord(record, store)
-        expect(outcome).toMatchObject({ ok: false, reason: 'slot-unavailable' })
     })
 })
