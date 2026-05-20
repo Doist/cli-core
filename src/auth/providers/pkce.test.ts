@@ -62,6 +62,26 @@ describe('createPkceProvider', () => {
         expect(url.searchParams.get('scope')).toBe('data:read_write,data:delete')
     })
 
+    it('supports async resolvers (consumer resolves base URL / client id asynchronously)', async () => {
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: async ({ handshake }) => `${handshake.baseUrl as string}/oauth/authorize`,
+            tokenUrl: 'unused',
+            clientId: async () => 'async-client',
+            validate,
+        })
+        const result = await provider.authorize({
+            redirectUri: 'http://localhost/callback',
+            state: 's',
+            scopes: [],
+            readOnly: false,
+            flags: {},
+            handshake: { baseUrl: 'https://async.example' },
+        })
+        const url = new URL(result.authorizeUrl)
+        expect(url.origin).toBe('https://async.example')
+        expect(url.searchParams.get('client_id')).toBe('async-client')
+    })
+
     it('exchangeCode POSTs without client_secret and surfaces token endpoint failures as AUTH_TOKEN_EXCHANGE_FAILED', async () => {
         const ok = createPkceProvider<Account>({
             authorizeUrl: 'unused',
@@ -185,6 +205,37 @@ describe('createPkceProvider.refreshToken', () => {
 
         expect(result).toMatchObject({ accessToken: 'tok-new', refreshToken: 'r-new' })
         expect(result.expiresAt).toBeGreaterThan(Date.now())
+    })
+
+    it('routes the refresh grant through an injected fetchImpl, never the global fetch', async () => {
+        // Custom-transport consumers (proxy dispatcher) inject `fetchImpl`;
+        // it must reach oauth4webapi's customFetch. Global fetch is rigged to
+        // throw so any leak to it fails loudly.
+        let capturedUrl: string | undefined
+        const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+            capturedUrl = String(input)
+            return new Response(JSON.stringify({ access_token: 'tok-new', token_type: 'bearer' }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }) as unknown as typeof fetch
+        const globalSpy = vi.spyOn(globalThis, 'fetch').mockImplementation((() => {
+            throw new Error('global fetch must not be used when fetchImpl is injected')
+        }) as typeof fetch)
+
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'client-xyz',
+            validate,
+            fetchImpl,
+        })
+
+        const result = await provider.refreshToken!({ refreshToken: 'r-old', handshake: {} })
+
+        expect(result.accessToken).toBe('tok-new')
+        expect(capturedUrl).toBe('https://example.com/oauth/token')
+        expect(globalSpy).not.toHaveBeenCalled()
     })
 
     it('maps invalid_grant to AUTH_REFRESH_EXPIRED (any HTTP status — proxies remap 400/401)', async () => {

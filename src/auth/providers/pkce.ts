@@ -19,7 +19,10 @@ import type {
  */
 export type PkceLazyString =
     | string
-    | ((ctx: { handshake: Record<string, unknown>; flags: Record<string, unknown> }) => string)
+    | ((ctx: {
+          handshake: Record<string, unknown>
+          flags: Record<string, unknown>
+      }) => string | Promise<string>)
 
 export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** OAuth 2.0 authorize endpoint. Function form supports per-flow base URLs (Outline self-hosted). */
@@ -65,8 +68,10 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
-            const clientId = resolve(options.clientId, input.handshake, input.flags)
-            const authorizeUrl = resolve(options.authorizeUrl, input.handshake, input.flags)
+            const [clientId, authorizeUrl] = await Promise.all([
+                resolve(options.clientId, input.handshake, input.flags),
+                resolve(options.authorizeUrl, input.handshake, input.flags),
+            ])
 
             const url = new URL(authorizeUrl)
             url.searchParams.set('response_type', 'code')
@@ -98,7 +103,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // before calling exchange, so a `tokenUrl: ({ flags }) => ...`
             // resolver sees the same flags it saw during authorize.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const tokenUrl = resolve(options.tokenUrl, input.handshake, flags)
+            const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
 
             const body = new URLSearchParams({
                 grant_type: 'authorization_code',
@@ -165,18 +170,26 @@ export function createPkceProvider<TAccount extends AuthAccount>(
 
         async refreshToken(input: RefreshInput): Promise<ExchangeResult<TAccount>> {
             const oauth = await loadOauth4webapi()
-            const tokenUrl = resolve(options.tokenUrl, input.handshake, {})
+            const [tokenUrl, clientId] = await Promise.all([
+                resolve(options.tokenUrl, input.handshake, {}),
+                resolve(options.clientId, input.handshake, {}),
+            ])
             const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
-            const client: Client = {
-                client_id: resolve(options.clientId, input.handshake, {}),
-                token_endpoint_auth_method: 'none',
-            }
+            const client: Client = { client_id: clientId, token_endpoint_auth_method: 'none' }
+            // Route through the consumer's injected fetch when present, so a
+            // custom transport (proxy dispatcher, decompression) applies to
+            // the refresh grant too — oauth4webapi otherwise captures the
+            // global `fetch`.
+            const requestOptions = options.fetchImpl
+                ? { [oauth.customFetch]: options.fetchImpl }
+                : undefined
             try {
                 const response = await oauth.refreshTokenGrantRequest(
                     as,
                     client,
                     oauth.None(),
                     input.refreshToken,
+                    requestOptions,
                 )
                 const result = await oauth.processRefreshTokenResponse(as, client, response)
                 return {
@@ -209,11 +222,11 @@ export function createPkceProvider<TAccount extends AuthAccount>(
     }
 }
 
-function resolve(
+async function resolve(
     resolver: PkceLazyString,
     handshake: Record<string, unknown>,
     flags: Record<string, unknown>,
-): string {
+): Promise<string> {
     return typeof resolver === 'function' ? resolver({ handshake, flags }) : resolver
 }
 

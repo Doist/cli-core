@@ -169,6 +169,8 @@ attachLoginCommand<Account>(auth, {
 
 `attachLoginCommand` returns the new `Command` so you can chain `.description(...)` / `.option(...)` / `.addHelpText(...)`. Any consumer-attached options land in the `flags` object passed to `resolveScopes`, `onSuccess`, and the provider hooks.
 
+The `authorizeUrl` / `tokenUrl` / `clientId` resolvers may return `string` **or** `Promise<string>` — so a consumer can resolve the base URL or client id asynchronously (reading config, prompting the user) without abandoning `createPkceProvider`. An injected `fetchImpl` is used for the token exchange **and** the refresh grant (threaded into `oauth4webapi` via its `customFetch`), so a custom transport — proxy dispatcher, decompression — applies on every OAuth call rather than being bypassed by the library's global `fetch`.
+
 #### Sibling attachers (`logout` / `status` / `token`)
 
 The same registrar shape covers the other three auth subcommands. Each returns the new `Command` for chaining and shares the same `TokenStore<TAccount>` instance.
