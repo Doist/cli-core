@@ -98,8 +98,9 @@ const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
  *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake.
  *  - `exchangeCode`: `authorizationCodeGrantRequest` authenticated per the
  *    handshake's server-returned auth method (falling back to the configured
- *    one) — `ClientSecretBasic` / `ClientSecretPost` / `None` (the last also
- *    when the registration response carried no `client_secret`).
+ *    one) — HTTP Basic (sent raw; see `rawClientSecretBasic`), client-secret
+ *    POST, or public-client `None` (the last also when the registration
+ *    response carried no `client_secret`).
  *  - `validateToken`: caller-supplied.
  */
 export function createDcrProvider<TAccount extends AuthAccount>(
@@ -242,7 +243,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             } else if (effectiveAuthMethod === 'client_secret_post') {
                 clientAuth = oauth.ClientSecretPost(clientSecret)
             } else {
-                clientAuth = oauth.ClientSecretBasic(clientSecret)
+                clientAuth = rawClientSecretBasic(clientSecret)
             }
 
             try {
@@ -281,6 +282,25 @@ export function createDcrProvider<TAccount extends AuthAccount>(
         },
 
         validateToken: options.validate,
+    }
+}
+
+/**
+ * HTTP Basic client auth that sends `client_id:client_secret` **raw** — without
+ * oauth4webapi's RFC 6749 §2.3.1 `application/x-www-form-urlencoded` encoding of
+ * each component. Many OAuth servers don't url-decode the Basic credential, so
+ * an encoded `client_id` containing reserved chars (e.g. a DCR-issued `twd_…`
+ * → `twd%5F…`) fails the server-side lookup. Raw is interoperable with both
+ * decoding and non-decoding servers for the URL-safe credentials OAuth servers
+ * issue in practice; consumers whose credentials contain `:` / `%` / `+` (rare)
+ * should select `client_secret_post` instead.
+ */
+function rawClientSecretBasic(clientSecret: string): ClientAuth {
+    return (_as, client, _body, headers) => {
+        const credentials = Buffer.from(`${client.client_id}:${clientSecret}`, 'utf8').toString(
+            'base64',
+        )
+        headers.set('authorization', `Basic ${credentials}`)
     }
 }
 

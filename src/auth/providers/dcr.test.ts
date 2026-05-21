@@ -47,7 +47,7 @@ describe('createDcrProvider', () => {
     it('prepare POSTs RFC 7591 metadata, authorize uses the issued client_id, exchangeCode sends Basic auth', async () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
-                ? registration({ client_id: 'issuedid', client_secret: 'issuedsecret' })
+                ? registration({ client_id: 'twd_id', client_secret: 'sec_ret' })
                 : token({ access_token: 'tok-1', expires_in: 3600 }),
         )
         const provider = createDcrProvider<Account>({
@@ -65,7 +65,7 @@ describe('createDcrProvider', () => {
         })
 
         const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
-        expect(prepared.handshake).toEqual({ clientId: 'issuedid', clientSecret: 'issuedsecret' })
+        expect(prepared.handshake).toEqual({ clientId: 'twd_id', clientSecret: 'sec_ret' })
 
         const regBody = JSON.parse(calls[0].init.body as string) as Record<string, unknown>
         expect(regBody).toMatchObject({
@@ -88,14 +88,14 @@ describe('createDcrProvider', () => {
             handshake: prepared.handshake,
         })
         const url = new URL(authorize.authorizeUrl)
-        expect(url.searchParams.get('client_id')).toBe('issuedid')
+        expect(url.searchParams.get('client_id')).toBe('twd_id')
         expect(url.searchParams.get('redirect_uri')).toBe(REDIRECT_URI)
         expect(url.searchParams.get('state')).toBe('state-123')
         expect(url.searchParams.get('code_challenge_method')).toBe('S256')
         expect(url.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]+$/)
         expect(url.searchParams.get('scope')).toBe('user:read threads:read')
         expect(typeof authorize.handshake.codeVerifier).toBe('string')
-        expect(authorize.handshake.clientSecret).toBe('issuedsecret')
+        expect(authorize.handshake.clientSecret).toBe('sec_ret')
 
         const result = await provider.exchangeCode({
             code: 'auth-code',
@@ -107,10 +107,11 @@ describe('createDcrProvider', () => {
         expect(result.expiresAt).toBeGreaterThan(Date.now())
 
         const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
-        // oauth4webapi form-url-encodes the credentials per RFC 6749 §2.3.1
-        // before base64; alphanumeric id/secret round-trip unchanged.
+        // Basic credential is sent raw (NOT oauth4webapi's RFC 6749 §2.3.1
+        // form-url-encoding) so a `client_id` with reserved chars like `_`
+        // isn't mangled to `%5F` for servers that don't url-decode it.
         expect(headersOf(tokenCall).get('authorization')).toBe(
-            `Basic ${Buffer.from('issuedid:issuedsecret', 'utf8').toString('base64')}`,
+            `Basic ${Buffer.from('twd_id:sec_ret', 'utf8').toString('base64')}`,
         )
         const tokenBody = bodyOf(tokenCall)
         expect(tokenBody.get('grant_type')).toBe('authorization_code')
