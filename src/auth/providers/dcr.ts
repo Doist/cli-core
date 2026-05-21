@@ -98,8 +98,9 @@ const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
  *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake.
  *  - `exchangeCode`: `authorizationCodeGrantRequest` authenticated per the
  *    handshake's server-returned auth method (falling back to the configured
- *    one) — `ClientSecretBasic` / `ClientSecretPost` / `None` (the last also
- *    when the registration response carried no `client_secret`).
+ *    one) — HTTP Basic (RFC 3986-encoded, see `clientSecretBasicRfc3986`),
+ *    client-secret POST, or public-client `None` (the last also when the
+ *    registration response carried no `client_secret`).
  *  - `validateToken`: caller-supplied.
  */
 export function createDcrProvider<TAccount extends AuthAccount>(
@@ -242,7 +243,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             } else if (effectiveAuthMethod === 'client_secret_post') {
                 clientAuth = oauth.ClientSecretPost(clientSecret)
             } else {
-                clientAuth = oauth.ClientSecretBasic(clientSecret)
+                clientAuth = clientSecretBasicRfc3986(clientSecret)
             }
 
             try {
@@ -281,6 +282,26 @@ export function createDcrProvider<TAccount extends AuthAccount>(
         },
 
         validateToken: options.validate,
+    }
+}
+
+/**
+ * HTTP Basic client auth that percent-encodes each credential component with
+ * `encodeURIComponent` (RFC 3986) rather than oauth4webapi's stricter RFC 6749
+ * §2.3.1 `application/x-www-form-urlencoded` form. Both escape the genuinely
+ * reserved chars (`:` `%` `+` `/` …) so a conformant server reconstructs them —
+ * but §2.3.1 *also* escapes the unreserved `-` `_` `.` `~`, which breaks servers
+ * that don't url-decode the Basic credential (a DCR-issued `twd_…` would arrive
+ * as `twd%5F…` and miss the lookup). Leaving those unreserved chars intact keeps
+ * such servers working while still transmitting reserved chars safely.
+ */
+function clientSecretBasicRfc3986(clientSecret: string): ClientAuth {
+    return (_as, client, _body, headers) => {
+        const credentials = Buffer.from(
+            `${encodeURIComponent(client.client_id)}:${encodeURIComponent(clientSecret)}`,
+            'utf8',
+        ).toString('base64')
+        headers.set('authorization', `Basic ${credentials}`)
     }
 }
 
