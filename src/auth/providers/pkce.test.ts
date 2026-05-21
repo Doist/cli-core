@@ -238,6 +238,37 @@ describe('createPkceProvider.refreshToken', () => {
         expect(globalSpy).not.toHaveBeenCalled()
     })
 
+    it('resolves async tokenUrl / clientId from the handshake on the refresh path', async () => {
+        let capturedUrl: string | undefined
+        let capturedClientId: string | undefined
+        const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+            capturedUrl = String(input)
+            capturedClientId =
+                new URLSearchParams(init.body as string).get('client_id') ?? undefined
+            return new Response(JSON.stringify({ access_token: 'tok-new', token_type: 'bearer' }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }) as unknown as typeof fetch
+
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'unused',
+            tokenUrl: async ({ handshake }) => `${handshake.baseUrl as string}/oauth/token`,
+            clientId: async () => 'async-client',
+            validate,
+            fetchImpl,
+        })
+
+        const result = await provider.refreshToken!({
+            refreshToken: 'r-old',
+            handshake: { baseUrl: 'https://wiki.example.com' },
+        })
+
+        expect(result.accessToken).toBe('tok-new')
+        expect(capturedUrl).toBe('https://wiki.example.com/oauth/token')
+        expect(capturedClientId).toBe('async-client')
+    })
+
     it('maps invalid_grant to AUTH_REFRESH_EXPIRED (any HTTP status — proxies remap 400/401)', async () => {
         stubFetch(
             (async () =>

@@ -300,7 +300,7 @@ The `persistBundle({ store, account, bundle, promoteDefault? })` helper is the r
 
 ##### Silent refresh (`refreshAccessToken`)
 
-`refreshAccessToken({ store, provider, lockPath, skewMs?, force?, ref? })` rotates the access token using the stored refresh token. Use **proactively** before each authenticated call (skew defaults to 60s) or **reactively** with `force: true` after a 401. Persists the rotated bundle via `persistBundle` _without_ `promoteDefault` so a background rotation can't re-pin account selection.
+`refreshAccessToken({ store, provider, lockPath, skewMs?, force?, ref?, handshake? })` rotates the access token using the stored refresh token. Use **proactively** before each authenticated call (skew defaults to 60s) or **reactively** with `force: true` after a 401. Persists the rotated bundle via `persistBundle` _without_ `promoteDefault` so a background rotation can't re-pin account selection. `handshake` (default `{}`) is forwarded to `provider.refreshToken` for resolvers that need runtime context (e.g. a `--env`-derived base URL).
 
 `lockPath` is caller-provided (cli-core doesn't interpret `~` or know where your config lives) — `O_EXCL` on that path serialises concurrent CLI invocations so only one POSTs and the rest re-read the rotated bundle. Recommended path: `${getConfigPath(serviceName)}.refresh.lock`.
 
@@ -308,7 +308,7 @@ Error contract:
 
 - `AUTH_REFRESH_EXPIRED` — server rejected the refresh token (`invalid_grant`, including 400 and 401 since some reverse proxies remap). Caller should prompt re-login.
 - `AUTH_REFRESH_TRANSIENT` — 5xx, network, non-JSON body, lock timeout. Caller may retry.
-- `AUTH_REFRESH_UNAVAILABLE` — refresh isn't possible in the current setup: no refresh token stored, store doesn't implement `activeBundle`, provider doesn't implement `refreshToken`, or the optional `oauth4webapi` peer dep isn't installed.
+- `AUTH_REFRESH_UNAVAILABLE` — refresh isn't possible in the current setup: no refresh token stored, the store doesn't implement **both** `activeBundle` and `setBundle` (a full bundle must be readable and persistable), the credential was removed mid-refresh, the provider doesn't implement `refreshToken`, or the optional `oauth4webapi` peer dep isn't installed.
 
 The PKCE provider (`createPkceProvider`) implements `refreshToken` via the [`oauth4webapi`](https://github.com/panva/oauth4webapi) library, declared as an **optional peer dependency** — only CLIs that opt into refresh need to install it (`npm install oauth4webapi`). Providers built directly against the `AuthProvider` interface (e.g. DCR, device code) implement the `refreshToken?` hook themselves; the storage and helper contract is identical.
 

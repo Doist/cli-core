@@ -44,9 +44,11 @@ async function resolveStatusSnapshot<TAccount extends AuthAccount>(
             if (ref !== undefined) throw accountNotFoundError(ref)
             return null
         } catch (error) {
-            // A genuine "no such account" is authoritative; any other bundle
-            // read fault falls through to the access-only `active()` read.
-            if (error instanceof CliError && error.code === 'ACCOUNT_NOT_FOUND') throw error
+            // Only a typed read failure falls through to the access-only
+            // `active()` read (e.g. a refresh-slot fault that `active()`
+            // doesn't hit). Anything else — `ACCOUNT_NOT_FOUND`, or an
+            // unexpected store bug — propagates rather than being masked.
+            if (!(error instanceof CliError) || error.code !== 'AUTH_STORE_READ_FAILED') throw error
         }
     }
     const snapshot = await requireSnapshotForRef(store, ref)

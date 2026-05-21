@@ -23,26 +23,26 @@ export type PersistBundleOptions<TAccount extends AuthAccount> = {
  * MUST implement `setBundle`.
  */
 /**
- * Build a `TokenBundle` from an `ExchangeResult`. `prev` carries forward
- * any refresh-side state the server omitted from the response — most
- * servers don't reissue the refresh token on a refresh-grant, and few
- * include `refresh_token_expires_in`, so the previous values stay
- * authoritative until the server sends an explicit replacement.
+ * Build a `TokenBundle` from an `ExchangeResult`. `prev` carries the previous
+ * refresh token + its expiry forward when the server didn't reissue one (most
+ * don't on a refresh-grant). When the server DID return a new refresh token,
+ * its expiry is whatever the server gave (or unknown) — never the old token's,
+ * which would attach stale expiry metadata to a different credential.
  */
 export function bundleFromExchange<TAccount extends AuthAccount>(
     exchange: ExchangeResult<TAccount>,
     prev?: TokenBundle,
 ): TokenBundle {
+    const rotatedRefresh = exchange.refreshToken !== undefined
     const refreshToken = exchange.refreshToken ?? prev?.refreshToken
+    const refreshTokenExpiresAt = rotatedRefresh
+        ? exchange.refreshTokenExpiresAt
+        : (exchange.refreshTokenExpiresAt ?? prev?.refreshTokenExpiresAt)
     return {
         accessToken: exchange.accessToken,
         ...(refreshToken !== undefined ? { refreshToken } : {}),
         ...(exchange.expiresAt !== undefined ? { accessTokenExpiresAt: exchange.expiresAt } : {}),
-        ...(exchange.refreshTokenExpiresAt !== undefined
-            ? { refreshTokenExpiresAt: exchange.refreshTokenExpiresAt }
-            : prev?.refreshTokenExpiresAt !== undefined
-              ? { refreshTokenExpiresAt: prev.refreshTokenExpiresAt }
-              : {}),
+        ...(refreshTokenExpiresAt !== undefined ? { refreshTokenExpiresAt } : {}),
     }
 }
 

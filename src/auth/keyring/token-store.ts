@@ -74,7 +74,6 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
     ref: AccountRef,
 ): boolean => account.id === ref || account.label === ref
 
-/** Map a failed access-slot read to the typed `AUTH_STORE_READ_FAILED` error. */
 function accessReadError(outcome: Extract<ReadAccessTokenOutcome, { ok: false }>): CliError {
     const message =
         outcome.reason === 'slot-empty'

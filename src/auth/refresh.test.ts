@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -342,5 +342,45 @@ describe('refreshAccessToken', () => {
 
         // The `finally` released the O_EXCL lock — no orphan left to block retries.
         await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    })
+
+    it('steals a stale lock left by a crashed holder and proceeds', async () => {
+        // A lock from a holder that never released, backdated past the stale
+        // threshold — the next refresh should steal it rather than time out.
+        await writeFile(lockPath, 'dead-holder-token', { flag: 'wx' })
+        const past = new Date(Date.now() - 60_000)
+        await utimes(lockPath, past, past)
+
+        const { store } = fakeStore({
+            account,
+            bundle: bundle({ accessTokenExpiresAt: Date.now() + 1_000 }),
+        })
+        const { provider, refreshSpy } = fakeProvider()
+
+        const result = await refreshAccessToken({ store, provider, skewMs: 5_000, lockPath })
+
+        expect(result.rotated).toBe(true)
+        expect(refreshSpy).toHaveBeenCalledTimes(1)
+    })
+
+    it('forwards a non-empty handshake to provider.refreshToken', async () => {
+        const { store } = fakeStore({
+            account,
+            bundle: bundle({ accessTokenExpiresAt: Date.now() + 1_000 }),
+        })
+        const { provider, refreshSpy } = fakeProvider()
+
+        await refreshAccessToken({
+            store,
+            provider,
+            force: true,
+            lockPath,
+            handshake: { baseUrl: 'https://wiki.example.com' },
+        })
+
+        expect(refreshSpy).toHaveBeenCalledWith({
+            refreshToken: 'r_a',
+            handshake: { baseUrl: 'https://wiki.example.com' },
+        })
     })
 })

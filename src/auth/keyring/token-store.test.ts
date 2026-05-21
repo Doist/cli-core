@@ -560,6 +560,30 @@ describe('createKeyringTokenStore', () => {
             expect(snapshot?.bundle).toEqual({ accessToken: 'tok_a' })
         })
 
+        it('activeBundle rejects AUTH_STORE_READ_FAILED on a non-keyring refresh-slot error', async () => {
+            // A generic (non-SecureStoreUnavailable) refresh-slot read error is
+            // a real fault, not a degrade-to-access-only case — surface it.
+            const km = buildKeyringMap()
+            mockedCreateSecureStore.mockImplementation(km.create)
+            const harness = buildUserRecords<Account>()
+            harness.state.records.set('42', { account })
+            km.slots.set('user-42', { secret: 'tok_a' })
+            km.slots.set(refreshAccountSlot('user-42'), {
+                secret: null,
+                getErr: new Error('disk fried'),
+            })
+
+            const store = createKeyringTokenStore<Account>({
+                serviceName: SERVICE,
+                userRecords: harness.store,
+                recordsLocation: LOCATION,
+            })
+
+            await expect(store.activeBundle()).rejects.toMatchObject({
+                code: 'AUTH_STORE_READ_FAILED',
+            })
+        })
+
         it('clear() wipes both keyring slots', async () => {
             const { km, store, state } = mapFixture({
                 '42': { account, hasRefreshToken: true },

@@ -1,4 +1,5 @@
-import { open, stat, unlink } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { open, readFile, stat, unlink } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { CliError, getErrorMessage } from '../errors.js'
 import { bundleFromExchange, persistBundle } from './persist.js'
@@ -103,8 +104,8 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         })
     }
 
-    const acquired = await acquireLock(lockPath)
-    if (!acquired) {
+    const lockToken = await acquireLock(lockPath)
+    if (!lockToken) {
         // Holder didn't release in time. It may have rotated then crashed
         // before unlinking — re-read once and adopt the rotated bundle if so.
         const fresh = await activeBundle(ref)
@@ -123,7 +124,18 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         // holder may have rotated between our snapshot read and acquiring the
         // lock, so adopt their bundle rather than POST a now-stale refresh
         // token. A throw here releases the lock via `finally`.
-        const current = (await activeBundle(ref)) ?? snapshot
+        const current = await activeBundle(ref)
+        if (!current) {
+            // A concurrent `logout`/`clear` removed the credential after our
+            // first read — do not POST + persist it back into existence.
+            throw new CliError(
+                'AUTH_REFRESH_UNAVAILABLE',
+                'Credential was removed during refresh.',
+                {
+                    hints: ['Re-run the login command to reauthorize.'],
+                },
+            )
+        }
         if (hasRotated(snapshot.bundle, current.bundle)) {
             return { rotated: true, bundle: current.bundle, account: current.account }
         }
@@ -141,7 +153,7 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         await persistBundle({ store, account, bundle })
         return { rotated: true, bundle, account }
     } finally {
-        await releaseLock(lockPath)
+        await releaseLock(lockPath, lockToken)
     }
 }
 
@@ -152,28 +164,39 @@ function needsRefresh(bundle: TokenBundle, skewMs: number): boolean {
 }
 
 function hasRotated(before: TokenBundle, after: TokenBundle): boolean {
-    if (after.accessToken !== before.accessToken) return true
-    if (after.accessTokenExpiresAt !== before.accessTokenExpiresAt) return true
-    return false
+    return (
+        after.accessToken !== before.accessToken ||
+        after.accessTokenExpiresAt !== before.accessTokenExpiresAt ||
+        after.refreshToken !== before.refreshToken ||
+        after.refreshTokenExpiresAt !== before.refreshTokenExpiresAt
+    )
 }
 
-async function acquireLock(lockPath: string): Promise<boolean> {
-    if (await tryAcquire(lockPath)) return true
+/**
+ * Acquire the lock, returning a unique ownership token (or `null` on
+ * contention timeout). The token is written into the lock file so
+ * `releaseLock` only unlinks a lock it still owns — a holder whose stale
+ * lock was stolen mid-flight won't delete the new holder's lock.
+ */
+async function acquireLock(lockPath: string): Promise<string | null> {
+    const token = randomUUID()
+    if (await tryAcquire(lockPath, token)) return token
     const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS
     while (Date.now() < deadline) {
         await sleep(LOCK_POLL_INTERVAL_MS)
-        if (await tryAcquire(lockPath)) return true
+        if (await tryAcquire(lockPath, token)) return token
     }
-    return false
+    return null
 }
 
-// Create the lock with O_EXCL. On EEXIST, steal it if it's stale (older than
-// LOCK_STALE_MS — a crashed holder); otherwise report contention.
-async function tryAcquire(lockPath: string): Promise<boolean> {
-    if (await tryCreateLockFile(lockPath)) return true
+// Write the lock with O_EXCL. On EEXIST, steal it if it's stale (older than
+// LOCK_STALE_MS — assumes the provider bounds its HTTP, which the built-in
+// PKCE provider does); otherwise report contention.
+async function tryAcquire(lockPath: string, token: string): Promise<boolean> {
+    if (await tryWriteLock(lockPath, token)) return true
     if (await lockIsStale(lockPath)) {
-        await releaseLock(lockPath)
-        return tryCreateLockFile(lockPath)
+        await forceUnlink(lockPath)
+        return tryWriteLock(lockPath, token)
     }
     return false
 }
@@ -187,11 +210,10 @@ async function lockIsStale(lockPath: string): Promise<boolean> {
     }
 }
 
-async function tryCreateLockFile(lockPath: string): Promise<boolean> {
+async function tryWriteLock(lockPath: string, token: string): Promise<boolean> {
+    let handle
     try {
-        const handle = await open(lockPath, 'wx')
-        await handle.close()
-        return true
+        handle = await open(lockPath, 'wx')
     } catch (error) {
         const code = (error as NodeJS.ErrnoException).code
         if (code === 'EEXIST') return false
@@ -201,13 +223,28 @@ async function tryCreateLockFile(lockPath: string): Promise<boolean> {
             { hints: ['Try again.'] },
         )
     }
+    try {
+        await handle.writeFile(token)
+    } finally {
+        await handle.close()
+    }
+    return true
 }
 
-async function releaseLock(lockPath: string): Promise<void> {
+async function releaseLock(lockPath: string, token: string): Promise<void> {
+    try {
+        const owner = (await readFile(lockPath, 'utf8')).trim()
+        if (owner === token) await unlink(lockPath)
+    } catch {
+        // best-effort: a missing/unreadable lock (manual cleanup, crash, a
+        // steal by another holder) must not surface as a refresh failure.
+    }
+}
+
+async function forceUnlink(lockPath: string): Promise<void> {
     try {
         await unlink(lockPath)
     } catch {
-        // best-effort: a missing lock file (manual cleanup, crash, …) must
-        // not surface as a refresh failure.
+        // already gone
     }
 }
