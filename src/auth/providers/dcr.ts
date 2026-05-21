@@ -1,3 +1,8 @@
+import type { AuthorizationServer, Client, ClientAuth } from 'oauth4webapi'
+
+import { getErrorMessage } from '../../errors.js'
+import type { CliError } from '../../errors.js'
+import type { AuthErrorCode } from '../errors.js'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
     AuthAccount,
@@ -13,8 +18,8 @@ import type {
 import {
     buildAuthError,
     buildPkceAuthorizeUrl,
-    postAndParseJson,
-    postTokenEndpoint,
+    expiresAtFromExpiresIn,
+    loadOauth4webapi,
     resolve,
 } from './_oauth.js'
 import type { PkceLazyString } from './pkce.js'
@@ -65,13 +70,15 @@ export type DcrProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
      * User-facing remediation hints attached to every CliError this factory
      * throws (`AUTH_DCR_FAILED` from `prepare()` / `authorize()` and
      * `AUTH_TOKEN_EXCHANGE_FAILED` from `exchangeCode()`). Server-returned
-     * response bodies are appended after these so the actionable hint stays
+     * error details are appended after these so the actionable hint stays
      * first.
      */
     errorHints?: string[]
-    /** Inject a fetch implementation (tests). */
+    /** Inject a fetch implementation (tests / custom transport). */
     fetchImpl?: typeof fetch
 }
+
+const MISSING_PEER_HINTS = ['Run `npm install oauth4webapi` in your CLI.']
 
 const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
     'client_secret_basic',
@@ -80,74 +87,77 @@ const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
 ])
 
 /**
- * Build an `AuthProvider` for the RFC 7591 Dynamic Client Registration flow.
+ * Build an `AuthProvider` for the RFC 7591 Dynamic Client Registration flow,
+ * driven by [`oauth4webapi`](https://github.com/panva/oauth4webapi) (an
+ * optional peer dep — installed only by DCR/refresh consumers).
  *
- *  - `prepare`: POST `clientMetadata` to `registrationUrl`. Stash the issued
- *    `client_id`, optional `client_secret`, and the server-returned
+ *  - `prepare`: register via `dynamicClientRegistrationRequest`. Stash the
+ *    issued `client_id`, optional `client_secret`, and the server-returned
  *    `token_endpoint_auth_method` (RFC 7591 §3.2.1 — server is authoritative)
  *    in the handshake.
  *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake.
- *  - `exchangeCode`: token endpoint POST, authenticated per the handshake's
- *    server-returned auth method (falling back to the configured one) —
- *    Basic auth header for `client_secret_basic`, secret in the body for
- *    `client_secret_post`, neither for `none` (or when the registration
- *    response carried no `client_secret`).
+ *  - `exchangeCode`: `authorizationCodeGrantRequest` authenticated per the
+ *    handshake's server-returned auth method (falling back to the configured
+ *    one) — `ClientSecretBasic` / `ClientSecretPost` / `None` (the last also
+ *    when the registration response carried no `client_secret`).
  *  - `validateToken`: caller-supplied.
  */
 export function createDcrProvider<TAccount extends AuthAccount>(
     options: DcrProviderOptions<TAccount>,
 ): AuthProvider<TAccount> {
-    const fetchImpl = options.fetchImpl ?? fetch
     const scopeSeparator = options.scopeSeparator ?? ' '
     const configuredAuthMethod: DcrTokenEndpointAuthMethod =
         options.clientMetadata.tokenEndpointAuthMethod ?? 'client_secret_basic'
 
     return {
         async prepare(input: PrepareInput): Promise<PrepareResult> {
+            const oauth = await loadOauth4webapi({
+                code: 'AUTH_DCR_FAILED',
+                missingMessage: 'oauth4webapi is required for Dynamic Client Registration.',
+                missingHints: MISSING_PEER_HINTS,
+            })
             const registrationUrl = await resolve(options.registrationUrl, {}, input.flags)
-            const registrationBody = buildRegistrationBody(
+            const as: AuthorizationServer = {
+                issuer: registrationUrl,
+                registration_endpoint: registrationUrl,
+            }
+            const metadata = buildRegistrationMetadata(
                 options.clientMetadata,
                 input.redirectUri,
                 configuredAuthMethod,
             )
 
-            const payload = await postAndParseJson<{
-                client_id?: string
-                client_secret?: string
-                token_endpoint_auth_method?: string
-            }>({
-                url: registrationUrl,
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                },
-                body: JSON.stringify(registrationBody),
-                errorCode: 'AUTH_DCR_FAILED',
-                errorLabel: 'Registration endpoint',
-                errorHints: options.errorHints,
-                fetchImpl,
-            })
-
-            if (!payload.client_id) {
-                throw buildAuthError(
+            let client: Client
+            try {
+                const response = await oauth.dynamicClientRegistrationRequest(
+                    as,
+                    metadata as Parameters<typeof oauth.dynamicClientRegistrationRequest>[1],
+                    customFetchOptions(oauth, options.fetchImpl),
+                )
+                client = await oauth.processDynamicClientRegistrationResponse(response)
+            } catch (error) {
+                throw mapOauthError(
+                    error,
+                    oauth,
                     'AUTH_DCR_FAILED',
-                    'Registration response missing client_id.',
+                    'Dynamic Client Registration failed.',
                     options.errorHints,
                 )
             }
 
-            const handshake: Record<string, unknown> = { clientId: payload.client_id }
-            if (payload.client_secret) handshake.clientSecret = payload.client_secret
+            const handshake: Record<string, unknown> = { clientId: client.client_id }
+            if (typeof client.client_secret === 'string') {
+                handshake.clientSecret = client.client_secret
+            }
             // Per RFC 7591 §3.2.1 the server may downgrade or override the
             // requested method. Only persist values we know how to act on;
             // an unknown method falls back to the configured one at exchange.
+            const serverMethod = client.token_endpoint_auth_method
             if (
-                typeof payload.token_endpoint_auth_method === 'string' &&
-                VALID_AUTH_METHODS.has(
-                    payload.token_endpoint_auth_method as DcrTokenEndpointAuthMethod,
-                )
+                typeof serverMethod === 'string' &&
+                VALID_AUTH_METHODS.has(serverMethod as DcrTokenEndpointAuthMethod)
             ) {
-                handshake.tokenEndpointAuthMethod = payload.token_endpoint_auth_method
+                handshake.tokenEndpointAuthMethod = serverMethod
             }
             return { handshake }
         },
@@ -205,41 +215,61 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             // configured one only when the server didn't echo a known method.
             const effectiveAuthMethod = issuedMethod ?? configuredAuthMethod
 
+            const oauth = await loadOauth4webapi({
+                code: 'AUTH_TOKEN_EXCHANGE_FAILED',
+                missingMessage: 'oauth4webapi is required for the DCR token exchange.',
+                missingHints: MISSING_PEER_HINTS,
+            })
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
             const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
-
-            const body = new URLSearchParams({
-                grant_type: 'authorization_code',
-                code: input.code,
-                redirect_uri: input.redirectUri,
-                code_verifier: verifier,
-            })
+            const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
+            const client: Client = { client_id: clientId }
 
             // Public-client fallback: a registration with no `client_secret`
             // can't authenticate Basic/Post regardless of the requested method,
-            // so we POST `client_id` in the body like a non-confidential
-            // client. Otherwise honour the effective auth method.
-            let basicAuth: { clientId: string; clientSecret: string } | undefined
+            // so we POST `client_id` like a non-confidential client. Otherwise
+            // honour the effective auth method.
+            let clientAuth: ClientAuth
             if (!clientSecret || effectiveAuthMethod === 'none') {
-                body.set('client_id', clientId)
+                clientAuth = oauth.None()
             } else if (effectiveAuthMethod === 'client_secret_post') {
-                body.set('client_id', clientId)
-                body.set('client_secret', clientSecret)
+                clientAuth = oauth.ClientSecretPost(clientSecret)
             } else {
-                basicAuth = { clientId, clientSecret }
+                clientAuth = oauth.ClientSecretBasic(clientSecret)
             }
 
-            const result = await postTokenEndpoint({
-                url: tokenUrl,
-                body,
-                basicAuth,
-                errorHints: options.errorHints,
-                fetchImpl,
-            })
-            return {
-                accessToken: result.accessToken,
-                refreshToken: result.refreshToken,
-                expiresAt: result.expiresAt,
+            try {
+                // The flow runtime owns CSRF state validation; skip oauth4webapi's
+                // own state check (it only brands the params for the grant call).
+                const callbackParameters = oauth.validateAuthResponse(
+                    as,
+                    client,
+                    new URLSearchParams({ code: input.code }),
+                    oauth.skipStateCheck,
+                )
+                const response = await oauth.authorizationCodeGrantRequest(
+                    as,
+                    client,
+                    clientAuth,
+                    callbackParameters,
+                    input.redirectUri,
+                    verifier,
+                    customFetchOptions(oauth, options.fetchImpl),
+                )
+                const result = await oauth.processAuthorizationCodeResponse(as, client, response)
+                return {
+                    accessToken: result.access_token,
+                    refreshToken: result.refresh_token,
+                    expiresAt: expiresAtFromExpiresIn(result.expires_in),
+                }
+            } catch (error) {
+                throw mapOauthError(
+                    error,
+                    oauth,
+                    'AUTH_TOKEN_EXCHANGE_FAILED',
+                    'Token exchange failed.',
+                    options.errorHints,
+                )
             }
         },
 
@@ -247,7 +277,37 @@ export function createDcrProvider<TAccount extends AuthAccount>(
     }
 }
 
-function buildRegistrationBody(
+/** Thread an injected `fetchImpl` into oauth4webapi via its `customFetch` symbol. */
+function customFetchOptions(
+    oauth: typeof import('oauth4webapi'),
+    fetchImpl: typeof fetch | undefined,
+): { [k: symbol]: typeof fetch } | undefined {
+    return fetchImpl ? { [oauth.customFetch]: fetchImpl } : undefined
+}
+
+/**
+ * Translate an oauth4webapi failure into a typed `CliError`. A `ResponseBodyError`
+ * carries the server's OAuth error JSON (`error` / `error_description`) — surface
+ * it so a misconfigured server is diagnosable. Everything else (non-conform
+ * status, non-JSON body, network failure) collapses to the raw message.
+ */
+function mapOauthError(
+    error: unknown,
+    oauth: typeof import('oauth4webapi'),
+    code: AuthErrorCode,
+    message: string,
+    hints: string[] | undefined,
+): CliError {
+    if (error instanceof oauth.ResponseBodyError) {
+        const detail = error.error_description
+            ? `${error.error} (${error.error_description})`
+            : error.error
+        return buildAuthError(code, message, hints, detail)
+    }
+    return buildAuthError(code, message, hints, getErrorMessage(error))
+}
+
+function buildRegistrationMetadata(
     metadata: DcrClientMetadata,
     redirectUri: string,
     tokenEndpointAuthMethod: DcrTokenEndpointAuthMethod,

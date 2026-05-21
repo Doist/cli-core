@@ -64,19 +64,6 @@ export function buildPkceAuthorizeUrl(input: BuildPkceAuthorizeUrlInput): string
     return url.toString()
 }
 
-/**
- * Per RFC 6749 §2.3.1, the `client_id` and `client_secret` MUST be
- * `application/x-www-form-urlencoded`-encoded before being concatenated with
- * a colon for HTTP Basic Authentication. A literal colon (or any reserved
- * character) in either value would otherwise corrupt the credential.
- */
-export function encodeBasicAuth(clientId: string, clientSecret: string): string {
-    return Buffer.from(
-        `${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`,
-        'utf8',
-    ).toString('base64')
-}
-
 export type PostAndParseJsonInput = {
     url: string
     headers: Record<string, string>
@@ -137,8 +124,6 @@ export type PostTokenEndpointInput = {
     url: string
     /** Form-encoded body. Caller owns grant_type + grant-specific params. */
     body: URLSearchParams
-    /** When present, sent as `Authorization: Basic base64(clientId:clientSecret)`. */
-    basicAuth?: { clientId: string; clientSecret: string }
     /**
      * User-facing remediation hints attached to every `CliError` this helper
      * throws (network failure, non-2xx, parse failure, missing access_token).
@@ -158,8 +143,8 @@ export type PostTokenEndpointResult = {
 
 /**
  * POST to an OAuth 2.0 token endpoint and parse the standard JSON response.
- * The same shape covers `authorization_code` (PKCE / DCR exchange) and
- * `refresh_token` grants — the caller picks the grant by populating `body`.
+ * Covers the public-client `authorization_code` exchange (PKCE) — the caller
+ * owns `grant_type` and the grant-specific params via `body`.
  *
  * Failures uniformly throw `CliError('AUTH_TOKEN_EXCHANGE_FAILED', …)`:
  * network errors, non-2xx responses (with body text as a hint), non-JSON
@@ -171,9 +156,6 @@ export async function postTokenEndpoint(
     const headers: Record<string, string> = {
         'Content-Type': 'application/x-www-form-urlencoded',
         Accept: 'application/json',
-    }
-    if (input.basicAuth) {
-        headers.Authorization = `Basic ${encodeBasicAuth(input.basicAuth.clientId, input.basicAuth.clientSecret)}`
     }
 
     const payload = await postAndParseJson<{
@@ -199,9 +181,51 @@ export async function postTokenEndpoint(
     return {
         accessToken: payload.access_token,
         refreshToken: payload.refresh_token,
-        expiresAt:
-            typeof payload.expires_in === 'number'
-                ? Date.now() + payload.expires_in * 1000
-                : undefined,
+        expiresAt: expiresAtFromExpiresIn(payload.expires_in),
+    }
+}
+
+/** Convert an OAuth `expires_in` (seconds from now) into a Unix-epoch ms deadline. */
+export function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefined {
+    return typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined
+}
+
+// Optional peer dep — only DCR and refresh consumers install it. The dynamic
+// import (and a missing-peer failure) is memoised so it isn't repeated on every
+// call that sits on the authenticated-call path.
+let oauthModulePromise: Promise<typeof import('oauth4webapi')> | undefined
+
+export type LoadOauthOptions = {
+    /** Error code wrapped around a missing/broken peer dep. */
+    code: AuthErrorCode
+    /** Message when the peer dep isn't installed. */
+    missingMessage: string
+    /** Remediation hints for the missing-peer case. */
+    missingHints?: string[]
+}
+
+/**
+ * Lazily import `oauth4webapi`, surfacing a typed `CliError` when the optional
+ * peer dep is absent (vs. installed-but-broken). Shared by `createPkceProvider`
+ * (refresh) and `createDcrProvider` (registration + token exchange).
+ */
+export async function loadOauth4webapi(
+    options: LoadOauthOptions,
+): Promise<typeof import('oauth4webapi')> {
+    oauthModulePromise ??= import('oauth4webapi')
+    try {
+        return await oauthModulePromise
+    } catch (error) {
+        const moduleCode = (error as NodeJS.ErrnoException | undefined)?.code
+        if (moduleCode === 'ERR_MODULE_NOT_FOUND' || moduleCode === 'MODULE_NOT_FOUND') {
+            throw new CliError(
+                options.code,
+                options.missingMessage,
+                options.missingHints ? { hints: options.missingHints } : {},
+            )
+        }
+        // Installed but failed to initialise — surface the real cause rather
+        // than a misleading "install it" hint.
+        throw new CliError(options.code, `Failed to load oauth4webapi: ${getErrorMessage(error)}`)
     }
 }

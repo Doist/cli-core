@@ -11,16 +11,19 @@ import type {
     RefreshInput,
     ValidateInput,
 } from '../types.js'
-import { buildAuthError, buildPkceAuthorizeUrl, postTokenEndpoint, resolve } from './_oauth.js'
+import {
+    buildAuthError,
+    buildPkceAuthorizeUrl,
+    expiresAtFromExpiresIn,
+    loadOauth4webapi,
+    postTokenEndpoint,
+    resolve,
+} from './_oauth.js'
 
 // Upper bound on the refresh-token POST. Kept under the refresh helper's
 // stale-lock threshold so a timed-out grant releases the lock before another
 // invocation would consider it abandoned.
 const REFRESH_TIMEOUT_MS = 10_000
-
-function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefined {
-    return typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined
-}
 
 /**
  * Lazy resolver: a literal string, or a function that builds one from the
@@ -147,7 +150,11 @@ export function createPkceProvider<TAccount extends AuthAccount>(
         validateToken: options.validate,
 
         async refreshToken(input: RefreshInput): Promise<ExchangeResult<TAccount>> {
-            const oauth = await loadOauth4webapi()
+            const oauth = await loadOauth4webapi({
+                code: 'AUTH_REFRESH_UNAVAILABLE',
+                missingMessage: 'oauth4webapi is required for refresh-token support.',
+                missingHints: ['Run `npm install oauth4webapi` in your CLI.'],
+            })
             // Mirror `exchangeCode`: a resolver that reads `flags` sees the
             // same view during silent refresh as it did at authorize time.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
@@ -219,32 +226,5 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 )
             }
         },
-    }
-}
-
-// Optional peer dep — only refresh consumers install it. The dynamic import
-// (and a missing-peer failure) is memoised so it isn't repeated on every
-// refresh, which sits on the authenticated-call path.
-let oauthModulePromise: Promise<typeof import('oauth4webapi')> | undefined
-
-async function loadOauth4webapi(): Promise<typeof import('oauth4webapi')> {
-    oauthModulePromise ??= import('oauth4webapi')
-    try {
-        return await oauthModulePromise
-    } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code
-        if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
-            throw new CliError(
-                'AUTH_REFRESH_UNAVAILABLE',
-                'oauth4webapi is required for refresh-token support.',
-                { hints: ['Run `npm install oauth4webapi` in your CLI.'] },
-            )
-        }
-        // Installed but failed to initialise — surface the real cause rather
-        // than a misleading "install it" hint.
-        throw new CliError(
-            'AUTH_REFRESH_UNAVAILABLE',
-            `Failed to load oauth4webapi: ${getErrorMessage(error)}`,
-        )
     }
 }

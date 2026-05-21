@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { createDcrProvider } from './dcr.js'
 
@@ -9,6 +9,14 @@ const respond = (body: unknown, status = 200): Response =>
         status,
         headers: { 'Content-Type': 'application/json' },
     })
+
+/** RFC 7591 success: 201 Created. `client_secret_expires_at` is required when a secret is issued. */
+const registration = (body: Record<string, unknown>): Response =>
+    respond('client_secret' in body ? { client_secret_expires_at: 0, ...body } : body, 201)
+
+/** oauth4webapi requires `token_type` on a token response. */
+const token = (body: Record<string, unknown>): Response =>
+    respond({ token_type: 'bearer', ...body })
 
 const validate = async () => ({ id: '1' }) as Account
 
@@ -32,12 +40,15 @@ function makeFetchRecorder(handler: (url: string) => Response): {
     return { calls, fetchImpl }
 }
 
+const headersOf = (call: FetchCall): Headers => new Headers(call.init.headers as HeadersInit)
+const bodyOf = (call: FetchCall): URLSearchParams => new URLSearchParams(call.init.body as string)
+
 describe('createDcrProvider', () => {
     it('prepare POSTs RFC 7591 metadata, authorize uses the issued client_id, exchangeCode sends Basic auth', async () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
-                ? respond({ client_id: 'issued-id', client_secret: 'issued-secret' })
-                : respond({ access_token: 'tok-1', expires_in: 3600 }),
+                ? registration({ client_id: 'issuedid', client_secret: 'issuedsecret' })
+                : token({ access_token: 'tok-1', expires_in: 3600 }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -54,7 +65,7 @@ describe('createDcrProvider', () => {
         })
 
         const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
-        expect(prepared.handshake).toEqual({ clientId: 'issued-id', clientSecret: 'issued-secret' })
+        expect(prepared.handshake).toEqual({ clientId: 'issuedid', clientSecret: 'issuedsecret' })
 
         const regBody = JSON.parse(calls[0].init.body as string) as Record<string, unknown>
         expect(regBody).toMatchObject({
@@ -77,14 +88,14 @@ describe('createDcrProvider', () => {
             handshake: prepared.handshake,
         })
         const url = new URL(authorize.authorizeUrl)
-        expect(url.searchParams.get('client_id')).toBe('issued-id')
+        expect(url.searchParams.get('client_id')).toBe('issuedid')
         expect(url.searchParams.get('redirect_uri')).toBe(REDIRECT_URI)
         expect(url.searchParams.get('state')).toBe('state-123')
         expect(url.searchParams.get('code_challenge_method')).toBe('S256')
         expect(url.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]+$/)
         expect(url.searchParams.get('scope')).toBe('user:read threads:read')
         expect(typeof authorize.handshake.codeVerifier).toBe('string')
-        expect(authorize.handshake.clientSecret).toBe('issued-secret')
+        expect(authorize.handshake.clientSecret).toBe('issuedsecret')
 
         const result = await provider.exchangeCode({
             code: 'auth-code',
@@ -96,11 +107,12 @@ describe('createDcrProvider', () => {
         expect(result.expiresAt).toBeGreaterThan(Date.now())
 
         const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
-        const tokenHeaders = tokenCall.init.headers as Record<string, string>
-        expect(tokenHeaders.Authorization).toBe(
-            `Basic ${Buffer.from('issued-id:issued-secret', 'utf8').toString('base64')}`,
+        // oauth4webapi form-url-encodes the credentials per RFC 6749 §2.3.1
+        // before base64; alphanumeric id/secret round-trip unchanged.
+        expect(headersOf(tokenCall).get('authorization')).toBe(
+            `Basic ${Buffer.from('issuedid:issuedsecret', 'utf8').toString('base64')}`,
         )
-        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
+        const tokenBody = bodyOf(tokenCall)
         expect(tokenBody.get('grant_type')).toBe('authorization_code')
         expect(tokenBody.get('code')).toBe('auth-code')
         expect(tokenBody.get('redirect_uri')).toBe(REDIRECT_URI)
@@ -112,8 +124,8 @@ describe('createDcrProvider', () => {
     it('client_secret_post puts the secret in the body, omits the Authorization header, and forwards the auth method in the registration POST', async () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
-                ? respond({ client_id: 'cid', client_secret: 'sec' })
-                : respond({ access_token: 'tok-2' }),
+                ? registration({ client_id: 'cid', client_secret: 'sec' })
+                : token({ access_token: 'tok-2' }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -136,9 +148,8 @@ describe('createDcrProvider', () => {
         })
 
         const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
-        const tokenHeaders = tokenCall.init.headers as Record<string, string>
-        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
-        expect(tokenHeaders.Authorization).toBeUndefined()
+        const tokenBody = bodyOf(tokenCall)
+        expect(headersOf(tokenCall).has('authorization')).toBe(false)
         expect(tokenBody.get('client_id')).toBe('cid')
         expect(tokenBody.get('client_secret')).toBe('sec')
     })
@@ -146,8 +157,8 @@ describe('createDcrProvider', () => {
     it('falls back to public-client POST when registration omits client_secret even though client_secret_post was requested', async () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
-                ? respond({ client_id: 'pub-cid' }) // server returned no client_secret
-                : respond({ access_token: 'tok' }),
+                ? registration({ client_id: 'pub-cid' }) // server returned no client_secret
+                : token({ access_token: 'tok' }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -172,9 +183,8 @@ describe('createDcrProvider', () => {
         })
 
         const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
-        const tokenHeaders = tokenCall.init.headers as Record<string, string>
-        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
-        expect(tokenHeaders.Authorization).toBeUndefined()
+        const tokenBody = bodyOf(tokenCall)
+        expect(headersOf(tokenCall).has('authorization')).toBe(false)
         expect(tokenBody.get('client_id')).toBe('pub-cid')
         expect(tokenBody.has('client_secret')).toBe(false)
     })
@@ -184,12 +194,12 @@ describe('createDcrProvider', () => {
         // Effective method on the token request must follow the server.
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
-                ? respond({
+                ? registration({
                       client_id: 'cid',
                       client_secret: 'sec',
                       token_endpoint_auth_method: 'client_secret_post',
                   })
-                : respond({ access_token: 'tok' }),
+                : token({ access_token: 'tok' }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -211,9 +221,8 @@ describe('createDcrProvider', () => {
         })
 
         const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
-        const tokenHeaders = tokenCall.init.headers as Record<string, string>
-        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
-        expect(tokenHeaders.Authorization).toBeUndefined()
+        const tokenBody = bodyOf(tokenCall)
+        expect(headersOf(tokenCall).has('authorization')).toBe(false)
         expect(tokenBody.get('client_id')).toBe('cid')
         expect(tokenBody.get('client_secret')).toBe('sec')
     })
@@ -221,8 +230,8 @@ describe('createDcrProvider', () => {
     it('tokenEndpointAuthMethod=none (or missing client_secret) sends client_id in the body and no Authorization header', async () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
-                ? respond({ client_id: 'pub-cid' }) // public-client DCR: no client_secret
-                : respond({ access_token: 'tok-3' }),
+                ? registration({ client_id: 'pub-cid' }) // public-client DCR: no client_secret
+                : token({ access_token: 'tok-3' }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -244,14 +253,13 @@ describe('createDcrProvider', () => {
         })
 
         const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
-        const tokenHeaders = tokenCall.init.headers as Record<string, string>
-        const tokenBody = new URLSearchParams(tokenCall.init.body as string)
-        expect(tokenHeaders.Authorization).toBeUndefined()
+        const tokenBody = bodyOf(tokenCall)
+        expect(headersOf(tokenCall).has('authorization')).toBe(false)
         expect(tokenBody.get('client_id')).toBe('pub-cid')
         expect(tokenBody.has('client_secret')).toBe(false)
     })
 
-    it('DCR non-2xx is AUTH_DCR_FAILED; errorHints are prepended before the body text', async () => {
+    it('surfaces the server OAuth error from a failed registration as AUTH_DCR_FAILED, hints first', async () => {
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
             authorizeUrl: AUTHORIZE_URL,
@@ -260,9 +268,7 @@ describe('createDcrProvider', () => {
             validate,
             errorHints: ['Re-run: cli auth login'],
             fetchImpl: (() =>
-                Promise.resolve(
-                    new Response('invalid_redirect_uri', { status: 400 }),
-                )) as typeof fetch,
+                Promise.resolve(respond({ error: 'invalid_redirect_uri' }, 400))) as typeof fetch,
         })
         await expect(
             provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
@@ -283,11 +289,11 @@ describe('createDcrProvider', () => {
                 fetchImpl,
             })
         const cases: Array<() => Promise<Response>> = [
-            () => Promise.resolve(respond({ client_secret: 'sec' })),
+            () => Promise.resolve(respond({ scope: 'read' }, 201)), // 201 but no client_id
             () =>
                 Promise.resolve(
                     new Response('<html>oops</html>', {
-                        status: 200,
+                        status: 201,
                         headers: { 'Content-Type': 'text/html' },
                     }),
                 ),
@@ -303,7 +309,7 @@ describe('createDcrProvider', () => {
     })
 
     it('clientMetadata.extra fields appear in the registration POST body verbatim; named fields win on collisions', async () => {
-        const { calls, fetchImpl } = makeFetchRecorder(() => respond({ client_id: 'cid' }))
+        const { calls, fetchImpl } = makeFetchRecorder(() => registration({ client_id: 'cid' }))
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
             authorizeUrl: AUTHORIZE_URL,
@@ -324,5 +330,33 @@ describe('createDcrProvider', () => {
         expect(body.software_statement).toBe('eyJhbGciOiJSUzI1NiJ9.test')
         expect(body.contacts).toEqual(['ops@example.com'])
         expect(body.client_name).toBe('CLI')
+    })
+
+    it('maps a missing oauth4webapi peer dep to AUTH_DCR_FAILED', async () => {
+        // The optional peer dep isn't installed → the lazy import fails. Force
+        // that by mocking the module to throw, then re-importing the provider
+        // so its lazy `import('oauth4webapi')` resolves to the throwing mock.
+        vi.resetModules()
+        vi.doMock('oauth4webapi', () => {
+            throw new Error("Cannot find package 'oauth4webapi'")
+        })
+        try {
+            const { createDcrProvider: freshCreate } = await import('./dcr.js')
+            const provider = freshCreate<Account>({
+                registrationUrl: REGISTRATION_URL,
+                authorizeUrl: AUTHORIZE_URL,
+                tokenUrl: TOKEN_URL,
+                clientMetadata: { clientName: 'CLI' },
+                validate,
+                fetchImpl: (() =>
+                    Promise.resolve(registration({ client_id: 'x' }))) as typeof fetch,
+            })
+            await expect(
+                provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
+            ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
+        } finally {
+            vi.doUnmock('oauth4webapi')
+            vi.resetModules()
+        }
     })
 })

@@ -5,7 +5,7 @@ import { postTokenEndpoint } from './_oauth.js'
 const TOKEN_URL = 'https://example.com/oauth/token'
 
 describe('postTokenEndpoint', () => {
-    it('POSTs the form body, returns access_token + refresh_token + expiresAt, no Authorization header without basicAuth', async () => {
+    it('POSTs the form body, returns access_token + refresh_token + expiresAt, sets no Authorization header', async () => {
         let captured: { url: string; init: RequestInit } | undefined
         const result = await postTokenEndpoint({
             url: TOKEN_URL,
@@ -30,24 +30,6 @@ describe('postTokenEndpoint', () => {
         const headers = captured?.init.headers as Record<string, string>
         expect(headers['Content-Type']).toBe('application/x-www-form-urlencoded')
         expect(headers.Authorization).toBeUndefined()
-    })
-
-    it('adds Authorization: Basic when basicAuth is supplied', async () => {
-        let headers: Record<string, string> | undefined
-        await postTokenEndpoint({
-            url: TOKEN_URL,
-            body: new URLSearchParams({ grant_type: 'authorization_code' }),
-            basicAuth: { clientId: 'cid', clientSecret: 'sec' },
-            fetchImpl: ((_url, init = {}) => {
-                headers = init.headers as Record<string, string>
-                return Promise.resolve(
-                    new Response(JSON.stringify({ access_token: 'x' }), { status: 200 }),
-                )
-            }) as typeof fetch,
-        })
-        expect(headers?.Authorization).toBe(
-            `Basic ${Buffer.from('cid:sec', 'utf8').toString('base64')}`,
-        )
     })
 
     it('non-2xx wraps as AUTH_TOKEN_EXCHANGE_FAILED with user errorHints first and body text second', async () => {
