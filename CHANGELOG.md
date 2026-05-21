@@ -1,3 +1,9 @@
+## [0.19.0](https://github.com/Doist/cli-core/compare/v0.18.0...v0.19.0) (2026-05-21)
+
+### Features
+
+* **auth:** silent refresh helper + PKCE refreshToken via oauth4webapi ([#39](https://github.com/Doist/cli-core/issues/39)) ([45e4f22](https://github.com/Doist/cli-core/commit/45e4f22a27705e45b9eec2d091be2f11160665ee)), closes [refresh.test.ts#propagates](https://github.com/Doist/refresh.test.ts/issues/propagates)
+
 ## [0.18.0](https://github.com/Doist/cli-core/compare/v0.17.0...v0.18.0) (2026-05-19)
 
 ### Features
