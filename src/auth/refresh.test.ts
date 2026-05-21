@@ -134,19 +134,25 @@ describe('refreshAccessToken', () => {
         expect(state.setBundleCalls[0].options).toBeUndefined()
     })
 
-    it('returns rotated:false without POSTing when access expiry is outside the skew window', async () => {
-        const { store } = fakeStore({
-            account,
-            bundle: bundle({ accessTokenExpiresAt: Date.now() + 60_000 }),
-        })
+    it.each([
+        [
+            'expiry is outside the skew window',
+            () =>
+                fakeStore({
+                    account,
+                    bundle: bundle({ accessTokenExpiresAt: Date.now() + 60_000 }),
+                }).store,
+        ],
+        [
+            'no expiry is tracked (consumer reactive-refreshes on 401)',
+            () =>
+                fakeStore({ account, bundle: { accessToken: 'tok_a', refreshToken: 'r_a' } }).store,
+        ],
+    ])('returns rotated:false without POSTing when %s', async (_label, makeStore) => {
+        const store = makeStore()
         const { provider, refreshSpy } = fakeProvider()
 
-        const result = await refreshAccessToken({
-            store,
-            provider,
-            skewMs: 5_000,
-            lockPath,
-        })
+        const result = await refreshAccessToken({ store, provider, skewMs: 5_000, lockPath })
 
         expect(result.rotated).toBe(false)
         expect(refreshSpy).not.toHaveBeenCalled()
@@ -170,72 +176,45 @@ describe('refreshAccessToken', () => {
         expect(refreshSpy).toHaveBeenCalledTimes(1)
     })
 
-    it('returns rotated:false when accessTokenExpiresAt is missing (consumer reactive-refreshes on 401)', async () => {
-        const { store } = fakeStore({
-            account,
-            bundle: { accessToken: 'tok_a', refreshToken: 'r_a' },
-        })
-        const { provider, refreshSpy } = fakeProvider()
-
-        const result = await refreshAccessToken({ store, provider, lockPath })
-
-        expect(result.rotated).toBe(false)
-        expect(refreshSpy).not.toHaveBeenCalled()
-    })
-
-    it('throws AUTH_REFRESH_UNAVAILABLE when the bundle has no refresh token', async () => {
-        const { store } = fakeStore({
-            account,
-            bundle: { accessToken: 'tok_a', accessTokenExpiresAt: Date.now() + 1_000 },
-        })
-        const { provider } = fakeProvider()
-
-        await expect(
-            refreshAccessToken({ store, provider, skewMs: 5_000, lockPath }),
-        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
-    })
-
-    it('throws AUTH_REFRESH_UNAVAILABLE when the store has no snapshot', async () => {
-        const { store } = fakeStore(null)
-        const { provider } = fakeProvider()
-
-        await expect(
-            refreshAccessToken({ store, provider, force: true, lockPath }),
-        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
-    })
-
-    it('throws AUTH_REFRESH_UNAVAILABLE when the provider does not implement refreshToken', async () => {
-        const { store } = fakeStore({ account, bundle: bundle() })
-        const provider: AuthProvider<Account> = {
-            async authorize() {
-                return { authorizeUrl: '', handshake: {} }
+    it.each([
+        [
+            'the bundle has no refresh token',
+            () => ({
+                store: fakeStore({
+                    account,
+                    bundle: { accessToken: 'tok_a', accessTokenExpiresAt: Date.now() + 1_000 },
+                }).store,
+                provider: fakeProvider().provider,
+            }),
+        ],
+        [
+            'no credential is stored',
+            () => ({ store: fakeStore(null).store, provider: fakeProvider().provider }),
+        ],
+        [
+            'the provider does not implement refreshToken',
+            () => {
+                const { refreshToken: _drop, ...provider } = fakeProvider().provider
+                void _drop
+                return { store: fakeStore({ account, bundle: bundle() }).store, provider }
             },
-            async exchangeCode() {
-                return { accessToken: '' }
-            },
-            async validateToken() {
-                return account
-            },
-        }
-
-        await expect(
-            refreshAccessToken({ store, provider, force: true, lockPath }),
-        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
-    })
-
-    it('throws AUTH_REFRESH_UNAVAILABLE when the store does not implement activeBundle', async () => {
-        const store: TokenStore<Account> = {
-            async active() {
-                return { token: 'tok_a', account }
-            },
-            async set() {},
-            async clear() {},
-            async list() {
-                return []
-            },
-            async setDefault() {},
-        }
-        const { provider } = fakeProvider()
+        ],
+        [
+            'the store does not implement activeBundle',
+            () => ({
+                store: fakeStore({ account, bundle: bundle() }, { activeBundle: undefined }).store,
+                provider: fakeProvider().provider,
+            }),
+        ],
+        [
+            'the store does not implement setBundle',
+            () => ({
+                store: fakeStore({ account, bundle: bundle() }, { setBundle: undefined }).store,
+                provider: fakeProvider().provider,
+            }),
+        ],
+    ])('throws AUTH_REFRESH_UNAVAILABLE when %s', async (_label, setup) => {
+        const { store, provider } = setup()
 
         await expect(
             refreshAccessToken({ store, provider, force: true, lockPath }),
@@ -314,17 +293,6 @@ describe('refreshAccessToken', () => {
         expect(result.bundle.refreshToken).toBe('r_existing')
         expect(result.bundle.refreshTokenExpiresAt).toBe(9_999_999_999_999)
         expect(state.setBundleCalls[0].bundle.refreshToken).toBe('r_existing')
-    })
-
-    it('throws AUTH_REFRESH_UNAVAILABLE when the store implements activeBundle but not setBundle', async () => {
-        // A store that can read the bundle but not persist a full one would
-        // silently drop the rotated refresh token — refuse instead.
-        const { store } = fakeStore({ account, bundle: bundle() }, { setBundle: undefined })
-        const { provider } = fakeProvider()
-
-        await expect(
-            refreshAccessToken({ store, provider, force: true, lockPath }),
-        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
     })
 
     it('releases the lock after a failed refresh so a retry can proceed', async () => {
