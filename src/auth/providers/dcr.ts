@@ -98,9 +98,9 @@ const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
  *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake.
  *  - `exchangeCode`: `authorizationCodeGrantRequest` authenticated per the
  *    handshake's server-returned auth method (falling back to the configured
- *    one) — HTTP Basic (sent raw; see `rawClientSecretBasic`), client-secret
- *    POST, or public-client `None` (the last also when the registration
- *    response carried no `client_secret`).
+ *    one) — HTTP Basic (RFC 3986-encoded, see `clientSecretBasicRfc3986`),
+ *    client-secret POST, or public-client `None` (the last also when the
+ *    registration response carried no `client_secret`).
  *  - `validateToken`: caller-supplied.
  */
 export function createDcrProvider<TAccount extends AuthAccount>(
@@ -243,7 +243,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             } else if (effectiveAuthMethod === 'client_secret_post') {
                 clientAuth = oauth.ClientSecretPost(clientSecret)
             } else {
-                clientAuth = rawClientSecretBasic(clientSecret)
+                clientAuth = clientSecretBasicRfc3986(clientSecret)
             }
 
             try {
@@ -286,20 +286,21 @@ export function createDcrProvider<TAccount extends AuthAccount>(
 }
 
 /**
- * HTTP Basic client auth that sends `client_id:client_secret` **raw** — without
- * oauth4webapi's RFC 6749 §2.3.1 `application/x-www-form-urlencoded` encoding of
- * each component. Many OAuth servers don't url-decode the Basic credential, so
- * an encoded `client_id` containing reserved chars (e.g. a DCR-issued `twd_…`
- * → `twd%5F…`) fails the server-side lookup. Raw is interoperable with both
- * decoding and non-decoding servers for the URL-safe credentials OAuth servers
- * issue in practice; consumers whose credentials contain `:` / `%` / `+` (rare)
- * should select `client_secret_post` instead.
+ * HTTP Basic client auth that percent-encodes each credential component with
+ * `encodeURIComponent` (RFC 3986) rather than oauth4webapi's stricter RFC 6749
+ * §2.3.1 `application/x-www-form-urlencoded` form. Both escape the genuinely
+ * reserved chars (`:` `%` `+` `/` …) so a conformant server reconstructs them —
+ * but §2.3.1 *also* escapes the unreserved `-` `_` `.` `~`, which breaks servers
+ * that don't url-decode the Basic credential (a DCR-issued `twd_…` would arrive
+ * as `twd%5F…` and miss the lookup). Leaving those unreserved chars intact keeps
+ * such servers working while still transmitting reserved chars safely.
  */
-function rawClientSecretBasic(clientSecret: string): ClientAuth {
+function clientSecretBasicRfc3986(clientSecret: string): ClientAuth {
     return (_as, client, _body, headers) => {
-        const credentials = Buffer.from(`${client.client_id}:${clientSecret}`, 'utf8').toString(
-            'base64',
-        )
+        const credentials = Buffer.from(
+            `${encodeURIComponent(client.client_id)}:${encodeURIComponent(clientSecret)}`,
+            'utf8',
+        ).toString('base64')
         headers.set('authorization', `Basic ${credentials}`)
     }
 }
