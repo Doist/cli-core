@@ -13,6 +13,11 @@ import {
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 
+vi.mock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs')>()
+    return { ...actual, realpathSync: vi.fn(actual.realpathSync) }
+})
+
 vi.mock('../config.js', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../config.js')>()
     return {
@@ -23,8 +28,10 @@ vi.mock('../config.js', async (importOriginal) => {
 })
 
 const { spawn } = await import('node:child_process')
+const { realpathSync } = await import('node:fs')
 const config = await import('../config.js')
 const mockSpawn = vi.mocked(spawn)
+const mockRealpathSync = vi.mocked(realpathSync)
 const mockReadConfigOrThrow = vi.mocked(config.readConfigOrThrow)
 const mockUpdateConfigOrThrow = vi.mocked(config.updateConfigOrThrow)
 
@@ -79,6 +86,9 @@ beforeEach(() => {
     mockReadConfigOrThrow.mockReset().mockResolvedValue({})
     mockUpdateConfigOrThrow.mockReset().mockResolvedValue(undefined)
     mockSpawn.mockClear()
+    // Identity by default → resolved path has no `/Cellar/`, so the npm/pnpm
+    // cases stay brew-negative. Brew tests override this per-test.
+    mockRealpathSync.mockReset().mockImplementation((p) => String(p))
 })
 
 afterEach(() => {
@@ -258,6 +268,51 @@ describe('update install flow', () => {
             channel: 'stable',
             installed: true,
         })
+    })
+})
+
+describe('update brew install flow', () => {
+    const CELLAR_PATH = '/opt/homebrew/Cellar/todoist-cli/1.1.0/bin/td'
+
+    function createBrewProgram(formula?: string): Command {
+        const program = new Command()
+        program.name('td').exitOverride()
+        registerUpdateCommand(program, { ...BASE_OPTIONS, brewFormula: formula })
+        return program
+    }
+
+    it('runs `brew upgrade <formula>` with inherited stdio instead of npm', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createBrewProgram('doist/tap/todoist-cli').parseAsync(['node', 'td', 'update'])
+        expect(mockSpawn).toHaveBeenCalledWith('brew', ['upgrade', 'doist/tap/todoist-cli'], {
+            stdio: 'inherit',
+        })
+    })
+
+    it('throws UPDATE_INSTALL_FAILED on a non-zero brew exit', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        mockSpawnExit(1)
+        await expect(
+            createBrewProgram('doist/tap/todoist-cli').parseAsync(['node', 'td', 'update']),
+        ).rejects.toMatchObject({
+            code: 'UPDATE_INSTALL_FAILED',
+            message: expect.stringContaining('brew exited with code 1'),
+        })
+    })
+
+    it('refuses to fall back to npm when brew-installed without a configured formula', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        await expect(
+            createBrewProgram().parseAsync(['node', 'td', 'update']),
+        ).rejects.toMatchObject({
+            code: 'UPDATE_INSTALL_FAILED',
+            hints: [expect.stringContaining('brew upgrade')],
+        })
+        expect(mockSpawn).not.toHaveBeenCalled()
     })
 })
 
