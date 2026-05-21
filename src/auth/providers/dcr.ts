@@ -21,7 +21,7 @@ import {
     expiresAtFromExpiresIn,
     loadOauth4webapi,
     resolve,
-} from './_oauth.js'
+} from './oauth.js'
 import type { OAuthLazyString } from './pkce.js'
 
 export type DcrTokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none'

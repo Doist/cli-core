@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { postTokenEndpoint } from './_oauth.js'
+import { postTokenEndpoint } from './oauth.js'
 
 const TOKEN_URL = 'https://example.com/oauth/token'
 

@@ -18,7 +18,7 @@ import {
     loadOauth4webapi,
     postTokenEndpoint,
     resolve,
-} from './_oauth.js'
+} from './oauth.js'
 
 // Upper bound on the refresh-token POST. Kept under the refresh helper's
 // stale-lock threshold so a timed-out grant releases the lock before another
