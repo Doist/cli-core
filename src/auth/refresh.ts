@@ -1,15 +1,8 @@
-import { open, unlink } from 'node:fs/promises'
+import { open, stat, unlink } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { CliError, getErrorMessage } from '../errors.js'
 import { bundleFromExchange, persistBundle } from './persist.js'
-import type {
-    AccountRef,
-    ActiveBundleSnapshot,
-    AuthAccount,
-    AuthProvider,
-    TokenBundle,
-    TokenStore,
-} from './types.js'
+import type { AccountRef, AuthAccount, AuthProvider, TokenBundle, TokenStore } from './types.js'
 
 export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
     store: TokenStore<TAccount>
@@ -23,7 +16,7 @@ export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
     /**
      * Reactive path: caller hit a 401 and wants a rotation regardless of
      * expiry. Skips the skew check; still honours all the "unavailable"
-     * gates (no refresh token, no provider hook, no `activeBundle`).
+     * gates (no refresh token, no provider hook, no `activeBundle`/`setBundle`).
      */
     force?: boolean
     /**
@@ -32,6 +25,12 @@ export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
      * `${getConfigPath(serviceName)}.refresh.lock`.
      */
     lockPath: string
+    /**
+     * Forwarded to `provider.refreshToken` as its `handshake`, so consumers
+     * can pass runtime context the provider's resolvers need (e.g. a
+     * `--env`-derived base URL / client id). Defaults to `{}`.
+     */
+    handshake?: Record<string, unknown>
 }
 
 export type RefreshAccessTokenResult<TAccount extends AuthAccount> = {
@@ -43,6 +42,10 @@ export type RefreshAccessTokenResult<TAccount extends AuthAccount> = {
 const DEFAULT_SKEW_MS = 60_000
 const LOCK_WAIT_TIMEOUT_MS = 2_000
 const LOCK_POLL_INTERVAL_MS = 50
+// A lock older than this was almost certainly left by a crashed holder — the
+// refresh POST is bounded by a provider-side timeout well under this — so it's
+// safe to steal rather than block every future refresh forever.
+const LOCK_STALE_MS = 15_000
 
 /**
  * Rotate the access token using the stored refresh token. Proactive when
@@ -52,27 +55,38 @@ const LOCK_POLL_INTERVAL_MS = 50
  * others re-read the rotated bundle from the store.
  *
  * Throws `AUTH_REFRESH_UNAVAILABLE` when refresh isn't possible in the
- * current setup: no refresh token stored, store doesn't implement
- * `activeBundle`, provider doesn't implement `refreshToken`, or
- * `oauth4webapi` isn't installed. Server-side rejections surface as
- * `AUTH_REFRESH_EXPIRED` (re-login required) or `AUTH_REFRESH_TRANSIENT`
- * (retryable).
+ * current setup: store doesn't implement `activeBundle` + `setBundle`,
+ * provider doesn't implement `refreshToken`, no credential, or no refresh
+ * token. Server-side rejections surface as `AUTH_REFRESH_EXPIRED` (re-login
+ * required) or `AUTH_REFRESH_TRANSIENT` (retryable).
  */
 export async function refreshAccessToken<TAccount extends AuthAccount>(
     options: RefreshAccessTokenOptions<TAccount>,
 ): Promise<RefreshAccessTokenResult<TAccount>> {
     const { store, provider, ref, force, lockPath } = options
     const skewMs = options.skewMs ?? DEFAULT_SKEW_MS
+    const handshake = options.handshake ?? {}
 
-    if (!store.activeBundle) {
+    // Refresh must both read the full bundle and persist the rotated one. A
+    // store missing either capability can't participate — fail loudly rather
+    // than silently dropping the rotated refresh token via a `set()` fallback.
+    if (!store.activeBundle || !store.setBundle) {
         throw new CliError(
             'AUTH_REFRESH_UNAVAILABLE',
-            'TokenStore does not implement activeBundle; refresh is not supported.',
+            'TokenStore must implement activeBundle + setBundle for refresh.',
             { hints: ['Re-run the login command to reauthorize.'] },
         )
     }
+    if (!provider.refreshToken) {
+        throw new CliError(
+            'AUTH_REFRESH_UNAVAILABLE',
+            'Auth provider does not implement refreshToken.',
+        )
+    }
+    const activeBundle = store.activeBundle.bind(store)
+    const refreshGrant = provider.refreshToken.bind(provider)
 
-    const snapshot = await store.activeBundle(ref)
+    const snapshot = await activeBundle(ref)
     if (!snapshot) {
         throw new CliError('AUTH_REFRESH_UNAVAILABLE', 'No stored credential to refresh.', {
             hints: ['Re-run the login command to reauthorize.'],
@@ -88,18 +102,15 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
             hints: ['Re-run the login command to reauthorize.'],
         })
     }
-    if (!provider.refreshToken) {
-        throw new CliError(
-            'AUTH_REFRESH_UNAVAILABLE',
-            'Auth provider does not implement refreshToken.',
-        )
-    }
 
-    const lock = await acquireLock(lockPath, store, ref, snapshot)
-    if (lock.kind === 'rotated-by-holder') {
-        return { rotated: true, bundle: lock.snapshot.bundle, account: lock.snapshot.account }
-    }
-    if (lock.kind === 'timeout') {
+    const acquired = await acquireLock(lockPath)
+    if (!acquired) {
+        // Holder didn't release in time. It may have rotated then crashed
+        // before unlinking — re-read once and adopt the rotated bundle if so.
+        const fresh = await activeBundle(ref)
+        if (fresh && hasRotated(snapshot.bundle, fresh.bundle)) {
+            return { rotated: true, bundle: fresh.bundle, account: fresh.account }
+        }
         throw new CliError(
             'AUTH_REFRESH_TRANSIENT',
             'Timed out waiting for a concurrent refresh to complete.',
@@ -108,14 +119,25 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
     }
 
     try {
-        const exchange = await provider.refreshToken({
-            refreshToken: snapshot.bundle.refreshToken,
-            handshake: {},
-        })
-
-        const account = exchange.account ?? snapshot.account
-        const bundle = bundleFromExchange(exchange, snapshot.bundle)
-
+        // Re-read under the lock (covers a clean acquire too): a concurrent
+        // holder may have rotated between our snapshot read and acquiring the
+        // lock, so adopt their bundle rather than POST a now-stale refresh
+        // token. A throw here releases the lock via `finally`.
+        const current = (await activeBundle(ref)) ?? snapshot
+        if (hasRotated(snapshot.bundle, current.bundle)) {
+            return { rotated: true, bundle: current.bundle, account: current.account }
+        }
+        const refreshToken = current.bundle.refreshToken
+        if (!refreshToken) {
+            throw new CliError(
+                'AUTH_REFRESH_UNAVAILABLE',
+                'Stored credential has no refresh token.',
+                { hints: ['Re-run the login command to reauthorize.'] },
+            )
+        }
+        const exchange = await refreshGrant({ refreshToken, handshake })
+        const account = exchange.account ?? current.account
+        const bundle = bundleFromExchange(exchange, current.bundle)
         await persistBundle({ store, account, bundle })
         return { rotated: true, bundle, account }
     } finally {
@@ -129,46 +151,40 @@ function needsRefresh(bundle: TokenBundle, skewMs: number): boolean {
     return bundle.accessTokenExpiresAt - Date.now() < skewMs
 }
 
-type LockOutcome<TAccount extends AuthAccount> =
-    | { kind: 'acquired' }
-    | { kind: 'rotated-by-holder'; snapshot: ActiveBundleSnapshot<TAccount> }
-    | { kind: 'timeout' }
-
-// Re-reading the bundle after a contested wait — on acquire OR timeout —
-// is load-bearing: the holder may have rotated then crashed before
-// unlinking, and the waiter should still benefit from the new bundle.
-async function acquireLock<TAccount extends AuthAccount>(
-    lockPath: string,
-    store: TokenStore<TAccount>,
-    ref: AccountRef | undefined,
-    snapshotBefore: ActiveBundleSnapshot<TAccount>,
-): Promise<LockOutcome<TAccount>> {
-    if (await tryCreateLockFile(lockPath)) return { kind: 'acquired' }
-
-    const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS
-    while (Date.now() < deadline) {
-        await sleep(LOCK_POLL_INTERVAL_MS)
-        if (await tryCreateLockFile(lockPath)) {
-            const fresh = await store.activeBundle?.(ref)
-            if (fresh && hasRotated(snapshotBefore.bundle, fresh.bundle)) {
-                await releaseLock(lockPath)
-                return { kind: 'rotated-by-holder', snapshot: fresh }
-            }
-            return { kind: 'acquired' }
-        }
-    }
-
-    const fresh = await store.activeBundle?.(ref)
-    if (fresh && hasRotated(snapshotBefore.bundle, fresh.bundle)) {
-        return { kind: 'rotated-by-holder', snapshot: fresh }
-    }
-    return { kind: 'timeout' }
-}
-
 function hasRotated(before: TokenBundle, after: TokenBundle): boolean {
     if (after.accessToken !== before.accessToken) return true
     if (after.accessTokenExpiresAt !== before.accessTokenExpiresAt) return true
     return false
+}
+
+async function acquireLock(lockPath: string): Promise<boolean> {
+    if (await tryAcquire(lockPath)) return true
+    const deadline = Date.now() + LOCK_WAIT_TIMEOUT_MS
+    while (Date.now() < deadline) {
+        await sleep(LOCK_POLL_INTERVAL_MS)
+        if (await tryAcquire(lockPath)) return true
+    }
+    return false
+}
+
+// Create the lock with O_EXCL. On EEXIST, steal it if it's stale (older than
+// LOCK_STALE_MS — a crashed holder); otherwise report contention.
+async function tryAcquire(lockPath: string): Promise<boolean> {
+    if (await tryCreateLockFile(lockPath)) return true
+    if (await lockIsStale(lockPath)) {
+        await releaseLock(lockPath)
+        return tryCreateLockFile(lockPath)
+    }
+    return false
+}
+
+async function lockIsStale(lockPath: string): Promise<boolean> {
+    try {
+        const { mtimeMs } = await stat(lockPath)
+        return Date.now() - mtimeMs > LOCK_STALE_MS
+    } catch {
+        return false
+    }
 }
 
 async function tryCreateLockFile(lockPath: string): Promise<boolean> {

@@ -282,4 +282,29 @@ describe('createPkceProvider.refreshToken', () => {
                 'Refresh request failed: invalid_request (Missing client_secret for confidential client)',
         })
     })
+
+    it('maps a missing oauth4webapi peer dep to AUTH_REFRESH_UNAVAILABLE', async () => {
+        // The optional peer dep isn't installed → the lazy import fails. Force
+        // that by mocking the module to throw, then re-importing the provider
+        // so its lazy `import('oauth4webapi')` resolves to the throwing mock.
+        vi.resetModules()
+        vi.doMock('oauth4webapi', () => {
+            throw new Error("Cannot find package 'oauth4webapi'")
+        })
+        try {
+            const { createPkceProvider: freshCreate } = await import('./pkce.js')
+            const provider = freshCreate<Account>({
+                authorizeUrl: 'https://example.com/oauth/authorize',
+                tokenUrl: 'https://example.com/oauth/token',
+                clientId: 'client-xyz',
+                validate,
+            })
+            await expect(
+                provider.refreshToken!({ refreshToken: 'r-old', handshake: {} }),
+            ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
+        } finally {
+            vi.doUnmock('oauth4webapi')
+            vi.resetModules()
+        }
+    })
 })

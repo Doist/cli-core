@@ -3,25 +3,54 @@ import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from './types.js'
-import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
+import {
+    accountNotFoundError,
+    attachUserFlag,
+    extractUserRef,
+    requireSnapshotForRef,
+} from './user-flag.js'
+
+type StatusSnapshot<TAccount extends AuthAccount> = {
+    token: string
+    account: TAccount
+    bundle?: TokenBundle
+}
 
 /**
- * Opportunistic bundle read for `fetchLive`. Stores that don't implement
- * `activeBundle` get `undefined`; any error during the bundle read is
- * swallowed so a refresh-slot fault can't break the status command, which
- * is the user's first port of call when something is wrong.
+ * Resolve the auth snapshot for `status`. When the consumer supplies
+ * `fetchLive` (and the store implements `activeBundle`), read the bundle once
+ * and derive both the access token and the bundle from it — avoiding a second
+ * keyring round-trip on the hot path. Otherwise fall back to the narrow
+ * `active()` read. A bundle-read fault (e.g. a refresh-slot error) also falls
+ * back to `active()` so it can't break status, which is the user's first port
+ * of call when something is wrong. An explicit-ref miss throws
+ * `ACCOUNT_NOT_FOUND`, matching `requireSnapshotForRef`.
  */
-async function readBundleBestEffort<TAccount extends AuthAccount>(
+async function resolveStatusSnapshot<TAccount extends AuthAccount>(
     store: TokenStore<TAccount>,
     ref: AccountRef | undefined,
-): Promise<TokenBundle | undefined> {
-    if (!store.activeBundle) return undefined
-    try {
-        const snapshot = await store.activeBundle(ref)
-        return snapshot?.bundle
-    } catch {
-        return undefined
+    wantsBundle: boolean,
+): Promise<StatusSnapshot<TAccount> | null> {
+    if (wantsBundle && store.activeBundle) {
+        try {
+            const snap = await store.activeBundle(ref)
+            if (snap) {
+                return {
+                    token: snap.bundle.accessToken,
+                    account: snap.account,
+                    bundle: snap.bundle,
+                }
+            }
+            if (ref !== undefined) throw accountNotFoundError(ref)
+            return null
+        } catch (error) {
+            // A genuine "no such account" is authoritative; any other bundle
+            // read fault falls through to the access-only `active()` read.
+            if (error instanceof CliError && error.code === 'ACCOUNT_NOT_FOUND') throw error
+        }
     }
+    const snapshot = await requireSnapshotForRef(store, ref)
+    return snapshot ? { token: snapshot.token, account: snapshot.account } : null
 }
 
 export type AttachStatusContext<TAccount extends AuthAccount> = {
@@ -77,9 +106,11 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
 }
 
 /**
- * Attach `status` as a subcommand of `parent`. Reads `store.active()`, optionally
- * confirms via `fetchLive`, then dispatches to `renderText` (human) or
- * `renderJson` (machine). Returns the new `Command` so the consumer can chain.
+ * Attach `status` as a subcommand of `parent`. Reads the active credential
+ * (preferring `store.activeBundle` when `fetchLive` is set, so the token and
+ * bundle come from one read), optionally confirms via `fetchLive`, then
+ * dispatches to `renderText` (human) or `renderJson` (machine). Returns the
+ * new `Command` so the consumer can chain.
  */
 export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -97,7 +128,7 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
             ndjson: Boolean(ndjson),
         }
         const ref = extractUserRef(cmd)
-        const snapshot = await requireSnapshotForRef(options.store, ref)
+        const snapshot = await resolveStatusSnapshot(options.store, ref, Boolean(options.fetchLive))
         if (!snapshot) {
             if (options.onNotAuthenticated) {
                 await options.onNotAuthenticated({ view, flags })
@@ -105,14 +136,11 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
             }
             throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
         }
-        const bundle = options.fetchLive
-            ? await readBundleBestEffort(options.store, ref)
-            : undefined
         const account = options.fetchLive
             ? await options.fetchLive({
                   account: snapshot.account,
                   token: snapshot.token,
-                  ...(bundle ? { bundle } : {}),
+                  ...(snapshot.bundle ? { bundle: snapshot.bundle } : {}),
                   view,
                   flags,
               })

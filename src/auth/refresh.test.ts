@@ -1,8 +1,10 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CliError } from '../errors.js'
 import { refreshAccessToken } from './refresh.js'
 import type {
     ActiveBundleSnapshot,
@@ -251,21 +253,21 @@ describe('refreshAccessToken', () => {
         const { store, state } = fakeStore(initial)
         const { provider, refreshSpy } = fakeProvider()
 
-        // After ~120ms the "holder" releases the lock and persists a rotated bundle.
-        setTimeout(async () => {
+        // Simulate the holder rotating then releasing the lock, awaited
+        // alongside the call so no background task outlives the test.
+        const holder = (async () => {
+            await sleep(120)
             state.snapshot = {
                 account,
                 bundle: { accessToken: 'tok_held', refreshToken: 'r_held' },
             }
             await rm(lockPath, { force: true })
-        }, 120)
+        })()
 
-        const result = await refreshAccessToken({
-            store,
-            provider,
-            skewMs: 5_000,
-            lockPath,
-        })
+        const [result] = await Promise.all([
+            refreshAccessToken({ store, provider, skewMs: 5_000, lockPath }),
+            holder,
+        ])
 
         expect(result.rotated).toBe(true)
         expect(result.bundle.accessToken).toBe('tok_held')
@@ -312,5 +314,33 @@ describe('refreshAccessToken', () => {
         expect(result.bundle.refreshToken).toBe('r_existing')
         expect(result.bundle.refreshTokenExpiresAt).toBe(9_999_999_999_999)
         expect(state.setBundleCalls[0].bundle.refreshToken).toBe('r_existing')
+    })
+
+    it('throws AUTH_REFRESH_UNAVAILABLE when the store implements activeBundle but not setBundle', async () => {
+        // A store that can read the bundle but not persist a full one would
+        // silently drop the rotated refresh token — refuse instead.
+        const { store } = fakeStore({ account, bundle: bundle() }, { setBundle: undefined })
+        const { provider } = fakeProvider()
+
+        await expect(
+            refreshAccessToken({ store, provider, force: true, lockPath }),
+        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
+    })
+
+    it('releases the lock after a failed refresh so a retry can proceed', async () => {
+        const { store } = fakeStore({
+            account,
+            bundle: bundle({ accessTokenExpiresAt: Date.now() + 1_000 }),
+        })
+        const { provider } = fakeProvider(async () => {
+            throw new CliError('AUTH_REFRESH_EXPIRED', 'rejected by server')
+        })
+
+        await expect(
+            refreshAccessToken({ store, provider, skewMs: 5_000, lockPath }),
+        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
+
+        // The `finally` released the O_EXCL lock — no orphan left to block retries.
+        await expect(stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' })
     })
 })

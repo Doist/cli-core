@@ -1,4 +1,4 @@
-import type { AuthorizationServer, Client } from 'oauth4webapi'
+import type { AuthorizationServer, Client, TokenEndpointRequestOptions } from 'oauth4webapi'
 import { CliError, getErrorMessage } from '../../errors.js'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
@@ -11,6 +11,11 @@ import type {
     RefreshInput,
     ValidateInput,
 } from '../types.js'
+
+// Upper bound on the refresh-token POST. Kept under the refresh helper's
+// stale-lock threshold so a timed-out grant releases the lock before another
+// invocation would consider it abandoned.
+const REFRESH_TIMEOUT_MS = 10_000
 
 /**
  * Lazy resolver: a literal string, or a function that builds one from the
@@ -176,13 +181,16 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             ])
             const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
             const client: Client = { client_id: clientId, token_endpoint_auth_method: 'none' }
-            // Route through the consumer's injected fetch when present, so a
-            // custom transport (proxy dispatcher, decompression) applies to
-            // the refresh grant too — oauth4webapi otherwise captures the
-            // global `fetch`.
-            const requestOptions = options.fetchImpl
-                ? { [oauth.customFetch]: options.fetchImpl }
-                : undefined
+            // Bound the network call so a hung token endpoint can't block the
+            // CLI indefinitely (and, for refresh consumers, can't hold the
+            // refresh lock forever). Route through the consumer's injected
+            // fetch when present, so a custom transport (proxy dispatcher,
+            // decompression) applies to the refresh grant too — oauth4webapi
+            // otherwise captures the global `fetch`.
+            const requestOptions: TokenEndpointRequestOptions = {
+                signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+                ...(options.fetchImpl ? { [oauth.customFetch]: options.fetchImpl } : {}),
+            }
             try {
                 const response = await oauth.refreshTokenGrantRequest(
                     as,
