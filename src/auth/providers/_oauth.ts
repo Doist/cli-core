@@ -1,6 +1,6 @@
 import { CliError, getErrorMessage } from '../../errors.js'
 import type { AuthErrorCode } from '../errors.js'
-import type { PkceLazyString } from './pkce.js'
+import type { OAuthLazyString } from './pkce.js'
 
 /**
  * Build a `CliError` with user-supplied `errorHints` prepended and an optional
@@ -22,7 +22,7 @@ export function buildAuthError(
  * and runtime flags. Used by every provider in this directory.
  */
 export async function resolve(
-    resolver: PkceLazyString,
+    resolver: OAuthLazyString,
     handshake: Record<string, unknown>,
     flags: Record<string, unknown>,
 ): Promise<string> {
@@ -39,7 +39,7 @@ export async function safeReadText(response: Response): Promise<string | undefin
     }
 }
 
-export type BuildPkceAuthorizeUrlInput = {
+type BuildPkceAuthorizeUrlInput = {
     authorizeUrl: string
     clientId: string
     redirectUri: string
@@ -64,7 +64,7 @@ export function buildPkceAuthorizeUrl(input: BuildPkceAuthorizeUrlInput): string
     return url.toString()
 }
 
-export type PostAndParseJsonInput = {
+type PostAndParseJsonInput = {
     url: string
     headers: Record<string, string>
     /** Pre-encoded request body. */
@@ -120,7 +120,7 @@ export async function postAndParseJson<T>(input: PostAndParseJsonInput): Promise
     }
 }
 
-export type PostTokenEndpointInput = {
+type PostTokenEndpointInput = {
     url: string
     /** Form-encoded body. Caller owns grant_type + grant-specific params. */
     body: URLSearchParams
@@ -134,7 +134,7 @@ export type PostTokenEndpointInput = {
     fetchImpl: typeof fetch
 }
 
-export type PostTokenEndpointResult = {
+type PostTokenEndpointResult = {
     accessToken: string
     refreshToken?: string
     /** Unix-epoch ms. Computed from `expires_in` when the server returns it. */
@@ -195,19 +195,23 @@ export function expiresAtFromExpiresIn(expiresIn: number | undefined): number | 
 // call that sits on the authenticated-call path.
 let oauthModulePromise: Promise<typeof import('oauth4webapi')> | undefined
 
-export type LoadOauthOptions = {
+type LoadOauthOptions = {
     /** Error code wrapped around a missing/broken peer dep. */
     code: AuthErrorCode
     /** Message when the peer dep isn't installed. */
     missingMessage: string
-    /** Remediation hints for the missing-peer case. */
+    /** Caller-supplied remediation hints (e.g. provider `errorHints`), prepended first. */
+    userHints?: string[]
+    /** Install hint for the missing-peer case, appended after `userHints`. */
     missingHints?: string[]
 }
 
 /**
  * Lazily import `oauth4webapi`, surfacing a typed `CliError` when the optional
  * peer dep is absent (vs. installed-but-broken). Shared by `createPkceProvider`
- * (refresh) and `createDcrProvider` (registration + token exchange).
+ * (refresh) and `createDcrProvider` (registration + token exchange). Caller
+ * `userHints` are prepended on both failure branches so the provider's
+ * `errorHints` contract holds even when the dep is missing.
  */
 export async function loadOauth4webapi(
     options: LoadOauthOptions,
@@ -218,14 +222,19 @@ export async function loadOauth4webapi(
     } catch (error) {
         const moduleCode = (error as NodeJS.ErrnoException | undefined)?.code
         if (moduleCode === 'ERR_MODULE_NOT_FOUND' || moduleCode === 'MODULE_NOT_FOUND') {
+            const hints = [...(options.userHints ?? []), ...(options.missingHints ?? [])]
             throw new CliError(
                 options.code,
                 options.missingMessage,
-                options.missingHints ? { hints: options.missingHints } : {},
+                hints.length > 0 ? { hints } : {},
             )
         }
         // Installed but failed to initialise — surface the real cause rather
         // than a misleading "install it" hint.
-        throw new CliError(options.code, `Failed to load oauth4webapi: ${getErrorMessage(error)}`)
+        throw buildAuthError(
+            options.code,
+            `Failed to load oauth4webapi: ${getErrorMessage(error)}`,
+            options.userHints,
+        )
     }
 }

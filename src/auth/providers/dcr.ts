@@ -22,7 +22,7 @@ import {
     loadOauth4webapi,
     resolve,
 } from './_oauth.js'
-import type { PkceLazyString } from './pkce.js'
+import type { OAuthLazyString } from './pkce.js'
 
 export type DcrTokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none'
 
@@ -53,11 +53,11 @@ export type DcrClientMetadata = {
 
 export type DcrProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** RFC 7591 registration endpoint. Function form supports per-flow base URLs. */
-    registrationUrl: PkceLazyString
+    registrationUrl: OAuthLazyString
     /** OAuth 2.0 authorize endpoint. */
-    authorizeUrl: PkceLazyString
+    authorizeUrl: OAuthLazyString
     /** OAuth 2.0 token endpoint. */
-    tokenUrl: PkceLazyString
+    tokenUrl: OAuthLazyString
     clientMetadata: DcrClientMetadata
     /** How to join scopes in the authorize URL. Default `' '` (RFC 6749). */
     scopeSeparator?: string
@@ -114,6 +114,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             const oauth = await loadOauth4webapi({
                 code: 'AUTH_DCR_FAILED',
                 missingMessage: 'oauth4webapi is required for Dynamic Client Registration.',
+                userHints: options.errorHints,
                 missingHints: MISSING_PEER_HINTS,
             })
             const registrationUrl = await resolve(options.registrationUrl, {}, input.flags)
@@ -149,14 +150,19 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             if (typeof client.client_secret === 'string') {
                 handshake.clientSecret = client.client_secret
             }
-            // Per RFC 7591 §3.2.1 the server may downgrade or override the
-            // requested method. Only persist values we know how to act on;
-            // an unknown method falls back to the configured one at exchange.
+            // Per RFC 7591 §3.2.1 the server's chosen method is authoritative.
+            // Honour a supported one; fail fast on a method we can't perform
+            // (e.g. `private_key_jwt`) rather than silently authenticating the
+            // token request with the wrong scheme.
             const serverMethod = client.token_endpoint_auth_method
-            if (
-                typeof serverMethod === 'string' &&
-                VALID_AUTH_METHODS.has(serverMethod as DcrTokenEndpointAuthMethod)
-            ) {
+            if (typeof serverMethod === 'string') {
+                if (!VALID_AUTH_METHODS.has(serverMethod as DcrTokenEndpointAuthMethod)) {
+                    throw buildAuthError(
+                        'AUTH_DCR_FAILED',
+                        `Registration server selected an unsupported token_endpoint_auth_method: ${serverMethod}.`,
+                        options.errorHints,
+                    )
+                }
                 handshake.tokenEndpointAuthMethod = serverMethod
             }
             return { handshake }
@@ -218,6 +224,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             const oauth = await loadOauth4webapi({
                 code: 'AUTH_TOKEN_EXCHANGE_FAILED',
                 missingMessage: 'oauth4webapi is required for the DCR token exchange.',
+                userHints: options.errorHints,
                 missingHints: MISSING_PEER_HINTS,
             })
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}

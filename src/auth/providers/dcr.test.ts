@@ -332,13 +332,16 @@ describe('createDcrProvider', () => {
         expect(body.client_name).toBe('CLI')
     })
 
-    it('maps a missing oauth4webapi peer dep to AUTH_DCR_FAILED', async () => {
-        // The optional peer dep isn't installed → the lazy import fails. Force
-        // that by mocking the module to throw, then re-importing the provider
-        // so its lazy `import('oauth4webapi')` resolves to the throwing mock.
+    it('maps an oauth4webapi load failure to AUTH_DCR_FAILED, prepending the provider errorHints', async () => {
+        // Force the lazy `import('oauth4webapi')` to reject by mocking the
+        // module to throw, then re-importing the provider so its memoised
+        // import resolves to the throwing mock. (vitest substitutes its own
+        // error for a factory throw, so the ERR_MODULE_NOT_FOUND-specific
+        // branch isn't reachable here — but the load-failure → AUTH_DCR_FAILED
+        // mapping and the errorHints-prepend contract are.)
         vi.resetModules()
         vi.doMock('oauth4webapi', () => {
-            throw new Error("Cannot find package 'oauth4webapi'")
+            throw new Error('boom')
         })
         try {
             const { createDcrProvider: freshCreate } = await import('./dcr.js')
@@ -348,15 +351,40 @@ describe('createDcrProvider', () => {
                 tokenUrl: TOKEN_URL,
                 clientMetadata: { clientName: 'CLI' },
                 validate,
+                errorHints: ['Re-run: cli auth login'],
                 fetchImpl: (() =>
                     Promise.resolve(registration({ client_id: 'x' }))) as typeof fetch,
             })
             await expect(
                 provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
-            ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
+            ).rejects.toMatchObject({
+                code: 'AUTH_DCR_FAILED',
+                hints: ['Re-run: cli auth login'],
+            })
         } finally {
             vi.doUnmock('oauth4webapi')
             vi.resetModules()
         }
+    })
+
+    it('fails fast when the registration server selects an unsupported token_endpoint_auth_method', async () => {
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI' },
+            validate,
+            fetchImpl: (() =>
+                Promise.resolve(
+                    registration({
+                        client_id: 'cid',
+                        client_secret: 'sec',
+                        token_endpoint_auth_method: 'private_key_jwt',
+                    }),
+                )) as typeof fetch,
+        })
+        await expect(
+            provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
+        ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
     })
 })

@@ -93,9 +93,13 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
-            const clientId = await resolve(options.clientId, input.handshake, input.flags)
+            // Resolve concurrently — both may be async (config read / prompt).
+            const [clientId, authorizeBaseUrl] = await Promise.all([
+                resolve(options.clientId, input.handshake, input.flags),
+                resolve(options.authorizeUrl, input.handshake, input.flags),
+            ])
             const authorizeUrl = buildPkceAuthorizeUrl({
-                authorizeUrl: await resolve(options.authorizeUrl, input.handshake, input.flags),
+                authorizeUrl: authorizeBaseUrl,
                 clientId,
                 redirectUri: input.redirectUri,
                 state: input.state,
