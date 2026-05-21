@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type SpawnOptions } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import chalk from 'chalk'
 import type { Command } from 'commander'
@@ -162,24 +162,13 @@ function detectPackageManager(): 'npm' | 'pnpm' {
     return haystack.includes('pnpm') ? 'pnpm' : 'npm'
 }
 
-function runInstall(
-    pm: string,
-    packageName: string,
-    tag: string,
+function spawnCapture(
+    command: string,
+    args: string[],
+    options: SpawnOptions,
 ): Promise<{ exitCode: number; stderr: string }> {
-    const command = pm === 'pnpm' ? 'add' : 'install'
     return new Promise((resolve, reject) => {
-        const child = spawn(pm, [command, '-g', `${packageName}@${tag}`], {
-            // Ignore stdout so a chatty install can't deadlock by filling an
-            // unread pipe buffer; keep stderr piped so we can surface the tail
-            // in the CliError hint on a non-zero exit.
-            stdio: ['ignore', 'ignore', 'pipe'],
-            // npm/pnpm on Windows are `.cmd` shims that spawn() can't resolve
-            // without the shell. Safe to enable here because every argv element
-            // is library-controlled (literal command, fixed flags, validated
-            // package name + tag).
-            shell: process.platform === 'win32',
-        })
+        const child = spawn(command, args, options)
         let stderr = ''
         child.stderr?.on('data', (data: Buffer) => {
             stderr += data.toString()
@@ -189,24 +178,35 @@ function runInstall(
     })
 }
 
+function runInstall(
+    pm: string,
+    packageName: string,
+    tag: string,
+): Promise<{ exitCode: number; stderr: string }> {
+    const command = pm === 'pnpm' ? 'add' : 'install'
+    return spawnCapture(pm, [command, '-g', `${packageName}@${tag}`], {
+        // Ignore stdout so a chatty install can't deadlock by filling an unread
+        // pipe buffer; keep stderr piped so we can surface the tail in the
+        // CliError hint on a non-zero exit.
+        stdio: ['ignore', 'ignore', 'pipe'],
+        // npm/pnpm on Windows are `.cmd` shims that spawn() can't resolve
+        // without the shell. Safe to enable here because every argv element is
+        // library-controlled (literal command, fixed flags, validated package
+        // name + tag).
+        shell: process.platform === 'win32',
+    })
+}
+
 function runBrewUpgrade(
     formula: string,
     quiet: boolean,
 ): Promise<{ exitCode: number; stderr: string }> {
-    return new Promise((resolve, reject) => {
-        const child = spawn('brew', ['upgrade', formula], {
-            // Inherit so brew's own download/upgrade progress reaches the user
-            // (these can run for a while). Under machine-readable output, fall
-            // back to the npm-style pipe so brew's chatter can't corrupt the
-            // JSON/NDJSON stream on stdout.
-            stdio: quiet ? ['ignore', 'ignore', 'pipe'] : 'inherit',
-        })
-        let stderr = ''
-        child.stderr?.on('data', (data: Buffer) => {
-            stderr += data.toString()
-        })
-        child.on('error', reject)
-        child.on('close', (code) => resolve({ exitCode: code ?? 1, stderr }))
+    return spawnCapture('brew', ['upgrade', formula], {
+        // Inherit so brew's own download/upgrade progress reaches the user
+        // (these can run for a while). Under machine-readable output, fall back
+        // to the npm-style pipe so brew's chatter can't corrupt the JSON/NDJSON
+        // stream on stdout.
+        stdio: quiet ? ['ignore', 'ignore', 'pipe'] : 'inherit',
     })
 }
 
@@ -248,6 +248,17 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
 
     const tag = getInstallTag(channel)
     const label = channelLabel(channel)
+
+    // Fail fast on a guaranteed-broken install path before spending a registry
+    // round-trip. `--check` never installs, so a missing formula is fine there.
+    const brew = isBrewInstall()
+    if (!cmd.check && brew && !options.brewFormula) {
+        throw new CliError(
+            'UPDATE_INSTALL_FAILED',
+            'Installed via Homebrew but no brew formula is configured.',
+            { hints: ['Update manually: brew upgrade <formula>'] },
+        )
+    }
 
     let latestVersion: string
     try {
@@ -297,37 +308,25 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         console.log(headline)
     }
 
-    const brew = isBrewInstall()
-    if (brew && !options.brewFormula) {
-        throw new CliError(
-            'UPDATE_INSTALL_FAILED',
-            'Installed via Homebrew but no brew formula is configured.',
-            { hints: ['Update manually: brew upgrade <formula>'] },
-        )
-    }
     const pm = brew ? null : detectPackageManager()
     const quiet = Boolean(view.json || view.ndjson)
+    const task = () =>
+        brew
+            ? runBrewUpgrade(options.brewFormula as string, quiet)
+            : runInstall(pm as string, options.packageName, tag)
+    // brew prints its own progress, so skip the spinner for it unless we've
+    // silenced its output for machine-readable mode.
+    const useSpinner = !brew || quiet
 
     let result: { exitCode: number; stderr: string }
     try {
-        if (brew) {
-            const formula = options.brewFormula as string
-            // brew prints its own progress, so skip the spinner unless we've
-            // silenced brew for machine-readable output.
-            result = quiet
-                ? await runWithSpinner(
-                      options.withSpinner,
-                      `Updating to v${latestVersion}${label}...`,
-                      () => runBrewUpgrade(formula, true),
-                  )
-                : await runBrewUpgrade(formula, false)
-        } else {
-            result = await runWithSpinner(
-                options.withSpinner,
-                `Updating to v${latestVersion}${label}...`,
-                () => runInstall(pm as string, options.packageName, tag),
-            )
-        }
+        result = useSpinner
+            ? await runWithSpinner(
+                  options.withSpinner,
+                  `Updating to v${latestVersion}${label}...`,
+                  task,
+              )
+            : await task()
     } catch (error) {
         if (
             !brew &&
@@ -353,8 +352,18 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         )
     }
 
-    emitView(view, { currentVersion, latestVersion, channel, installed: true }, () => {
-        const lines = [`${chalk.green('✓')} Updated to v${latestVersion}${label}`]
+    // brew owns its own versioning and can resolve to a different (or
+    // unchanged) version than the npm dist-tag we checked — so don't claim
+    // `latestVersion` was installed. Report a neutral result instead.
+    const summary = brew
+        ? { currentVersion, channel, installed: true, via: 'brew' as const }
+        : { currentVersion, latestVersion, channel, installed: true }
+    emitView(view, summary, () => {
+        const lines = [
+            brew
+                ? `${chalk.green('✓')} brew upgrade complete${label}`
+                : `${chalk.green('✓')} Updated to v${latestVersion}${label}`,
+        ]
         if (channel === 'stable' && options.changelogCommandName) {
             lines.push(
                 `${chalk.dim('  Run')} ${chalk.cyan(options.changelogCommandName)} ${chalk.dim('to see what changed')}`,

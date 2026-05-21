@@ -273,6 +273,7 @@ describe('update install flow', () => {
 
 describe('update brew install flow', () => {
     const CELLAR_PATH = '/opt/homebrew/Cellar/todoist-cli/1.1.0/bin/td'
+    const realPlatform = process.platform
 
     function createBrewProgram(formula?: string): Command {
         const program = new Command()
@@ -281,13 +282,52 @@ describe('update brew install flow', () => {
         return program
     }
 
-    it('runs `brew upgrade <formula>` with inherited stdio instead of npm', async () => {
+    beforeEach(() => {
+        // isBrewInstall() short-circuits on win32, bypassing the realpathSync
+        // mock; pin a posix platform so these tests are deterministic on any host.
+        Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    })
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+    })
+
+    it('runs `brew upgrade <formula>` with inherited stdio and reports a neutral result', async () => {
         mockRealpathSync.mockReturnValue(CELLAR_PATH)
         mockFetchOk('99.99.99')
         mockSpawnExit()
         await createBrewProgram('doist/tap/todoist-cli').parseAsync(['node', 'td', 'update'])
         expect(mockSpawn).toHaveBeenCalledWith('brew', ['upgrade', 'doist/tap/todoist-cli'], {
             stdio: 'inherit',
+        })
+        // brew owns its versioning, so the success line must not claim the npm
+        // dist-tag version was installed (the pre-install headline may still
+        // mention it as the available target).
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('brew upgrade complete'))
+        expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('Updated to v'))
+    })
+
+    it('pipes brew stdout under --json so its chatter cannot corrupt the stream', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createBrewProgram('doist/tap/todoist-cli').parseAsync([
+            'node',
+            'td',
+            'update',
+            '--json',
+        ])
+        expect(mockSpawn).toHaveBeenCalledWith('brew', ['upgrade', 'doist/tap/todoist-cli'], {
+            stdio: ['ignore', 'ignore', 'pipe'],
+        })
+        const payloads = consoleSpy.mock.calls.map((call: unknown[]) =>
+            JSON.parse(call[0] as string),
+        )
+        expect(payloads).toContainEqual({
+            currentVersion: '1.0.0',
+            channel: 'stable',
+            installed: true,
+            via: 'brew',
         })
     })
 
@@ -303,7 +343,7 @@ describe('update brew install flow', () => {
         })
     })
 
-    it('refuses to fall back to npm when brew-installed without a configured formula', async () => {
+    it('fails fast (before any registry call) when brew-installed without a formula', async () => {
         mockRealpathSync.mockReturnValue(CELLAR_PATH)
         mockFetchOk('99.99.99')
         await expect(
@@ -312,6 +352,7 @@ describe('update brew install flow', () => {
             code: 'UPDATE_INSTALL_FAILED',
             hints: [expect.stringContaining('brew upgrade')],
         })
+        expect(fetch).not.toHaveBeenCalled()
         expect(mockSpawn).not.toHaveBeenCalled()
     })
 })
