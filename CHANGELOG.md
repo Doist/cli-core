@@ -1,3 +1,9 @@
+## [0.20.1](https://github.com/Doist/cli-core/compare/v0.20.0...v0.20.1) (2026-05-21)
+
+### Bug Fixes
+
+* **auth:** send DCR HTTP Basic credentials raw, not form-url-encoded ([#43](https://github.com/Doist/cli-core/issues/43)) ([97a626a](https://github.com/Doist/cli-core/commit/97a626a69a52761117e70fccc7049d24ad001937))
+
 ## [0.20.0](https://github.com/Doist/cli-core/compare/v0.19.0...v0.20.0) (2026-05-21)
 
 ### Features
