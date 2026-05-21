@@ -11,20 +11,26 @@ import type {
     RefreshInput,
     ValidateInput,
 } from '../types.js'
+import {
+    buildAuthError,
+    buildPkceAuthorizeUrl,
+    expiresAtFromExpiresIn,
+    loadOauth4webapi,
+    postTokenEndpoint,
+    resolve,
+} from './oauth.js'
 
 // Upper bound on the refresh-token POST. Kept under the refresh helper's
 // stale-lock threshold so a timed-out grant releases the lock before another
 // invocation would consider it abandoned.
 const REFRESH_TIMEOUT_MS = 10_000
 
-function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefined {
-    return typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined
-}
-
 /**
  * Lazy resolver: a literal string, or a function that builds one from the
- * current PKCE handshake (so callers can derive the URL or client_id from
- * the active session's `baseUrl` / per-flow flags).
+ * current OAuth handshake (so callers can derive the URL or client_id from
+ * the active session's `baseUrl` / per-flow flags). Used by both
+ * `createPkceProvider` and `createDcrProvider`; prefer the grant-agnostic
+ * alias `OAuthLazyString` for new code.
  */
 export type PkceLazyString =
     | string
@@ -32,6 +38,9 @@ export type PkceLazyString =
           handshake: Record<string, unknown>
           flags: Record<string, unknown>
       }) => string | Promise<string>)
+
+/** Grant-agnostic alias for {@link PkceLazyString}. Identical type. */
+export type OAuthLazyString = PkceLazyString
 
 export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** OAuth 2.0 authorize endpoint. Function form supports per-flow base URLs (Outline self-hosted). */
@@ -47,6 +56,13 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     verifierLength?: number
     /** Probe an authenticated endpoint to confirm the token works and resolve the account. */
     validate: (input: ValidateInput) => Promise<TAccount>
+    /**
+     * User-facing remediation hints attached to every CliError this factory
+     * throws (token-endpoint failures, internal handshake-state guards).
+     * Server-returned response bodies are appended after these so the
+     * actionable hint stays first.
+     */
+    errorHints?: string[]
     /** Inject a fetch implementation (tests). */
     fetchImpl?: typeof fetch
 }
@@ -61,8 +77,8 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
  * `runOAuthFlow` and arrives on `AuthorizeInput.scopes`; this factory does
  * not own scope resolution.
  *
- * Flows that need DCR or HTTP Basic auth on the token endpoint implement
- * the `AuthProvider` interface directly.
+ * Flows that need DCR or HTTP Basic auth on the token endpoint use
+ * `createDcrProvider` (or implement the `AuthProvider` interface directly).
  */
 export function createPkceProvider<TAccount extends AuthAccount>(
     options: PkceProviderOptions<TAccount>,
@@ -77,24 +93,23 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
-            const [clientId, authorizeUrl] = await Promise.all([
+            // Resolve concurrently — both may be async (config read / prompt).
+            const [clientId, authorizeBaseUrl] = await Promise.all([
                 resolve(options.clientId, input.handshake, input.flags),
                 resolve(options.authorizeUrl, input.handshake, input.flags),
             ])
-
-            const url = new URL(authorizeUrl)
-            url.searchParams.set('response_type', 'code')
-            url.searchParams.set('client_id', clientId)
-            url.searchParams.set('redirect_uri', input.redirectUri)
-            url.searchParams.set('state', input.state)
-            url.searchParams.set('code_challenge', challenge)
-            url.searchParams.set('code_challenge_method', 'S256')
-            if (input.scopes.length > 0) {
-                url.searchParams.set('scope', input.scopes.join(scopeSeparator))
-            }
+            const authorizeUrl = buildPkceAuthorizeUrl({
+                authorizeUrl: authorizeBaseUrl,
+                clientId,
+                redirectUri: input.redirectUri,
+                state: input.state,
+                scopes: input.scopes,
+                scopeSeparator,
+                codeChallenge: challenge,
+            })
 
             return {
-                authorizeUrl: url.toString(),
+                authorizeUrl,
                 handshake: { ...input.handshake, codeVerifier: verifier, clientId },
             }
         },
@@ -103,9 +118,10 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             const verifier = input.handshake.codeVerifier
             const clientId = input.handshake.clientId
             if (typeof verifier !== 'string' || typeof clientId !== 'string') {
-                throw new CliError(
+                throw buildAuthError(
                     'AUTH_TOKEN_EXCHANGE_FAILED',
                     'Internal: PKCE handshake state lost between authorize and exchange.',
+                    options.errorHints,
                 )
             }
             // `runOAuthFlow` folds the runtime `flags` into the handshake
@@ -122,60 +138,27 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 code_verifier: verifier,
             })
 
-            let response: Response
-            try {
-                response = await fetchImpl(tokenUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        Accept: 'application/json',
-                    },
-                    body: body.toString(),
-                })
-            } catch (error) {
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    `Token endpoint request failed: ${getErrorMessage(error)}`,
-                )
-            }
-
-            if (!response.ok) {
-                const detail = await safeReadText(response)
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    `Token endpoint returned HTTP ${response.status}.`,
-                    detail ? { hints: [detail] } : {},
-                )
-            }
-
-            // Parse defensively — a misconfigured proxy can return a 2xx HTML
-            // error page that would otherwise blow up with a raw SyntaxError.
-            let payload: { access_token?: string; refresh_token?: string; expires_in?: number }
-            try {
-                payload = (await response.json()) as typeof payload
-            } catch (error) {
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    `Token endpoint returned non-JSON response: ${getErrorMessage(error)}`,
-                )
-            }
-            if (!payload.access_token) {
-                throw new CliError(
-                    'AUTH_TOKEN_EXCHANGE_FAILED',
-                    'Token endpoint response missing access_token.',
-                )
-            }
+            const result = await postTokenEndpoint({
+                url: tokenUrl,
+                body,
+                errorHints: options.errorHints,
+                fetchImpl,
+            })
             return {
-                accessToken: payload.access_token,
-                refreshToken: payload.refresh_token,
-                expiresAt: expiresAtFromExpiresIn(payload.expires_in),
+                accessToken: result.accessToken,
+                refreshToken: result.refreshToken,
+                expiresAt: result.expiresAt,
             }
         },
 
         validateToken: options.validate,
 
         async refreshToken(input: RefreshInput): Promise<ExchangeResult<TAccount>> {
-            const oauth = await loadOauth4webapi()
+            const oauth = await loadOauth4webapi({
+                code: 'AUTH_REFRESH_UNAVAILABLE',
+                missingMessage: 'oauth4webapi is required for refresh-token support.',
+                missingHints: ['Run `npm install oauth4webapi` in your CLI.'],
+            })
             // Mirror `exchangeCode`: a resolver that reads `flags` sees the
             // same view during silent refresh as it did at authorize time.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
@@ -247,49 +230,5 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 )
             }
         },
-    }
-}
-
-async function resolve(
-    resolver: PkceLazyString,
-    handshake: Record<string, unknown>,
-    flags: Record<string, unknown>,
-): Promise<string> {
-    return typeof resolver === 'function' ? resolver({ handshake, flags }) : resolver
-}
-
-// Optional peer dep — only refresh consumers install it. The dynamic import
-// (and a missing-peer failure) is memoised so it isn't repeated on every
-// refresh, which sits on the authenticated-call path.
-let oauthModulePromise: Promise<typeof import('oauth4webapi')> | undefined
-
-async function loadOauth4webapi(): Promise<typeof import('oauth4webapi')> {
-    oauthModulePromise ??= import('oauth4webapi')
-    try {
-        return await oauthModulePromise
-    } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code
-        if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
-            throw new CliError(
-                'AUTH_REFRESH_UNAVAILABLE',
-                'oauth4webapi is required for refresh-token support.',
-                { hints: ['Run `npm install oauth4webapi` in your CLI.'] },
-            )
-        }
-        // Installed but failed to initialise — surface the real cause rather
-        // than a misleading "install it" hint.
-        throw new CliError(
-            'AUTH_REFRESH_UNAVAILABLE',
-            `Failed to load oauth4webapi: ${getErrorMessage(error)}`,
-        )
-    }
-}
-
-async function safeReadText(response: Response): Promise<string | undefined> {
-    try {
-        const text = (await response.text()).trim()
-        return text.length > 0 ? text : undefined
-    } catch {
-        return undefined
     }
 }
