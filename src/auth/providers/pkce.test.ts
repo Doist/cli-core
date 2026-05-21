@@ -261,4 +261,25 @@ describe('createPkceProvider.refreshToken', () => {
             refreshProvider().refreshToken!({ refreshToken: 'r-old', handshake: {} }),
         ).rejects.toMatchObject({ code: 'AUTH_REFRESH_TRANSIENT' })
     })
+
+    it('surfaces the server OAuth error code + description (not oauth4webapi’s generic message)', async () => {
+        stubFetch(
+            (async () =>
+                new Response(
+                    JSON.stringify({
+                        error: 'invalid_request',
+                        error_description: 'Missing client_secret for confidential client',
+                    }),
+                    { status: 400, headers: { 'Content-Type': 'application/json' } },
+                )) as typeof fetch,
+        )
+
+        await expect(
+            refreshProvider().refreshToken!({ refreshToken: 'r-old', handshake: {} }),
+        ).rejects.toMatchObject({
+            code: 'AUTH_REFRESH_TRANSIENT',
+            message:
+                'Refresh request failed: invalid_request (Missing client_secret for confidential client)',
+        })
+    })
 })
