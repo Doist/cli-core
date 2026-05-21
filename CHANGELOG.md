@@ -1,3 +1,9 @@
+## [0.20.0](https://github.com/Doist/cli-core/compare/v0.19.0...v0.20.0) (2026-05-21)
+
+### Features
+
+* **auth:** add createDcrProvider for RFC 7591 dynamic client registration ([#31](https://github.com/Doist/cli-core/issues/31)) ([dd34551](https://github.com/Doist/cli-core/commit/dd34551d7f27df83ecd4a0aa888ec079af2007a0))
+
 ## [0.19.0](https://github.com/Doist/cli-core/compare/v0.18.0...v0.19.0) (2026-05-21)
 
 ### Features
