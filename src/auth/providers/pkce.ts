@@ -1,3 +1,4 @@
+import type { AuthorizationServer, Client, TokenEndpointRequestOptions } from 'oauth4webapi'
 import { CliError, getErrorMessage } from '../../errors.js'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
@@ -7,8 +8,18 @@ import type {
     AuthorizeResult,
     ExchangeInput,
     ExchangeResult,
+    RefreshInput,
     ValidateInput,
 } from '../types.js'
+
+// Upper bound on the refresh-token POST. Kept under the refresh helper's
+// stale-lock threshold so a timed-out grant releases the lock before another
+// invocation would consider it abandoned.
+const REFRESH_TIMEOUT_MS = 10_000
+
+function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefined {
+    return typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined
+}
 
 /**
  * Lazy resolver: a literal string, or a function that builds one from the
@@ -17,7 +28,10 @@ import type {
  */
 export type PkceLazyString =
     | string
-    | ((ctx: { handshake: Record<string, unknown>; flags: Record<string, unknown> }) => string)
+    | ((ctx: {
+          handshake: Record<string, unknown>
+          flags: Record<string, unknown>
+      }) => string | Promise<string>)
 
 export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** OAuth 2.0 authorize endpoint. Function form supports per-flow base URLs (Outline self-hosted). */
@@ -63,8 +77,10 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
-            const clientId = resolve(options.clientId, input.handshake, input.flags)
-            const authorizeUrl = resolve(options.authorizeUrl, input.handshake, input.flags)
+            const [clientId, authorizeUrl] = await Promise.all([
+                resolve(options.clientId, input.handshake, input.flags),
+                resolve(options.authorizeUrl, input.handshake, input.flags),
+            ])
 
             const url = new URL(authorizeUrl)
             url.searchParams.set('response_type', 'code')
@@ -96,7 +112,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // before calling exchange, so a `tokenUrl: ({ flags }) => ...`
             // resolver sees the same flags it saw during authorize.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const tokenUrl = resolve(options.tokenUrl, input.handshake, flags)
+            const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
 
             const body = new URLSearchParams({
                 grant_type: 'authorization_code',
@@ -152,23 +168,121 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             return {
                 accessToken: payload.access_token,
                 refreshToken: payload.refresh_token,
-                expiresAt:
-                    typeof payload.expires_in === 'number'
-                        ? Date.now() + payload.expires_in * 1000
-                        : undefined,
+                expiresAt: expiresAtFromExpiresIn(payload.expires_in),
             }
         },
 
         validateToken: options.validate,
+
+        async refreshToken(input: RefreshInput): Promise<ExchangeResult<TAccount>> {
+            const oauth = await loadOauth4webapi()
+            // Mirror `exchangeCode`: a resolver that reads `flags` sees the
+            // same view during silent refresh as it did at authorize time.
+            const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
+            const [tokenUrl, clientId] = await Promise.all([
+                resolve(options.tokenUrl, input.handshake, flags),
+                resolve(options.clientId, input.handshake, flags),
+            ])
+            const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
+            const client: Client = { client_id: clientId, token_endpoint_auth_method: 'none' }
+            // Bound the network call so a hung token endpoint can't block the
+            // CLI indefinitely (and, for refresh consumers, can't hold the
+            // refresh lock forever). Route through the consumer's injected
+            // fetch when present, so a custom transport (proxy dispatcher,
+            // decompression) applies to the refresh grant too — oauth4webapi
+            // otherwise captures the global `fetch`.
+            const requestOptions: TokenEndpointRequestOptions = {
+                signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+                ...(options.fetchImpl ? { [oauth.customFetch]: options.fetchImpl } : {}),
+            }
+            try {
+                const response = await oauth.refreshTokenGrantRequest(
+                    as,
+                    client,
+                    oauth.None(),
+                    input.refreshToken,
+                    requestOptions,
+                )
+                const result = await oauth.processRefreshTokenResponse(as, client, response)
+                return {
+                    accessToken: result.access_token,
+                    refreshToken: result.refresh_token,
+                    expiresAt: expiresAtFromExpiresIn(result.expires_in),
+                }
+            } catch (error) {
+                // A ResponseBodyError carries the server's OAuth error JSON.
+                // `invalid_grant` (any status — some proxies remap 400 → 401)
+                // means the refresh token itself was rejected; re-login is the
+                // only recovery. Every other code is transient from cli-core's
+                // POV — but surface the actual `error`/`error_description` so a
+                // misconfigured server (e.g. `invalid_request: Missing
+                // client_secret`) is diagnosable rather than hidden behind
+                // oauth4webapi's generic "server responded with an error".
+                if (error instanceof oauth.ResponseBodyError) {
+                    const detail = error.error_description
+                        ? `${error.error} (${error.error_description})`
+                        : error.error
+                    if (error.error === 'invalid_grant') {
+                        throw new CliError(
+                            'AUTH_REFRESH_EXPIRED',
+                            `Refresh token rejected: ${detail}`,
+                            {
+                                hints: ['Re-run the login command to reauthorize.'],
+                            },
+                        )
+                    }
+                    throw new CliError(
+                        'AUTH_REFRESH_TRANSIENT',
+                        `Refresh request failed: ${detail}`,
+                        {
+                            hints: ['Try again.'],
+                        },
+                    )
+                }
+                // Network failure, non-JSON body, WWWAuthenticateChallengeError, …
+                throw new CliError(
+                    'AUTH_REFRESH_TRANSIENT',
+                    `Refresh request failed: ${getErrorMessage(error)}`,
+                    { hints: ['Try again.'] },
+                )
+            }
+        },
     }
 }
 
-function resolve(
+async function resolve(
     resolver: PkceLazyString,
     handshake: Record<string, unknown>,
     flags: Record<string, unknown>,
-): string {
+): Promise<string> {
     return typeof resolver === 'function' ? resolver({ handshake, flags }) : resolver
+}
+
+// Optional peer dep — only refresh consumers install it. The dynamic import
+// (and a missing-peer failure) is memoised so it isn't repeated on every
+// refresh, which sits on the authenticated-call path.
+let oauthModulePromise: Promise<typeof import('oauth4webapi')> | undefined
+
+async function loadOauth4webapi(): Promise<typeof import('oauth4webapi')> {
+    oauthModulePromise ??= import('oauth4webapi')
+    try {
+        return await oauthModulePromise
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code
+        if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+            throw new CliError(
+                'AUTH_REFRESH_UNAVAILABLE',
+                'oauth4webapi is required for refresh-token support.',
+                { hints: ['Run `npm install oauth4webapi` in your CLI.'] },
+            )
+        }
+        // Installed but failed to initialise — surface the real cause rather
+        // than a misleading "install it" hint.
+        throw new CliError(
+            'AUTH_REFRESH_UNAVAILABLE',
+            `Failed to load oauth4webapi: ${getErrorMessage(error)}`,
+        )
+    }
 }
 
 async function safeReadText(response: Response): Promise<string | undefined> {

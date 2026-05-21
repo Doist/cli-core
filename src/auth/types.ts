@@ -90,6 +90,12 @@ export type TokenBundle = {
     refreshTokenExpiresAt?: number
 }
 
+/** Read-side snapshot returned by `activeBundle`. Mirrors `setBundle`'s write side. */
+export type ActiveBundleSnapshot<TAccount extends AuthAccount = AuthAccount> = {
+    account: TAccount
+    bundle: TokenBundle
+}
+
 /** Opaque account selector. Stores own the matching rule (id, email, label, …). */
 export type AccountRef = string
 
@@ -123,6 +129,18 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
         bundle: TokenBundle,
         options?: { promoteDefault?: boolean },
     ): Promise<void>
+    /**
+     * Full-bundle read for refresh-capable consumers. Returns the matching
+     * account + bundle, or `null` on miss. Optional on the contract — the
+     * silent-refresh helper throws `AUTH_REFRESH_UNAVAILABLE` when a custom
+     * store doesn't implement it. `KeyringTokenStore` overrides this as
+     * required so cli-core helpers can call it without a non-null assertion.
+     *
+     * Stores MAY throw `CliError('AUTH_STORE_READ_FAILED', …)` on the same
+     * conditions as `active()` (e.g. keyring offline while a matching
+     * record exists).
+     */
+    activeBundle?(ref?: AccountRef): Promise<ActiveBundleSnapshot<TAccount> | null>
     /** Remove a stored credential. No-op when `ref` doesn't match. */
     clear(ref?: AccountRef): Promise<void>
     /** Every stored account with a default marker. */

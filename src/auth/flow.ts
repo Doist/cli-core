@@ -4,6 +4,7 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import { promisify } from 'node:util'
 import { CliError, getErrorMessage } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
+import { bundleFromExchange, persistBundle } from './persist.js'
 import { generateState } from './pkce.js'
 import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
 
@@ -187,15 +188,12 @@ export async function runOAuthFlow<TAccount extends AuthAccount>(
             }))
         checkAborted()
 
-        try {
-            await options.store.set(account, exchange.accessToken)
-        } catch (error) {
-            if (error instanceof CliError) throw error
-            throw new CliError(
-                'AUTH_STORE_WRITE_FAILED',
-                `Failed to persist token: ${getErrorMessage(error)}`,
-            )
-        }
+        await persistBundle({
+            store: options.store,
+            account,
+            bundle: bundleFromExchange(exchange),
+            promoteDefault: true,
+        })
 
         return { token: exchange.accessToken, account }
     } finally {

@@ -1,5 +1,5 @@
 import { CliError, getErrorMessage } from '../errors.js'
-import type { AuthAccount, TokenBundle, TokenStore } from './types.js'
+import type { AuthAccount, ExchangeResult, TokenBundle, TokenStore } from './types.js'
 
 export type PersistBundleOptions<TAccount extends AuthAccount> = {
     store: TokenStore<TAccount>
@@ -22,6 +22,30 @@ export type PersistBundleOptions<TAccount extends AuthAccount> = {
  * silent-refresh-safe selection (no re-pinning on background rotation)
  * MUST implement `setBundle`.
  */
+/**
+ * Build a `TokenBundle` from an `ExchangeResult`. `prev` carries the previous
+ * refresh token + its expiry forward when the server didn't reissue one (most
+ * don't on a refresh-grant). When the server DID return a new refresh token,
+ * its expiry is whatever the server gave (or unknown) — never the old token's,
+ * which would attach stale expiry metadata to a different credential.
+ */
+export function bundleFromExchange<TAccount extends AuthAccount>(
+    exchange: ExchangeResult<TAccount>,
+    prev?: TokenBundle,
+): TokenBundle {
+    const rotatedRefresh = exchange.refreshToken !== undefined
+    const refreshToken = exchange.refreshToken ?? prev?.refreshToken
+    const refreshTokenExpiresAt = rotatedRefresh
+        ? exchange.refreshTokenExpiresAt
+        : (exchange.refreshTokenExpiresAt ?? prev?.refreshTokenExpiresAt)
+    return {
+        accessToken: exchange.accessToken,
+        ...(refreshToken !== undefined ? { refreshToken } : {}),
+        ...(exchange.expiresAt !== undefined ? { accessTokenExpiresAt: exchange.expiresAt } : {}),
+        ...(refreshTokenExpiresAt !== undefined ? { refreshTokenExpiresAt } : {}),
+    }
+}
+
 export async function persistBundle<TAccount extends AuthAccount>(
     options: PersistBundleOptions<TAccount>,
 ): Promise<void> {
