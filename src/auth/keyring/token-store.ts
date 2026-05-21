@@ -7,7 +7,11 @@ import type {
     TokenStore,
 } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
-import { readAccessTokenForRecord, readRefreshTokenForRecord } from './internal.js'
+import {
+    type ReadAccessTokenOutcome,
+    readAccessTokenForRecord,
+    readRefreshTokenForRecord,
+} from './internal.js'
 import { writeBundleWithKeyringFallback, writeRecordWithKeyringFallback } from './record-write.js'
 import {
     createSecureStore,
@@ -69,6 +73,17 @@ const DEFAULT_MATCH_ACCOUNT = <TAccount extends AuthAccount>(
     account: TAccount,
     ref: AccountRef,
 ): boolean => account.id === ref || account.label === ref
+
+/** Map a failed access-slot read to the typed `AUTH_STORE_READ_FAILED` error. */
+function accessReadError(outcome: Extract<ReadAccessTokenOutcome, { ok: false }>): CliError {
+    const message =
+        outcome.reason === 'slot-empty'
+            ? `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`
+            : outcome.reason === 'slot-unavailable'
+              ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${outcome.detail})`
+              : `Access-slot read failed (${outcome.detail})`
+    return new CliError('AUTH_STORE_READ_FAILED', message)
+}
 
 /**
  * Multi-account `TokenStore` that keeps secrets in the OS credential manager
@@ -218,41 +233,38 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         }
     }
 
+    /**
+     * Resolve the target record for `ref` (or the implicit default). Shared by
+     * `active` / `activeBundle`. The ref-only path skips `getDefaultId()` —
+     * `resolveTarget` never consults it when `ref` is supplied, so the extra
+     * read would be pure latency on every authenticated command.
+     */
+    async function resolveRecord(
+        ref: AccountRef | undefined,
+    ): Promise<UserRecord<TAccount> | null> {
+        const snapshot: Snapshot =
+            ref === undefined
+                ? await readFullSnapshot()
+                : { records: await userRecords.list(), defaultId: null }
+        return resolveTarget(snapshot, ref)
+    }
+
     return {
         async active(ref) {
-            // Ref-only path skips `getDefaultId()` — `resolveTarget` never
-            // touches it when `ref` is supplied, so the extra read would be
-            // pure latency on every authenticated command.
-            const snapshot: Snapshot =
-                ref === undefined
-                    ? await readFullSnapshot()
-                    : { records: await userRecords.list(), defaultId: null }
-            const record = resolveTarget(snapshot, ref)
+            const record = await resolveRecord(ref)
             if (!record) return null
 
-            // Reads the access slot only. Refresh-state material lives in
-            // the keyring and on the record, but `active()` stays cheap and
-            // returns the pre-PR1 snapshot shape — a future bundle-aware
-            // read path lights up the refresh slot only when callers
-            // actually need it (silent refresh).
+            // Reads the access slot only. Refresh-state material lives in the
+            // keyring + on the record, but `active()` stays cheap and returns
+            // the narrow snapshot shape — `activeBundle` lights up the refresh
+            // slot only when a caller actually needs it (silent refresh).
             const outcome = await readAccessTokenForRecord(record, secureStoreFor(record.account))
             if (outcome.ok) return { token: outcome.token, account: record.account }
-            // Map structured outcomes to the typed error contract.
-            const message =
-                outcome.reason === 'slot-empty'
-                    ? `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`
-                    : outcome.reason === 'slot-unavailable'
-                      ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${outcome.detail})`
-                      : `Access-slot read failed (${outcome.detail})`
-            throw new CliError('AUTH_STORE_READ_FAILED', message)
+            throw accessReadError(outcome)
         },
 
         async activeBundle(ref) {
-            const snapshot: Snapshot =
-                ref === undefined
-                    ? await readFullSnapshot()
-                    : { records: await userRecords.list(), defaultId: null }
-            const record = resolveTarget(snapshot, ref)
+            const record = await resolveRecord(ref)
             if (!record) return null
 
             // Read both slots in parallel. The refresh side honours the
@@ -266,15 +278,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 readAccessTokenForRecord(record, secureStoreFor(record.account)),
                 readRefreshTokenForRecord(record, refreshSecureStoreFor(record.account)),
             ])
-            if (!accessOutcome.ok) {
-                const message =
-                    accessOutcome.reason === 'slot-empty'
-                        ? `${SECURE_STORE_DESCRIPTION} returned no credential for the stored account; the keyring entry may have been removed externally.`
-                        : accessOutcome.reason === 'slot-unavailable'
-                          ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${accessOutcome.detail})`
-                          : `Access-slot read failed (${accessOutcome.detail})`
-                throw new CliError('AUTH_STORE_READ_FAILED', message)
-            }
+            if (!accessOutcome.ok) throw accessReadError(accessOutcome)
             if (refreshOutcome.ok === false && refreshOutcome.reason === 'slot-error') {
                 throw new CliError(
                     'AUTH_STORE_READ_FAILED',

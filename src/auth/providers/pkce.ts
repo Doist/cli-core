@@ -17,6 +17,11 @@ import type {
 // invocation would consider it abandoned.
 const REFRESH_TIMEOUT_MS = 10_000
 
+/** OAuth `expires_in` (seconds from now) → absolute unix-epoch ms. */
+function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefined {
+    return typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined
+}
+
 /**
  * Lazy resolver: a literal string, or a function that builds one from the
  * current PKCE handshake (so callers can derive the URL or client_id from
@@ -164,10 +169,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             return {
                 accessToken: payload.access_token,
                 refreshToken: payload.refresh_token,
-                expiresAt:
-                    typeof payload.expires_in === 'number'
-                        ? Date.now() + payload.expires_in * 1000
-                        : undefined,
+                expiresAt: expiresAtFromExpiresIn(payload.expires_in),
             }
         },
 
@@ -203,10 +205,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 return {
                     accessToken: result.access_token,
                     refreshToken: result.refresh_token,
-                    expiresAt:
-                        typeof result.expires_in === 'number'
-                            ? Date.now() + result.expires_in * 1000
-                            : undefined,
+                    expiresAt: expiresAtFromExpiresIn(result.expires_in),
                 }
             } catch (error) {
                 // A ResponseBodyError carries the server's OAuth error JSON.

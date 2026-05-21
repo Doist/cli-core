@@ -37,16 +37,22 @@ export async function readAccessTokenForRecord<TAccount extends AuthAccount>(
 ): Promise<ReadAccessTokenOutcome> {
     const fallback = record.fallbackToken?.trim()
     if (fallback) return { ok: true, token: fallback }
+    return readSecretSlot(secureStore, 'keyring slot returned no credential')
+}
 
+/**
+ * Read + trim a keyring slot, normalising the empty / unavailable / error
+ * cases. The per-record concerns (fallback field, the refresh `not-present`
+ * gate, the empty-slot detail string) stay in the callers.
+ */
+async function readSecretSlot(
+    store: SecureStore,
+    emptyDetail: string,
+): Promise<ReadAccessTokenOutcome> {
     try {
-        const raw = await secureStore.getSecret()
-        const trimmed = raw?.trim()
+        const trimmed = (await store.getSecret())?.trim()
         if (trimmed) return { ok: true, token: trimmed }
-        return {
-            ok: false,
-            reason: 'slot-empty',
-            detail: 'keyring slot returned no credential',
-        }
+        return { ok: false, reason: 'slot-empty', detail: emptyDetail }
     } catch (error) {
         if (error instanceof SecureStoreUnavailableError) {
             return { ok: false, reason: 'slot-unavailable', detail: error.message }
@@ -70,19 +76,5 @@ export async function readRefreshTokenForRecord<TAccount extends AuthAccount>(
     const fallback = record.fallbackRefreshToken?.trim()
     if (fallback) return { ok: true, token: fallback }
 
-    try {
-        const raw = await refreshStore.getSecret()
-        const trimmed = raw?.trim()
-        if (trimmed) return { ok: true, token: trimmed }
-        return {
-            ok: false,
-            reason: 'slot-empty',
-            detail: 'keyring refresh slot returned no credential',
-        }
-    } catch (error) {
-        if (error instanceof SecureStoreUnavailableError) {
-            return { ok: false, reason: 'slot-unavailable', detail: error.message }
-        }
-        return { ok: false, reason: 'slot-error', detail: getErrorMessage(error) }
-    }
+    return readSecretSlot(refreshStore, 'keyring refresh slot returned no credential')
 }
