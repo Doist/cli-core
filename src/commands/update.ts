@@ -210,6 +210,24 @@ function runBrewUpgrade(
     })
 }
 
+function brewInstalledVersion(formula: string): Promise<string | undefined> {
+    // `brew list --versions <name>` prints e.g. `todoist-cli 1.1.0`; the version
+    // is the last whitespace token. Tap-qualified formulae list under their leaf
+    // name, so strip the tap prefix. Best-effort — any failure yields undefined.
+    const leaf = formula.split('/').pop() ?? formula
+    return new Promise((resolve) => {
+        let stdout = ''
+        const child = spawn('brew', ['list', '--versions', leaf], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+        })
+        child.stdout?.on('data', (data: Buffer) => {
+            stdout += data.toString()
+        })
+        child.on('error', () => resolve(undefined))
+        child.on('close', () => resolve(stdout.trim().split(/\s+/).pop() || undefined))
+    })
+}
+
 function formatChannel(channel: UpdateChannel): string {
     return channel === 'pre-release' ? chalk.magenta('pre-release') : chalk.green('stable')
 }
@@ -308,12 +326,12 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         console.log(headline)
     }
 
-    const pm = brew ? null : detectPackageManager()
+    const pm = detectPackageManager()
     const quiet = Boolean(view.json || view.ndjson)
     const task = () =>
         brew
             ? runBrewUpgrade(options.brewFormula as string, quiet)
-            : runInstall(pm as string, options.packageName, tag)
+            : runInstall(pm, options.packageName, tag)
     // brew prints its own progress, so skip the spinner for it unless we've
     // silenced its output for machine-readable mode.
     const useSpinner = !brew || quiet
@@ -352,19 +370,32 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         )
     }
 
-    // brew owns its own versioning and can resolve to a different (or
-    // unchanged) version than the npm dist-tag we checked — so don't claim
-    // `latestVersion` was installed. Report a neutral result instead.
-    const summary = brew
-        ? { currentVersion, channel, installed: true, via: 'brew' as const }
-        : { currentVersion, latestVersion, channel, installed: true }
+    // For npm/pnpm we install the exact dist-tag, so the applied version is
+    // `latestVersion`. brew owns its own versioning and may be a no-op when the
+    // formula lags npm, so read the version brew actually has on disk and derive
+    // `installed` from it; if it can't be read, assume the upgrade applied.
+    const installedVersion = brew
+        ? await brewInstalledVersion(options.brewFormula as string)
+        : latestVersion
+    const installed = brew
+        ? installedVersion === undefined || installedVersion !== currentVersion
+        : true
+    // Stable schema across installers: always carry the registry target
+    // (`latestVersion`) plus a `via` discriminator; brew adds the applied
+    // `installedVersion` when known.
+    const summary = {
+        currentVersion,
+        latestVersion,
+        channel,
+        installed,
+        via: brew ? ('brew' as const) : pm,
+        ...(brew && installedVersion ? { installedVersion } : {}),
+    }
     emitView(view, summary, () => {
         const lines = [
-            brew
-                ? `${chalk.green('✓')} brew upgrade complete${label}`
-                : `${chalk.green('✓')} Updated to v${latestVersion}${label}`,
+            `${chalk.green('✓')} ${brew ? 'brew upgrade complete' : `Updated to v${latestVersion}`}${label}`,
         ]
-        if (channel === 'stable' && options.changelogCommandName) {
+        if (installed && channel === 'stable' && options.changelogCommandName) {
             lines.push(
                 `${chalk.dim('  Run')} ${chalk.cyan(options.changelogCommandName)} ${chalk.dim('to see what changed')}`,
             )
