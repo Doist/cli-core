@@ -1,3 +1,9 @@
+## [0.21.0](https://github.com/Doist/cli-core/compare/v0.20.1...v0.21.0) (2026-05-22)
+
+### Features
+
+* **update:** detect Homebrew installs and upgrade via brew ([#44](https://github.com/Doist/cli-core/issues/44)) ([a532a41](https://github.com/Doist/cli-core/commit/a532a41af79bfb2e7cf1f2d2b9c387d8592dea79))
+
 ## [0.20.1](https://github.com/Doist/cli-core/compare/v0.20.0...v0.20.1) (2026-05-21)
 
 ### Bug Fixes
