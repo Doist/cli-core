@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
-import { formatJson, formatNdjson } from '../json.js'
-import type { ViewOptions } from '../options.js'
+import { formatNdjson } from '../json.js'
+import { type ViewOptions, emitView } from '../options.js'
 import type { AccountRef, AuthAccount, TokenStore } from './types.js'
 
 export type AttachAccountListContext<TAccount extends AuthAccount> = {
@@ -93,34 +93,44 @@ export function attachAccountListCommand<TAccount extends AuthAccount = AuthAcco
             const accounts = await options.store.list()
             const defaultRef: AccountRef | null =
                 accounts.find((entry) => entry.isDefault)?.account.id ?? null
-            if (view.json || view.ndjson) {
-                const payloads = accounts.map(({ account, isDefault }) =>
-                    options.renderJson
-                        ? options.renderJson({ account, isDefault, flags })
-                        : { account, isDefault },
-                )
-                if (view.json) {
-                    console.log(formatJson({ accounts: payloads, default: defaultRef }))
-                } else if (payloads.length > 0) {
-                    console.log(formatNdjson(payloads))
-                }
+            const toPayload = ({ account, isDefault }: { account: TAccount; isDefault: boolean }) =>
+                options.renderJson
+                    ? options.renderJson({ account, isDefault, flags })
+                    : { account, isDefault }
+            // NDJSON streams one object per account; emit each line as it's
+            // produced rather than buffering a joined string. Empty list → no
+            // lines (EOF-as-end-of-stream, matching `printEmpty`).
+            if (view.ndjson) {
+                for (const entry of accounts) console.log(formatNdjson([toPayload(entry)]))
                 return
             }
-            const text = options.renderText
-                ? options.renderText({ accounts, default: defaultRef, view, flags })
-                : defaultListText({ accounts, default: defaultRef, view, flags })
-            const lines = typeof text === 'string' ? [text] : text
-            for (const line of lines) console.log(line)
+            // `renderJson` is machine-mode only, so build the payload lazily —
+            // emitView ignores it in human mode where the thunk runs instead.
+            const payload = view.json
+                ? { accounts: accounts.map(toPayload), default: defaultRef }
+                : {}
+            emitView(view, payload, () => {
+                const ctx: AttachAccountListContext<TAccount> = {
+                    accounts,
+                    default: defaultRef,
+                    view,
+                    flags,
+                }
+                const text = options.renderText ? options.renderText(ctx) : defaultListText(ctx)
+                return typeof text === 'string' ? [text] : text
+            })
         })
 }
 
 /**
  * Attach `use <ref>` as a subcommand of `parent` (typically an `account`
- * group). Calls `store.setDefault(ref)` and emits the success envelope
- * (`✓ Default account set to <ref>` in plain, `{ ok: true, default: <ref> }`
- * under `--json`, silent under `--ndjson`). `setDefault`'s
- * `CliError('ACCOUNT_NOT_FOUND', …)` on a ref miss propagates unchanged.
- * Returns the new `Command` so the consumer can chain.
+ * group). Calls `store.setDefault(ref)`, then re-reads `store.list()` to
+ * resolve the now-default account's canonical `id` so the `--json` `default`
+ * field matches what `account list --json` reports for the same account
+ * (round-trippable). The human line echoes the raw `<ref>` the user typed.
+ * `--ndjson` is silent (success-action convention, matching `logout`).
+ * `setDefault`'s `CliError('ACCOUNT_NOT_FOUND', …)` on a ref miss propagates
+ * unchanged. Returns the new `Command` so the consumer can chain.
  */
 export function attachAccountUseCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -139,10 +149,15 @@ export function attachAccountUseCommand<TAccount extends AuthAccount = AuthAccou
                 ndjson: Boolean(ndjson),
             }
             await options.store.setDefault(ref)
-            if (view.json) {
-                console.log(formatJson({ ok: true, default: ref }))
-            } else if (!view.ndjson) {
-                console.log(`✓ Default account set to ${ref}`)
+            const accounts = await options.store.list()
+            const resolvedDefault: AccountRef =
+                accounts.find((entry) => entry.isDefault)?.account.id ?? ref
+            // NDJSON stays silent on success-actions (logout convention); the
+            // guard keeps emitView from emitting an ndjson line.
+            if (!view.ndjson) {
+                emitView(view, { ok: true, default: resolvedDefault }, () => [
+                    `✓ Default account set to ${ref}`,
+                ])
             }
             await options.onDefaultSet?.({ ref, view, flags })
         })
