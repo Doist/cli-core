@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process'
+import { spawn, type SpawnOptions } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import chalk from 'chalk'
 import type { Command } from 'commander'
 import {
@@ -22,6 +23,12 @@ export type UpdateCommandOptions = {
     currentVersion: string
     /** Absolute path to the CLI's config file (use `getConfigPath(appName)`). */
     configPath: string
+    /**
+     * Homebrew formula to `brew upgrade` when the CLI was installed via
+     * Homebrew, e.g. `'todoist-cli'` or a tapped `'doist/tap/todoist-cli'`. Set
+     * this on CLIs distributed through brew; omit for npm-only CLIs.
+     */
+    brewFormula?: string
     /** Override the npm registry base URL. Default `'https://registry.npmjs.org'`. */
     registryUrl?: string
     /**
@@ -126,6 +133,24 @@ export async function getConfiguredUpdateChannel(configPath: string): Promise<Up
     return channel
 }
 
+function isBrewInstall(): boolean {
+    // Homebrew bin shims symlink into the Cellar on every platform (Apple
+    // Silicon `/opt/homebrew`, Intel `/usr/local`, Linuxbrew
+    // `/home/linuxbrew/.linuxbrew`), so the resolved real path is the reliable
+    // signal — a bare prefix check would false-positive an npm-global install
+    // under `/usr/local`. Brew never runs on Windows.
+    if (process.platform === 'win32') return false
+    const script = process.argv[1]
+    if (!script) return false
+    let resolved = script
+    try {
+        resolved = realpathSync(script)
+    } catch {
+        // Unresolvable path: fall back to the literal argv entry.
+    }
+    return resolved.includes('/Cellar/')
+}
+
 function detectPackageManager(): 'npm' | 'pnpm' {
     // `npm_execpath` is only set when the CLI is invoked via a package manager
     // (e.g. `npm run`). Globally-installed CLIs run directly from the shell, so
@@ -137,30 +162,69 @@ function detectPackageManager(): 'npm' | 'pnpm' {
     return haystack.includes('pnpm') ? 'pnpm' : 'npm'
 }
 
-function runInstall(
-    pm: string,
-    packageName: string,
-    tag: string,
+function spawnCapture(
+    command: string,
+    args: string[],
+    options: SpawnOptions,
 ): Promise<{ exitCode: number; stderr: string }> {
-    const command = pm === 'pnpm' ? 'add' : 'install'
     return new Promise((resolve, reject) => {
-        const child = spawn(pm, [command, '-g', `${packageName}@${tag}`], {
-            // Ignore stdout so a chatty install can't deadlock by filling an
-            // unread pipe buffer; keep stderr piped so we can surface the tail
-            // in the CliError hint on a non-zero exit.
-            stdio: ['ignore', 'ignore', 'pipe'],
-            // npm/pnpm on Windows are `.cmd` shims that spawn() can't resolve
-            // without the shell. Safe to enable here because every argv element
-            // is library-controlled (literal command, fixed flags, validated
-            // package name + tag).
-            shell: process.platform === 'win32',
-        })
+        const child = spawn(command, args, options)
         let stderr = ''
         child.stderr?.on('data', (data: Buffer) => {
             stderr += data.toString()
         })
         child.on('error', reject)
         child.on('close', (code) => resolve({ exitCode: code ?? 1, stderr }))
+    })
+}
+
+function runInstall(
+    pm: string,
+    packageName: string,
+    tag: string,
+): Promise<{ exitCode: number; stderr: string }> {
+    const command = pm === 'pnpm' ? 'add' : 'install'
+    return spawnCapture(pm, [command, '-g', `${packageName}@${tag}`], {
+        // Ignore stdout so a chatty install can't deadlock by filling an unread
+        // pipe buffer; keep stderr piped so we can surface the tail in the
+        // CliError hint on a non-zero exit.
+        stdio: ['ignore', 'ignore', 'pipe'],
+        // npm/pnpm on Windows are `.cmd` shims that spawn() can't resolve
+        // without the shell. Safe to enable here because every argv element is
+        // library-controlled (literal command, fixed flags, validated package
+        // name + tag).
+        shell: process.platform === 'win32',
+    })
+}
+
+function runBrewUpgrade(
+    formula: string,
+    quiet: boolean,
+): Promise<{ exitCode: number; stderr: string }> {
+    return spawnCapture('brew', ['upgrade', formula], {
+        // Inherit so brew's own download/upgrade progress reaches the user
+        // (these can run for a while). Under machine-readable output, fall back
+        // to the npm-style pipe so brew's chatter can't corrupt the JSON/NDJSON
+        // stream on stdout.
+        stdio: quiet ? ['ignore', 'ignore', 'pipe'] : 'inherit',
+    })
+}
+
+function brewInstalledVersion(formula: string): Promise<string | undefined> {
+    // `brew list --versions <name>` prints e.g. `todoist-cli 1.1.0`; the version
+    // is the last whitespace token. Tap-qualified formulae list under their leaf
+    // name, so strip the tap prefix. Best-effort — any failure yields undefined.
+    const leaf = formula.split('/').pop() ?? formula
+    return new Promise((resolve) => {
+        let stdout = ''
+        const child = spawn('brew', ['list', '--versions', leaf], {
+            stdio: ['ignore', 'pipe', 'ignore'],
+        })
+        child.stdout?.on('data', (data: Buffer) => {
+            stdout += data.toString()
+        })
+        child.on('error', () => resolve(undefined))
+        child.on('close', () => resolve(stdout.trim().split(/\s+/).pop() || undefined))
     })
 }
 
@@ -202,6 +266,17 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
 
     const tag = getInstallTag(channel)
     const label = channelLabel(channel)
+
+    // Fail fast on a guaranteed-broken install path before spending a registry
+    // round-trip. `--check` never installs, so a missing formula is fine there.
+    const brew = isBrewInstall()
+    if (!cmd.check && brew && !options.brewFormula) {
+        throw new CliError(
+            'UPDATE_INSTALL_FAILED',
+            'Installed via Homebrew but no brew formula is configured.',
+            { hints: ['Update manually: brew upgrade <formula>'] },
+        )
+    }
 
     let latestVersion: string
     try {
@@ -252,16 +327,27 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     }
 
     const pm = detectPackageManager()
+    const quiet = Boolean(view.json || view.ndjson)
+    const task = () =>
+        brew
+            ? runBrewUpgrade(options.brewFormula as string, quiet)
+            : runInstall(pm, options.packageName, tag)
+    // brew prints its own progress, so skip the spinner for it unless we've
+    // silenced its output for machine-readable mode.
+    const useSpinner = !brew || quiet
 
     let result: { exitCode: number; stderr: string }
     try {
-        result = await runWithSpinner(
-            options.withSpinner,
-            `Updating to v${latestVersion}${label}...`,
-            () => runInstall(pm, options.packageName, tag),
-        )
+        result = useSpinner
+            ? await runWithSpinner(
+                  options.withSpinner,
+                  `Updating to v${latestVersion}${label}...`,
+                  task,
+              )
+            : await task()
     } catch (error) {
         if (
+            !brew &&
             error instanceof Error &&
             'code' in error &&
             (error as { code?: unknown }).code === 'EACCES'
@@ -279,14 +365,37 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     if (result.exitCode !== 0) {
         throw new CliError(
             'UPDATE_INSTALL_FAILED',
-            `${pm} exited with code ${result.exitCode}`,
+            `${brew ? 'brew' : pm} exited with code ${result.exitCode}`,
             result.stderr ? { hints: [result.stderr.trim()] } : {},
         )
     }
 
-    emitView(view, { currentVersion, latestVersion, channel, installed: true }, () => {
-        const lines = [`${chalk.green('✓')} Updated to v${latestVersion}${label}`]
-        if (channel === 'stable' && options.changelogCommandName) {
+    // For npm/pnpm we install the exact dist-tag, so the applied version is
+    // `latestVersion`. brew owns its own versioning and may be a no-op when the
+    // formula lags npm, so read the version brew actually has on disk and derive
+    // `installed` from it; if it can't be read, assume the upgrade applied.
+    const installedVersion = brew
+        ? await brewInstalledVersion(options.brewFormula as string)
+        : latestVersion
+    const installed = brew
+        ? installedVersion === undefined || installedVersion !== currentVersion
+        : true
+    // Stable schema across installers: always carry the registry target
+    // (`latestVersion`) plus a `via` discriminator; brew adds the applied
+    // `installedVersion` when known.
+    const summary = {
+        currentVersion,
+        latestVersion,
+        channel,
+        installed,
+        via: brew ? ('brew' as const) : pm,
+        ...(brew && installedVersion ? { installedVersion } : {}),
+    }
+    emitView(view, summary, () => {
+        const lines = [
+            `${chalk.green('✓')} ${brew ? 'brew upgrade complete' : `Updated to v${latestVersion}`}${label}`,
+        ]
+        if (installed && channel === 'stable' && options.changelogCommandName) {
             lines.push(
                 `${chalk.dim('  Run')} ${chalk.cyan(options.changelogCommandName)} ${chalk.dim('to see what changed')}`,
             )
@@ -340,8 +449,12 @@ async function runSwitch(
  * Commander program. The `update` action checks the npm registry for the
  * configured channel's dist-tag, compares against `currentVersion`, and shells
  * out to `npm i -g` (or `pnpm add -g` if pnpm is detected on the running
- * script's path). `update switch` flips the persisted `update_channel` field
- * between `'stable'` and `'pre-release'`.
+ * script's path). When the CLI was installed via Homebrew (the running script
+ * resolves into a brew Cellar) it instead runs `brew upgrade <brewFormula>` —
+ * note the brew formula can lag the npm publish, so the registry may report an
+ * update while `brew upgrade` is a no-op until the formula is bumped.
+ * `update switch` flips the persisted `update_channel` field between `'stable'`
+ * and `'pre-release'`.
  *
  * Errors as `CliError` (`INVALID_FLAGS`, `INVALID_UPDATE_CHANNEL`,
  * `UPDATE_CHECK_FAILED`, `UPDATE_INSTALL_FAILED`, or the canonical `CONFIG_*`
@@ -363,6 +476,7 @@ async function runSwitch(
  *     currentVersion: packageJson.version,
  *     configPath: getConfigPath('todoist-cli'),
  *     changelogCommandName: 'td changelog',
+ *     brewFormula: 'doist/tap/todoist-cli',
  *     withSpinner,
  * })
  * ```

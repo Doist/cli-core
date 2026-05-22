@@ -13,6 +13,11 @@ import {
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }))
 
+vi.mock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs')>()
+    return { ...actual, realpathSync: vi.fn(actual.realpathSync) }
+})
+
 vi.mock('../config.js', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../config.js')>()
     return {
@@ -23,8 +28,10 @@ vi.mock('../config.js', async (importOriginal) => {
 })
 
 const { spawn } = await import('node:child_process')
+const { realpathSync } = await import('node:fs')
 const config = await import('../config.js')
 const mockSpawn = vi.mocked(spawn)
+const mockRealpathSync = vi.mocked(realpathSync)
 const mockReadConfigOrThrow = vi.mocked(config.readConfigOrThrow)
 const mockUpdateConfigOrThrow = vi.mocked(config.updateConfigOrThrow)
 
@@ -35,10 +42,10 @@ const BASE_OPTIONS: UpdateCommandOptions = {
     changelogCommandName: 'td changelog',
 }
 
-function createProgram(): Command {
+function createProgram(overrides?: Partial<UpdateCommandOptions>): Command {
     const program = new Command()
     program.name('td').exitOverride()
-    registerUpdateCommand(program, BASE_OPTIONS)
+    registerUpdateCommand(program, { ...BASE_OPTIONS, ...overrides })
     return program
 }
 
@@ -79,6 +86,9 @@ beforeEach(() => {
     mockReadConfigOrThrow.mockReset().mockResolvedValue({})
     mockUpdateConfigOrThrow.mockReset().mockResolvedValue(undefined)
     mockSpawn.mockClear()
+    // Identity by default → resolved path has no `/Cellar/`, so the npm/pnpm
+    // cases stay brew-negative. Brew tests override this per-test.
+    mockRealpathSync.mockReset().mockImplementation((p) => String(p))
 })
 
 afterEach(() => {
@@ -257,8 +267,160 @@ describe('update install flow', () => {
             latestVersion: '99.99.99',
             channel: 'stable',
             installed: true,
+            via: 'npm',
         })
     })
+})
+
+describe('update brew install flow', () => {
+    const CELLAR_PATH = '/opt/homebrew/Cellar/todoist-cli/1.1.0/bin/td'
+    const FORMULA = 'doist/tap/todoist-cli'
+    const realPlatform = process.platform
+
+    // `brew upgrade` exits `upgradeExit`; the follow-up `brew list --versions`
+    // reports `listedVersion` on stdout (used to derive the installed result).
+    function mockBrew({
+        upgradeExit = 0,
+        listedVersion,
+    }: { upgradeExit?: number; listedVersion?: string } = {}) {
+        mockSpawn.mockImplementation(((_cmd: string, args: readonly string[]) => ({
+            stdout: {
+                on: vi.fn((event: string, cb: (chunk: Buffer) => void) => {
+                    if (event === 'data' && args[0] === 'list' && listedVersion) {
+                        cb(Buffer.from(`todoist-cli ${listedVersion}\n`))
+                    }
+                }),
+            },
+            stderr: { on: vi.fn() },
+            on: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+                if (event === 'close') cb(args[0] === 'list' ? 0 : upgradeExit)
+            }),
+        })) as never)
+    }
+
+    beforeEach(() => {
+        // isBrewInstall() short-circuits on win32, bypassing the realpathSync
+        // mock; pin a posix platform so these tests are deterministic on any host.
+        Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
+    })
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+    })
+
+    it('runs `brew upgrade <formula>` with inherited stdio and a neutral success line', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        mockBrew({ listedVersion: '1.1.0' })
+        await createProgram({ brewFormula: FORMULA }).parseAsync(['node', 'td', 'update'])
+        expect(mockSpawn).toHaveBeenCalledWith('brew', ['upgrade', FORMULA], { stdio: 'inherit' })
+        // The success line must not claim the npm dist-tag version was installed
+        // (the pre-install headline may still mention it as the available target).
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('brew upgrade complete'))
+        expect(consoleSpy).not.toHaveBeenCalledWith(expect.stringContaining('Updated to v'))
+    })
+
+    it.each([
+        ['version changed → installed', '1.1.0', true],
+        ['no-op (formula lags npm) → not installed', '1.0.0', false],
+    ])(
+        'derives installed from the on-disk brew version, keeping a stable --json schema: %s',
+        async (_, listedVersion, installed) => {
+            mockRealpathSync.mockReturnValue(CELLAR_PATH)
+            mockFetchOk('99.99.99')
+            mockBrew({ listedVersion })
+            await createProgram({ brewFormula: FORMULA }).parseAsync([
+                'node',
+                'td',
+                'update',
+                '--json',
+            ])
+            // stdout piped (not inherited) under --json so brew can't corrupt the stream.
+            expect(mockSpawn).toHaveBeenCalledWith('brew', ['upgrade', FORMULA], {
+                stdio: ['ignore', 'ignore', 'pipe'],
+            })
+            const payloads = consoleSpy.mock.calls.map((call: unknown[]) =>
+                JSON.parse(call[0] as string),
+            )
+            expect(payloads).toContainEqual({
+                currentVersion: '1.0.0',
+                latestVersion: '99.99.99',
+                channel: 'stable',
+                installed,
+                via: 'brew',
+                installedVersion: listedVersion,
+            })
+        },
+    )
+
+    it('throws UPDATE_INSTALL_FAILED on a non-zero brew exit', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        mockBrew({ upgradeExit: 1 })
+        await expect(
+            createProgram({ brewFormula: FORMULA }).parseAsync(['node', 'td', 'update']),
+        ).rejects.toMatchObject({
+            code: 'UPDATE_INSTALL_FAILED',
+            message: expect.stringContaining('brew exited with code 1'),
+        })
+    })
+
+    it('fails fast (before any registry call) when brew-installed without a formula', async () => {
+        mockRealpathSync.mockReturnValue(CELLAR_PATH)
+        mockFetchOk('99.99.99')
+        await expect(createProgram().parseAsync(['node', 'td', 'update'])).rejects.toMatchObject({
+            code: 'UPDATE_INSTALL_FAILED',
+            hints: [expect.stringContaining('brew upgrade')],
+        })
+        expect(fetch).not.toHaveBeenCalled()
+        expect(mockSpawn).not.toHaveBeenCalled()
+    })
+
+    it('uses npm/pnpm (not brew) when a formula is set but the install is not brew-managed', async () => {
+        // realpathSync defaults to identity (no `/Cellar/`), so this is a plain
+        // npm global install even though brewFormula is configured.
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createProgram({ brewFormula: FORMULA }).parseAsync(['node', 'td', 'update'])
+        expect(mockSpawn).toHaveBeenCalledWith(
+            'npm',
+            ['install', '-g', '@doist/todoist-cli@latest'],
+            {
+                stdio: ['ignore', 'ignore', 'pipe'],
+                shell: false,
+            },
+        )
+        expect(mockSpawn).not.toHaveBeenCalledWith('brew', expect.anything(), expect.anything())
+    })
+
+    it.each([
+        ['interactive: no install spinner', [] as string[], false],
+        ['--json: install spinner (stdout silenced)', ['--json'], true],
+    ])(
+        'threads the install spinner for brew only when quiet (%s)',
+        async (_, flags, expectSpinner) => {
+            mockRealpathSync.mockReturnValue(CELLAR_PATH)
+            mockFetchOk('99.99.99')
+            mockBrew({ listedVersion: '1.1.0' })
+            const withSpinner = vi.fn((_opts: SpinnerOptions, op: () => Promise<unknown>) => op())
+            const program = new Command()
+            program.name('td').exitOverride()
+            registerUpdateCommand(program, {
+                ...BASE_OPTIONS,
+                brewFormula: FORMULA,
+                withSpinner: withSpinner as unknown as UpdateCommandOptions['withSpinner'],
+            })
+            await program.parseAsync(['node', 'td', 'update', ...flags])
+            const installSpinner = expect.objectContaining({
+                text: expect.stringContaining('Updating to v'),
+            })
+            if (expectSpinner) {
+                expect(withSpinner).toHaveBeenCalledWith(installSpinner, expect.any(Function))
+            } else {
+                expect(withSpinner).not.toHaveBeenCalledWith(installSpinner, expect.any(Function))
+            }
+        },
+    )
 })
 
 describe('update error paths', () => {
