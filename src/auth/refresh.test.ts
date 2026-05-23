@@ -5,6 +5,12 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import {
+    type TestAccount as Account,
+    type TokenStoreHarness,
+    buildTokenStore,
+    ianMalcolm,
+} from '../test-support/accounts.js'
 import { refreshAccessToken } from './refresh.js'
 import type {
     ActiveBundleSnapshot,
@@ -14,9 +20,7 @@ import type {
     TokenStore,
 } from './types.js'
 
-type Account = { id: string; label?: string; email: string }
-
-const account: Account = { id: '42', email: 'a@b' }
+const account = ianMalcolm
 
 function bundle(overrides: Partial<TokenBundle> = {}): TokenBundle {
     return {
@@ -27,50 +31,16 @@ function bundle(overrides: Partial<TokenBundle> = {}): TokenBundle {
     }
 }
 
-type StoreState = {
-    snapshot: ActiveBundleSnapshot<Account> | null
-    activeBundleSpy: ReturnType<typeof vi.fn>
-    setBundleSpy: ReturnType<typeof vi.fn>
-    setBundleCalls: { account: Account; bundle: TokenBundle; options?: unknown }[]
-}
-
 function fakeStore(
     initial: ActiveBundleSnapshot<Account> | null,
     overrides: Partial<TokenStore<Account>> = {},
-): { store: TokenStore<Account>; state: StoreState } {
-    const setBundleCalls: StoreState['setBundleCalls'] = []
-    const state: StoreState = {
-        snapshot: initial,
-        activeBundleSpy: vi.fn(),
-        setBundleSpy: vi.fn(),
-        setBundleCalls,
-    }
-    state.activeBundleSpy.mockImplementation(async () => state.snapshot)
-    state.setBundleSpy.mockImplementation(
-        async (acc: Account, b: TokenBundle, options?: unknown) => {
-            setBundleCalls.push({ account: acc, bundle: b, options })
-            state.snapshot = { account: acc, bundle: b }
-        },
-    )
-    const store: TokenStore<Account> = {
-        async active() {
-            return state.snapshot
-                ? { token: state.snapshot.bundle.accessToken, account: state.snapshot.account }
-                : null
-        },
-        activeBundle: state.activeBundleSpy as unknown as TokenStore<Account>['activeBundle'],
-        async set() {},
-        setBundle: state.setBundleSpy as unknown as TokenStore<Account>['setBundle'],
-        async clear() {
-            return null
-        },
-        async list() {
-            return []
-        },
-        async setDefault() {},
-        ...overrides,
-    }
-    return { store, state }
+): TokenStoreHarness<Account> {
+    return buildTokenStore<Account>({
+        entries: initial
+            ? [{ account: initial.account, isDefault: true, bundle: initial.bundle }]
+            : [],
+        overrides,
+    })
 }
 
 function fakeProvider(
@@ -238,10 +208,7 @@ describe('refreshAccessToken', () => {
         // alongside the call so no background task outlives the test.
         const holder = (async () => {
             await sleep(120)
-            state.snapshot = {
-                account,
-                bundle: { accessToken: 'tok_held', refreshToken: 'r_held' },
-            }
+            state.entries[0].bundle = { accessToken: 'tok_held', refreshToken: 'r_held' }
             await rm(lockPath, { force: true })
         })()
 

@@ -1,47 +1,36 @@
-import { Command } from 'commander'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import {
+    type TestAccount as Account,
+    type TokenStoreHarness,
+    alanGrant,
+    buildTokenStore,
+} from '../test-support/accounts.js'
+import { buildProgram, installStdoutSpy } from '../test-support/cli-harness.js'
 import { attachTokenViewCommand } from './token-view.js'
-import type { TokenStore } from './types.js'
 
-type Account = { id: string; label?: string; email: string }
-
-const account: Account = { id: '1', label: 'me', email: 'a@b' }
+const account = alanGrant
 
 function buildStore(
     initial: { token: string; account: Account } | null = { token: 'tok-xyz', account },
-): {
-    store: TokenStore<Account>
-    activeSpy: ReturnType<typeof vi.fn>
-} {
-    const activeSpy = vi.fn(async () => initial)
-    const store: TokenStore<Account> = {
-        active: activeSpy,
-        set: vi.fn(),
-        clear: vi.fn(),
-        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
-        setDefault: vi.fn(),
-    }
-    return { store, activeSpy }
+): TokenStoreHarness<Account> {
+    return buildTokenStore<Account>({
+        entries: initial
+            ? [{ account: initial.account, isDefault: true, token: initial.token }]
+            : [],
+    })
 }
 
 describe('attachTokenViewCommand', () => {
-    let stdoutSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-        stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    })
+    const stdoutSpy = installStdoutSpy()
 
     afterEach(() => {
-        stdoutSpy.mockRestore()
         vi.unstubAllEnvs()
     })
 
     it('writes exactly the bare token (no trailing newline) when stdout is not a TTY', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store } = buildStore()
         attachTokenViewCommand<Account>(auth, { store })
 
@@ -56,15 +45,15 @@ describe('attachTokenViewCommand', () => {
             })
         }
 
-        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        const emitted = stdoutSpy()
+            .mock.calls.map((call: unknown[]) => call[0])
+            .join('')
         expect(emitted).toBe('tok-xyz')
-        expect(stdoutSpy).toHaveBeenCalledTimes(1)
+        expect(stdoutSpy()).toHaveBeenCalledTimes(1)
     })
 
     it('appends a newline only when stdout is a TTY', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store } = buildStore()
         attachTokenViewCommand<Account>(auth, { store })
 
@@ -79,15 +68,15 @@ describe('attachTokenViewCommand', () => {
             })
         }
 
-        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        const emitted = stdoutSpy()
+            .mock.calls.map((call: unknown[]) => call[0])
+            .join('')
         expect(emitted).toBe('tok-xyz\n')
     })
 
     it('throws CliError(TOKEN_FROM_ENV) when envVarName is set and env is populated', async () => {
         vi.stubEnv('TODOIST_API_TOKEN', 'env-token')
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store, activeSpy } = buildStore()
         attachTokenViewCommand<Account>(auth, { store, envVarName: 'TODOIST_API_TOKEN' })
 
@@ -96,26 +85,22 @@ describe('attachTokenViewCommand', () => {
             code: 'TOKEN_FROM_ENV',
         })
         expect(activeSpy).not.toHaveBeenCalled()
-        expect(stdoutSpy).not.toHaveBeenCalled()
+        expect(stdoutSpy()).not.toHaveBeenCalled()
     })
 
     it('prints normally when envVarName is set but env is empty', async () => {
         vi.stubEnv('TODOIST_API_TOKEN', '')
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store } = buildStore()
         attachTokenViewCommand<Account>(auth, { store, envVarName: 'TODOIST_API_TOKEN' })
 
         await program.parseAsync(['node', 'cli', 'auth', 'token'])
 
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('throws CliError(NOT_AUTHENTICATED) when the store is empty', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store } = buildStore(null)
         attachTokenViewCommand<Account>(auth, { store })
 
@@ -123,25 +108,22 @@ describe('attachTokenViewCommand', () => {
             constructor: CliError,
             code: 'NOT_AUTHENTICATED',
         })
-        expect(stdoutSpy).not.toHaveBeenCalled()
+        expect(stdoutSpy()).not.toHaveBeenCalled()
     })
 
     it('registers under a custom name when supplied', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store } = buildStore()
         const cmd = attachTokenViewCommand<Account>(auth, { store, name: 'view' })
 
         expect(cmd.name()).toBe('view')
 
         await program.parseAsync(['node', 'cli', 'auth', 'view'])
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('returns the new Command so the consumer can chain', () => {
-        const program = new Command()
-        const auth = program.command('auth')
+        const { parent: auth } = buildProgram('auth')
         const { store } = buildStore()
         const cmd = attachTokenViewCommand<Account>(auth, { store })
 
@@ -149,35 +131,29 @@ describe('attachTokenViewCommand', () => {
     })
 
     it('threads --user ref to store.active(ref) and prints the matched token', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store, activeSpy } = buildStore()
         attachTokenViewCommand<Account>(auth, { store })
 
-        await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alice@example'])
+        await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alan@ingen.com'])
 
-        expect(activeSpy).toHaveBeenCalledWith('alice@example')
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(activeSpy).toHaveBeenCalledWith('alan@ingen.com')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('calls store.active(undefined) when --user is absent', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store, activeSpy } = buildStore()
         attachTokenViewCommand<Account>(auth, { store })
 
         await program.parseAsync(['node', 'cli', 'auth', 'token'])
 
         expect(activeSpy).toHaveBeenCalledWith(undefined)
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('throws ACCOUNT_NOT_FOUND when --user does not match a stored account', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const auth = program.command('auth')
+        const { program, parent: auth } = buildProgram('auth')
         const { store } = buildStore(null)
         attachTokenViewCommand<Account>(auth, { store })
 
@@ -187,6 +163,6 @@ describe('attachTokenViewCommand', () => {
             constructor: CliError,
             code: 'ACCOUNT_NOT_FOUND',
         })
-        expect(stdoutSpy).not.toHaveBeenCalled()
+        expect(stdoutSpy()).not.toHaveBeenCalled()
     })
 })
