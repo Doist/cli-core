@@ -2,19 +2,9 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import type { ViewOptions } from '../options.js'
 import { runOAuthFlow } from './flow.js'
-import type { AuthAccount, AuthProvider, TokenStore } from './types.js'
+import type { AuthAccount, AuthProvider, TokenStore, WithAccount } from './types.js'
 
-export type AttachLoginContext<TAccount extends AuthAccount> = {
-    account: TAccount
-    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-    view: Required<ViewOptions>
-    /**
-     * Stripped per-CLI flags — the parsed options object with the standard
-     * registrar flags (`--read-only`, `--callback-port`, `--json`, `--ndjson`)
-     * removed. Same view `resolveScopes` saw at flow start.
-     */
-    flags: Record<string, unknown>
-}
+export type AttachLoginContext<TAccount extends AuthAccount> = WithAccount<TAccount>
 
 export type AttachLoginCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
     provider: AuthProvider<TAccount>

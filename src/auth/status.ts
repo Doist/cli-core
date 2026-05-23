@@ -2,7 +2,14 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
-import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from './types.js'
+import type {
+    AccountRef,
+    AttachContextBase,
+    AuthAccount,
+    TokenBundle,
+    TokenStore,
+    WithAccount,
+} from './types.js'
 import {
     accountNotFoundError,
     attachUserFlag,
@@ -55,13 +62,7 @@ async function resolveStatusSnapshot<TAccount extends AuthAccount>(
     return snapshot ? { token: snapshot.token, account: snapshot.account } : null
 }
 
-export type AttachStatusContext<TAccount extends AuthAccount> = {
-    account: TAccount
-    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-    view: Required<ViewOptions>
-    /** Consumer-attached options (e.g. `--full`). The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
-    flags: Record<string, unknown>
-}
+export type AttachStatusContext<TAccount extends AuthAccount> = WithAccount<TAccount>
 
 export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
     store: TokenStore<TAccount>
@@ -72,19 +73,18 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
      * the token still works. Throws (e.g. a `CliError('NO_TOKEN', …)` translation
      * of a 401) propagate to the top-level handler.
      */
-    fetchLive?(ctx: {
-        account: TAccount
-        token: string
-        /**
-         * Full bundle when the store implements `activeBundle` — lets a
-         * consumer render expiry without a second read. Absent when the
-         * store only exposes `active()` (no refresh-side metadata available).
-         */
-        bundle?: TokenBundle
-        /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-        view: Required<ViewOptions>
-        flags: Record<string, unknown>
-    }): Promise<TAccount>
+    fetchLive?(
+        ctx: AttachContextBase & {
+            account: TAccount
+            token: string
+            /**
+             * Full bundle when the store implements `activeBundle` — lets a
+             * consumer render expiry without a second read. Absent when the
+             * store only exposes `active()` (no refresh-side metadata available).
+             */
+            bundle?: TokenBundle
+        },
+    ): Promise<TAccount>
     /**
      * Human-mode renderer. May return a single string or an array of lines;
      * lines are joined with `\n` on output.
@@ -100,11 +100,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
      * Called when `store.active()` returns null. Default behaviour throws
      * `CliError('NOT_AUTHENTICATED', …)`.
      */
-    onNotAuthenticated?(ctx: {
-        /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-        view: Required<ViewOptions>
-        flags: Record<string, unknown>
-    }): void | Promise<void>
+    onNotAuthenticated?(ctx: AttachContextBase): void | Promise<void>
 }
 
 /**
