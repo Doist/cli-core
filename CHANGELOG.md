@@ -1,3 +1,9 @@
+## [0.22.0](https://github.com/Doist/cli-core/compare/v0.21.0...v0.22.0) (2026-05-23)
+
+### Features
+
+* **auth:** add account list/use Commander attachers ([#45](https://github.com/Doist/cli-core/issues/45)) ([190770c](https://github.com/Doist/cli-core/commit/190770c31418375df3b2a094cd56b68bf5ec3138))
+
 ## [0.21.0](https://github.com/Doist/cli-core/compare/v0.20.1...v0.21.0) (2026-05-22)
 
 ### Features
