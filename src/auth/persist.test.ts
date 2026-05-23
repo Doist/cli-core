@@ -17,7 +17,7 @@ function fakeStore(overrides: Partial<TokenStore<Account>> = {}): TokenStore<Acc
     return {
         active: vi.fn(async () => null),
         set: vi.fn(async () => undefined),
-        clear: vi.fn(async () => undefined),
+        clear: vi.fn(async () => null),
         list: vi.fn(async () => []),
         setDefault: vi.fn(async () => undefined),
         ...overrides,

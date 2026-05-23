@@ -19,7 +19,7 @@ function buildStore(
     clearSpy: ReturnType<typeof vi.fn>
 } {
     const activeSpy = vi.fn(async () => initial)
-    const clearSpy = vi.fn(async () => undefined)
+    const clearSpy = vi.fn(async () => null)
     const store: TokenStore<Account> = {
         active: activeSpy,
         set: vi.fn(),

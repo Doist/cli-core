@@ -100,6 +100,16 @@ export type ActiveBundleSnapshot<TAccount extends AuthAccount = AuthAccount> = {
 export type AccountRef = string
 
 /**
+ * Outcome of a successful `clear()`: the account that was removed plus whether
+ * it was the effective default before removal. `clear()` returns `null` instead
+ * when `ref` matched nothing.
+ */
+export type ClearedAccount<TAccount extends AuthAccount = AuthAccount> = {
+    account: TAccount
+    wasDefault: boolean
+}
+
+/**
  * Persistent token + account storage. Uniformly multi-user-shaped — single-user
  * stores implement `list` / `setDefault` against their one stored account (see
  * the README example).
@@ -115,6 +125,15 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * and `attachTokenViewCommand` propagate it.
      */
     active(ref?: AccountRef): Promise<{ token: string; account: TAccount } | null>
+    /**
+     * Token-free resolution of the active account (or the `ref` target) plus its
+     * effective-default status, in a single metadata read — no token-slot IPC.
+     * Optional: cli-core's `account current` falls back to `active()` + `list()`
+     * when a store doesn't implement it. Returns `null` on no match.
+     * `KeyringTokenStore` implements it so `current` doesn't pay a token read it
+     * never uses.
+     */
+    activeAccount?(ref?: AccountRef): Promise<{ account: TAccount; isDefault: boolean } | null>
     /** Persist `token` for `account`, replacing any previous entry. Throw `CliError` for typed failures; other thrown values become `AUTH_STORE_WRITE_FAILED`. */
     set(account: TAccount, token: string): Promise<void>
     /**
@@ -141,8 +160,14 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * record exists).
      */
     activeBundle?(ref?: AccountRef): Promise<ActiveBundleSnapshot<TAccount> | null>
-    /** Remove a stored credential. No-op when `ref` doesn't match. */
-    clear(ref?: AccountRef): Promise<void>
+    /**
+     * Remove a stored credential **without reading the token** — a record whose
+     * secret is unreadable (e.g. keyring offline) must still be removable.
+     * Resolves + deletes in one step and returns the removed account plus
+     * whether it was the effective default before removal, or `null` when `ref`
+     * matched nothing (no-op). Throw `CliError` for typed failures.
+     */
+    clear(ref?: AccountRef): Promise<ClearedAccount<TAccount> | null>
     /** Every stored account with a default marker. */
     list(): Promise<ReadonlyArray<{ account: TAccount; isDefault: boolean }>>
     /** Mark `ref` as the new default. Throw `CliError('ACCOUNT_NOT_FOUND', …)` on miss. */

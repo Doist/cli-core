@@ -38,6 +38,7 @@ function fakeStore(): TokenStore<Account> & { last?: { account: Account; token: 
         },
         async clear() {
             state.last = undefined
+            return null
         },
         async list() {
             return state.last ? [{ account: state.last.account, isDefault: true }] : []
@@ -375,7 +376,9 @@ describe('runOAuthFlow', () => {
             },
             set,
             setBundle,
-            async clear() {},
+            async clear() {
+                return null
+            },
             async list() {
                 return []
             },
@@ -418,7 +421,9 @@ describe('runOAuthFlow', () => {
                 return null
             },
             set,
-            async clear() {},
+            async clear() {
+                return null
+            },
             async list() {
                 return []
             },
@@ -450,7 +455,9 @@ describe('runOAuthFlow', () => {
             async set() {
                 throw new Error('disk full')
             },
-            async clear() {},
+            async clear() {
+                return null
+            },
             async list() {
                 return []
             },

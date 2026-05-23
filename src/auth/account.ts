@@ -105,6 +105,26 @@ function buildAccountPayload<TAccount extends AuthAccount>(
     return payload
 }
 
+/**
+ * Resolve the active account plus its effective-default status. Prefers the
+ * store's token-free `activeAccount` resolver (a single metadata read); falls
+ * back to `active()` + `list()` for stores that don't implement it.
+ */
+async function resolveActiveAccount<TAccount extends AuthAccount>(
+    store: TokenStore<TAccount>,
+): Promise<{ account: TAccount; isDefault: boolean } | null> {
+    if (store.activeAccount) return store.activeAccount()
+    const snapshot = await store.active()
+    if (!snapshot) return null
+    const accounts = await store.list()
+    return {
+        account: snapshot.account,
+        isDefault: accounts.some(
+            (entry) => entry.account.id === snapshot.account.id && entry.isDefault,
+        ),
+    }
+}
+
 function defaultListText<TAccount extends AuthAccount>(
     ctx: AttachAccountListContext<TAccount>,
 ): string[] {
@@ -246,10 +266,10 @@ export type AttachAccountCurrentCommandOptions<TAccount extends AuthAccount = Au
         flags: Record<string, unknown>
     }): unknown
     /**
-     * Called when `store.active()` resolves nothing. Default behaviour throws
-     * `CliError('NOT_AUTHENTICATED', …)`. Consumers with out-of-store credential
-     * sources (env var, legacy single-user creds) use this hook to render those
-     * cases — mirroring `attachStatusCommand`.
+     * Called when nothing resolves as the active account. Default behaviour
+     * throws `CliError('NOT_AUTHENTICATED', …)`. Consumers with out-of-store
+     * credential sources (env var, legacy single-user creds) use this hook to
+     * render those cases — mirroring `attachStatusCommand`.
      */
     onNotAuthenticated?(ctx: {
         view: Required<ViewOptions>
@@ -259,13 +279,14 @@ export type AttachAccountCurrentCommandOptions<TAccount extends AuthAccount = Au
 
 /**
  * Attach `current` as a subcommand of `parent` (typically an `account` group).
- * Reads the active credential via `store.active()` (no selector — the active
- * account is whatever the store resolves by default), derives the `(default)`
- * marker from `store.list()` keyed on `account.id` (so it stays identical to
- * `account list`), then dispatches to `renderText` (human) or `renderJson`
- * (machine). `--json` wins when both flags are present. When `store.active()`
- * returns null it invokes `onNotAuthenticated` (or throws `NOT_AUTHENTICATED`).
- * Returns the new `Command` so the consumer can chain.
+ * Resolves the active account token-free via `store.activeAccount()` when the
+ * store implements it (falling back to `store.active()` + `store.list()`), so
+ * the `(default)` marker stays identical to `account list` without paying a
+ * token read this command never uses. No selector — the active account is
+ * whatever the store resolves by default. Dispatches to `renderText` (human) or
+ * `renderJson` (machine); `--json` wins when both flags are present. When
+ * nothing resolves it invokes `onNotAuthenticated` (or throws
+ * `NOT_AUTHENTICATED`). Returns the new `Command` so the consumer can chain.
  */
 export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -278,21 +299,17 @@ export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthA
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async (cmd: Record<string, unknown>) => {
             const { view, flags } = splitViewFlags(cmd)
-            const snapshot = await options.store.active()
-            if (!snapshot) {
+            const resolved = await resolveActiveAccount(options.store)
+            if (!resolved) {
                 if (options.onNotAuthenticated) {
                     await options.onNotAuthenticated({ view, flags })
                     return
                 }
                 throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
             }
-            const accounts = await options.store.list()
-            const isDefault = accounts.some(
-                (entry) => entry.account.id === snapshot.account.id && entry.isDefault,
-            )
             const ctx: AttachAccountCurrentContext<TAccount> = {
-                account: snapshot.account,
-                isDefault,
+                account: resolved.account,
+                isDefault: resolved.isDefault,
                 view,
                 flags,
             }
@@ -313,7 +330,7 @@ export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthA
 }
 
 export type AttachAccountRemoveContext<TAccount extends AuthAccount> = {
-    /** The account that was removed, captured from `store.list()` before `clear()`. */
+    /** The account that was removed, as reported by `store.clear()`. */
     account: TAccount
     /** The raw `<ref>` positional the user typed. */
     ref: AccountRef
@@ -330,10 +347,11 @@ export type AttachAccountRemoveCommandOptions<TAccount extends AuthAccount = Aut
     description?: string
     /**
      * Human-mode renderer over the removed account. Defaults to
-     * `✓ Removed <label ?? id>`, plus a `Cleared default account.` line when the
-     * removed account was the default. Consumers override to localise the
-     * wording (e.g. add a CLI-specific "set a new default" hint). Not called
-     * under `--json` / `--ndjson`.
+     * `✓ Removed <label ?? id>`, with a ` (default)` marker when the removed
+     * account was the default (the marker only states what *was* removed — it
+     * makes no claim about whether a survivor is now the implicit default).
+     * Consumers override to localise the wording (e.g. add a CLI-specific "set a
+     * new default" hint). Not called under `--json` / `--ndjson`.
      */
     renderText?(ctx: AttachAccountRemoveContext<TAccount>): string | readonly string[]
     /**
@@ -347,16 +365,16 @@ export type AttachAccountRemoveCommandOptions<TAccount extends AuthAccount = Aut
 
 /**
  * Attach `remove <ref>` as a subcommand of `parent` (typically an `account`
- * group). Resolves the target token-free: it snapshots `store.list()`, lets the
- * store match + delete the ref via `store.clear(ref)`, then diffs the list to
- * learn which account was removed. Going through `clear(ref)` rather than
- * `store.active(ref)` is deliberate — `clear` never reads the token, so a
- * broken/unreadable keyring entry can still be removed, whereas `active` would
- * throw `AUTH_STORE_READ_FAILED` and make the entry impossible to clean up. A
- * ref that matches nothing is a `clear` no-op and surfaces as
- * `ACCOUNT_NOT_FOUND`. `--json` emits `{ ok: true, removed: <id> }`; `--ndjson`
- * is silent (success-action convention, matching `use`); `--json` wins when
- * both are present. Returns the new `Command` so the consumer can chain.
+ * group). Delegates resolution + deletion to `store.clear(ref)`, which the
+ * contract defines as token-free and atomic: it returns the removed account
+ * (plus whether it was the effective default) or `null` when `ref` matched
+ * nothing. Routing everything through `clear` means a broken/unreadable keyring
+ * entry stays removable (no token read), and the store — not the attacher —
+ * owns ref-matching, so there's no before/after `list()` diff to race against a
+ * concurrent mutation. A `null` return surfaces as `ACCOUNT_NOT_FOUND`.
+ * `--json` emits `{ ok: true, removed: <id> }`; `--ndjson` is silent
+ * (success-action convention, matching `use`); `--json` wins when both are
+ * present. Returns the new `Command` so the consumer can chain.
  */
 export function attachAccountRemoveCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -373,15 +391,12 @@ export function attachAccountRemoveCommand<TAccount extends AuthAccount = AuthAc
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async (ref: string, cmd: Record<string, unknown>) => {
             const { view, flags } = splitViewFlags(cmd)
-            const before = await options.store.list()
-            await options.store.clear(ref)
-            const remainingIds = new Set((await options.store.list()).map((e) => e.account.id))
-            const removed = before.find((entry) => !remainingIds.has(entry.account.id))
-            if (!removed) throw accountNotFoundError(ref)
+            const cleared = await options.store.clear(ref)
+            if (!cleared) throw accountNotFoundError(ref)
             const ctx: AttachAccountRemoveContext<TAccount> = {
-                account: removed.account,
+                account: cleared.account,
                 ref,
-                wasDefault: removed.isDefault,
+                wasDefault: cleared.wasDefault,
                 view,
                 flags,
             }
@@ -389,13 +404,10 @@ export function attachAccountRemoveCommand<TAccount extends AuthAccount = AuthAc
             // action convention); human runs the thunk. The guard skips the
             // silent case so `emitView`'s own `--ndjson` branch never fires.
             if (view.json || !view.ndjson) {
-                emitView(view, { ok: true, removed: removed.account.id }, () => {
-                    const removedLine = `✓ Removed ${removed.account.label ?? removed.account.id}`
-                    const text = options.renderText
-                        ? options.renderText(ctx)
-                        : ctx.wasDefault
-                          ? [removedLine, 'Cleared default account.']
-                          : removedLine
+                emitView(view, { ok: true, removed: cleared.account.id }, () => {
+                    const name = cleared.account.label ?? cleared.account.id
+                    const removedLine = `✓ Removed ${name}${ctx.wasDefault ? ' (default)' : ''}`
+                    const text = options.renderText ? options.renderText(ctx) : removedLine
                     return typeof text === 'string' ? [text] : text
                 })
             }

@@ -54,6 +54,7 @@ export type {
     AuthorizeInput,
     AuthorizeResult,
     AuthProvider,
+    ClearedAccount,
     ExchangeInput,
     ExchangeResult,
     PrepareInput,

@@ -58,15 +58,20 @@ function buildStore(initial: Entry[] = bothAccounts): {
                 : entries.find((entry) => matches(entry, ref))
         return target ? { token: `token-${target.account.id}`, account: target.account } : null
     })
-    // Token-free removal: match by id/email/label (or the default when no ref)
-    // and drop the entry, so a follow-up `list()` reflects the removal — this
-    // is what `attachAccountRemoveCommand` diffs against.
-    const clearSpy = vi.fn(async (ref?: string) => {
-        const idx = entries.findIndex((entry) =>
-            ref === undefined ? entry.isDefault : matches(entry, ref),
-        )
-        if (idx !== -1) entries.splice(idx, 1)
-    })
+    // Token-free removal: match by id/email/label (or the default when no ref),
+    // drop the entry, and report the removed account + its prior default bit —
+    // mirroring the `TokenStore.clear` contract `attachAccountRemoveCommand`
+    // relies on. Returns `null` on a miss (no-op).
+    const clearSpy = vi.fn(
+        async (ref?: string): Promise<{ account: Account; wasDefault: boolean } | null> => {
+            const idx = entries.findIndex((entry) =>
+                ref === undefined ? entry.isDefault : matches(entry, ref),
+            )
+            if (idx === -1) return null
+            const [removed] = entries.splice(idx, 1)
+            return { account: removed.account, wasDefault: removed.isDefault }
+        },
+    )
     const store: TokenStore<Account> = {
         active: activeSpy,
         set: vi.fn(),
@@ -561,9 +566,14 @@ describe('attachAccountCurrentCommand', () => {
         expect(logSpy).toHaveBeenCalledWith(formatJson({ account: a1, isDefault: true }))
     })
 
-    it('throws INVALID_TYPE in both machine modes when renderJson is non-serializable', async () => {
-        const renderJson = vi.fn(() => undefined)
-
+    // Covers both non-serializable shapes: a top-level `undefined`
+    // (`JSON.stringify` returns `undefined`) and a value that makes
+    // `JSON.stringify` *throw* (a `BigInt`). Both must surface as INVALID_TYPE
+    // in either machine mode rather than leaking a raw TypeError.
+    it.each([
+        ['top-level undefined', () => undefined],
+        ['a throwing BigInt', () => ({ count: 1n })],
+    ])('throws INVALID_TYPE in both machine modes for %s', async (_label, renderJson) => {
         for (const mode of ['--json', '--ndjson'] as const) {
             const { program } = buildCurrent({ renderJson })
             await expect(
@@ -593,6 +603,19 @@ describe('attachAccountCurrentCommand', () => {
         ).rejects.toMatchObject({ constructor: CliError, code: 'NOT_AUTHENTICATED' })
     })
 
+    it('prefers store.activeAccount over active() + list() when implemented', async () => {
+        const built = buildStore()
+        built.store.activeAccount = vi.fn(async () => ({ account: a2, isDefault: false }))
+        const { program } = buildCurrent({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'account', 'current'])
+
+        expect(built.store.activeAccount).toHaveBeenCalledOnce()
+        expect(built.activeSpy).not.toHaveBeenCalled()
+        expect(built.listSpy).not.toHaveBeenCalled()
+        expect(logSpy).toHaveBeenCalledWith('Bob (id:2)')
+    })
+
     it('returns the new Command so the consumer can chain', () => {
         const { command } = buildCurrent()
 
@@ -611,7 +634,7 @@ describe('attachAccountRemoveCommand', () => {
         logSpy.mockRestore()
     })
 
-    it('removes the matched account by ref and flags the cleared default', async () => {
+    it('removes the matched account by ref and marks it as the former default', async () => {
         const built = buildStore()
         const { program } = buildRemove({}, built.store)
 
@@ -620,11 +643,11 @@ describe('attachAccountRemoveCommand', () => {
 
         expect(built.clearSpy).toHaveBeenCalledWith('alice@b')
         expect(await built.store.list()).toEqual([{ account: a2, isDefault: false }])
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
-        expect(emitted).toEqual(['✓ Removed Alice', 'Cleared default account.'])
+        expect(logSpy).toHaveBeenCalledOnce()
+        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alice (default)')
     })
 
-    it('omits the cleared-default line when the removed account was not the default', async () => {
+    it('omits the (default) marker when the removed account was not the default', async () => {
         const built = buildStore()
         const { program } = buildRemove({}, built.store)
 
@@ -658,7 +681,7 @@ describe('attachAccountRemoveCommand', () => {
 
         expect(built.store.active).not.toHaveBeenCalled()
         expect(await built.store.list()).toEqual([{ account: a2, isDefault: false }])
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alice')
+        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alice (default)')
     })
 
     it('emits { ok, removed } with the canonical id under --json', async () => {
@@ -715,6 +738,27 @@ describe('attachAccountRemoveCommand', () => {
         expect(renderText).toHaveBeenCalledWith(expectedCtx)
         expect(onRemoved).toHaveBeenCalledWith(expectedCtx)
         expect(logSpy).toHaveBeenCalledWith('gone')
+    })
+
+    it('emits the success line before awaiting onRemoved', async () => {
+        let releaseHook!: () => void
+        const hookGate = new Promise<void>((resolve) => {
+            releaseHook = resolve
+        })
+        const onRemoved = vi.fn(() => hookGate)
+        const { program } = buildRemove({ onRemoved })
+
+        const parsed = program
+            .parseAsync(['node', 'cli', 'account', 'remove', 'bob@b'])
+            .then(() => 'done')
+        await vi.waitFor(() => expect(onRemoved).toHaveBeenCalled())
+
+        // Success line is already out, but the command is still parked on the hook.
+        expect(logSpy).toHaveBeenCalledWith('✓ Removed Bob')
+        expect(await Promise.race([parsed, Promise.resolve('pending')])).toBe('pending')
+
+        releaseHook()
+        expect(await parsed).toBe('done')
     })
 
     it('returns the new Command so the consumer can chain', () => {

@@ -396,6 +396,69 @@ describe('createKeyringTokenStore', () => {
                 account: { id: '1' },
             })
         })
+
+        it('clear(ref) returns the removed account with its prior default bit', async () => {
+            const { store, state } = multiUserFixture()
+            state.defaultId = '1'
+
+            await expect(store.clear('2')).resolves.toMatchObject({
+                account: { id: '2' },
+                wasDefault: false,
+            })
+            await expect(store.clear('1')).resolves.toMatchObject({
+                account: { id: '1' },
+                wasDefault: true,
+            })
+        })
+
+        it('clear(ref) returns null on a miss', async () => {
+            const { store } = multiUserFixture()
+            await expect(store.clear('does-not-exist')).resolves.toBeNull()
+        })
+
+        it('clear(ref) removes a record whose token slot is unreadable (token-free)', async () => {
+            const { store, state } = multiUserFixture()
+            // user-3 has neither a keyring slot nor a fallbackToken, so reading
+            // its token fails — but removal must not depend on that read.
+            state.records.set('3', { account: { id: '3', label: 'carol', email: 'e@f' } })
+
+            await expect(store.active('3')).rejects.toMatchObject({
+                code: 'AUTH_STORE_READ_FAILED',
+            })
+            await expect(store.clear('3')).resolves.toMatchObject({ account: { id: '3' } })
+            expect(state.records.has('3')).toBe(false)
+        })
+    })
+
+    describe('activeAccount() (token-free resolution)', () => {
+        const a: Account = { id: '1', label: 'a', email: 'a@b' }
+        const b: Account = { id: '2', label: 'b', email: 'c@d' }
+
+        it('resolves the active + ref account with its default bit, never reading the token slot', async () => {
+            const { store, keyring } = fixture({
+                records: { '1': { account: a }, '2': { account: b } },
+                defaultId: '2',
+            })
+
+            await expect(store.activeAccount()).resolves.toEqual({ account: b, isDefault: true })
+            await expect(store.activeAccount('1')).resolves.toEqual({
+                account: a,
+                isDefault: false,
+            })
+            expect(keyring.getSpy).not.toHaveBeenCalled()
+        })
+
+        it('returns null when no records are stored', async () => {
+            const { store } = fixture()
+            await expect(store.activeAccount()).resolves.toBeNull()
+        })
+
+        it('throws NO_ACCOUNT_SELECTED when multiple records exist with no default', async () => {
+            const { store } = fixture({ records: { '1': { account: a }, '2': { account: b } } })
+            await expect(store.activeAccount()).rejects.toMatchObject({
+                code: 'NO_ACCOUNT_SELECTED',
+            })
+        })
     })
 
     describe('list() + setDefault()', () => {
