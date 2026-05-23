@@ -23,7 +23,6 @@ export const ellieSattler: TestAccount = {
     email: 'ellie@ingen.com',
 }
 export const ianMalcolm: TestAccount = { id: '3', label: 'Ian Malcolm', email: 'ian@ingen.com' }
-export const johnHammond: TestAccount = { id: '4', label: 'John Hammond', email: 'john@ingen.com' }
 
 export type StoreEntry<TAccount extends AuthAccount = TestAccount> = {
     account: TAccount
