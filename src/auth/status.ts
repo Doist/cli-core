@@ -74,8 +74,7 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
      * of a 401) propagate to the top-level handler.
      */
     fetchLive?(
-        ctx: AttachContextBase & {
-            account: TAccount
+        ctx: WithAccount<TAccount> & {
             token: string
             /**
              * Full bundle when the store implements `activeBundle` — lets a

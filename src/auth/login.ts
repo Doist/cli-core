@@ -4,6 +4,11 @@ import type { ViewOptions } from '../options.js'
 import { runOAuthFlow } from './flow.js'
 import type { AuthAccount, AuthProvider, TokenStore, WithAccount } from './types.js'
 
+/**
+ * `flags` is the parsed options with the login registrar flags (`--read-only`,
+ * `--callback-port`, `--json`, `--ndjson`) stripped — the same view
+ * `resolveScopes` saw at flow start.
+ */
 export type AttachLoginContext<TAccount extends AuthAccount> = WithAccount<TAccount>
 
 export type AttachLoginCommandOptions<TAccount extends AuthAccount = AuthAccount> = {

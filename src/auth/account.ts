@@ -318,7 +318,9 @@ export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthA
         })
 }
 
-export type AttachAccountRemoveContext<TAccount extends AuthAccount> = WithAccount<TAccount> & {
+export type AttachAccountRemoveContext<TAccount extends AuthAccount> = AttachContextBase & {
+    /** The account that was removed, as reported by `store.clear()`. */
+    account: TAccount
     /** The raw `<ref>` positional the user typed. */
     ref: AccountRef
     /** Whether the removed account was the default before clearing. */

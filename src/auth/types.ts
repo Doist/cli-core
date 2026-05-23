@@ -15,7 +15,6 @@ export type AttachContextBase = {
     flags: Record<string, unknown>
 }
 
-/** `AttachContextBase` plus the resolved account. */
 export type WithAccount<TAccount extends AuthAccount> = AttachContextBase & {
     account: TAccount
 }
