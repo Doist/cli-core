@@ -58,7 +58,15 @@ function buildStore(initial: Entry[] = bothAccounts): {
                 : entries.find((entry) => matches(entry, ref))
         return target ? { token: `token-${target.account.id}`, account: target.account } : null
     })
-    const clearSpy = vi.fn(async (_ref?: string) => {})
+    // Token-free removal: match by id/email/label (or the default when no ref)
+    // and drop the entry, so a follow-up `list()` reflects the removal — this
+    // is what `attachAccountRemoveCommand` diffs against.
+    const clearSpy = vi.fn(async (ref?: string) => {
+        const idx = entries.findIndex((entry) =>
+            ref === undefined ? entry.isDefault : matches(entry, ref),
+        )
+        if (idx !== -1) entries.splice(idx, 1)
+    })
     const store: TokenStore<Account> = {
         active: activeSpy,
         set: vi.fn(),
@@ -544,6 +552,15 @@ describe('attachAccountCurrentCommand', () => {
         expect(logSpy).toHaveBeenCalledWith(formatNdjson([{ account: a1, isDefault: true }]))
     })
 
+    it('prefers --json over --ndjson when both flags are passed', async () => {
+        const { program } = buildCurrent()
+
+        await program.parseAsync(['node', 'cli', 'account', 'current', '--json', '--ndjson'])
+
+        expect(logSpy).toHaveBeenCalledOnce()
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ account: a1, isDefault: true }))
+    })
+
     it('throws INVALID_TYPE in both machine modes when renderJson is non-serializable', async () => {
         const renderJson = vi.fn(() => undefined)
 
@@ -594,14 +611,15 @@ describe('attachAccountRemoveCommand', () => {
         logSpy.mockRestore()
     })
 
-    it('clears by the resolved id (not the raw ref) and flags the cleared default', async () => {
+    it('removes the matched account by ref and flags the cleared default', async () => {
         const built = buildStore()
         const { program } = buildRemove({}, built.store)
 
-        // Invoked by email; the store clears by the canonical id it resolved to.
+        // Invoked by email; the store matches + clears it token-free.
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'alice@b'])
 
-        expect(built.clearSpy).toHaveBeenCalledWith('1')
+        expect(built.clearSpy).toHaveBeenCalledWith('alice@b')
+        expect(await built.store.list()).toEqual([{ account: a2, isDefault: false }])
         const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
         expect(emitted).toEqual(['✓ Removed Alice', 'Cleared default account.'])
     })
@@ -612,19 +630,35 @@ describe('attachAccountRemoveCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'bob@b'])
 
-        expect(built.clearSpy).toHaveBeenCalledWith('2')
         expect(logSpy).toHaveBeenCalledOnce()
         expect(logSpy).toHaveBeenCalledWith('✓ Removed Bob')
     })
 
-    it('throws ACCOUNT_NOT_FOUND and does not clear when the ref misses', async () => {
+    it('throws ACCOUNT_NOT_FOUND and removes nothing when the ref misses', async () => {
         const built = buildStore()
         const { program } = buildRemove({}, built.store)
 
         await expect(
             program.parseAsync(['node', 'cli', 'account', 'remove', 'ghost']),
         ).rejects.toMatchObject({ constructor: CliError, code: 'ACCOUNT_NOT_FOUND' })
-        expect(built.clearSpy).not.toHaveBeenCalled()
+        expect(await built.store.list()).toHaveLength(2)
+    })
+
+    it('removes an account whose token is unreadable, never touching active()', async () => {
+        const built = buildStore()
+        // A broken keyring entry: `active()` would throw AUTH_STORE_READ_FAILED,
+        // but `remove` must still clear it. If the attacher called active() this
+        // would surface that error instead of removing the record.
+        built.store.active = vi.fn(async () => {
+            throw new CliError('AUTH_STORE_READ_FAILED', 'keyring offline')
+        })
+        const { program } = buildRemove({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alice@b'])
+
+        expect(built.store.active).not.toHaveBeenCalled()
+        expect(await built.store.list()).toEqual([{ account: a2, isDefault: false }])
+        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alice')
     })
 
     it('emits { ok, removed } with the canonical id under --json', async () => {
@@ -635,6 +669,23 @@ describe('attachAccountRemoveCommand', () => {
         expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
     })
 
+    it('prefers --json over --ndjson when both flags are passed', async () => {
+        const { program } = buildRemove()
+
+        await program.parseAsync([
+            'node',
+            'cli',
+            'account',
+            'remove',
+            'bob@b',
+            '--json',
+            '--ndjson',
+        ])
+
+        expect(logSpy).toHaveBeenCalledOnce()
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
+    })
+
     it('is silent under --ndjson but still clears and runs onRemoved', async () => {
         const built = buildStore()
         const onRemoved = vi.fn()
@@ -642,7 +693,7 @@ describe('attachAccountRemoveCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'bob@b', '--ndjson'])
 
-        expect(built.clearSpy).toHaveBeenCalledWith('2')
+        expect(await built.store.list()).toEqual([{ account: a1, isDefault: true }])
         expect(logSpy).not.toHaveBeenCalled()
         expect(onRemoved).toHaveBeenCalledOnce()
     })
