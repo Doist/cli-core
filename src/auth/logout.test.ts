@@ -1,33 +1,26 @@
-import { Command } from 'commander'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Command } from 'commander'
+import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
+import {
+    type TestAccount as Account,
+    type TokenStoreHarness,
+    alanGrant,
+    buildSingleEntryStore,
+} from '../test-support/accounts.js'
+import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
 import { attachLogoutCommand } from './logout.js'
 import type { TokenStore } from './types.js'
 
-type Account = { id: string; label?: string; email: string }
 type LogoutOverrides = Partial<Parameters<typeof attachLogoutCommand<Account>>[1]>
 
-const account: Account = { id: '1', label: 'me', email: 'a@b' }
+const account = alanGrant
 
 function buildStore(
     initial: { token: string; account: Account } | null = { token: 'tok', account },
-): {
-    store: TokenStore<Account>
-    activeSpy: ReturnType<typeof vi.fn>
-    clearSpy: ReturnType<typeof vi.fn>
-} {
-    const activeSpy = vi.fn(async () => initial)
-    const clearSpy = vi.fn(async () => null)
-    const store: TokenStore<Account> = {
-        active: activeSpy,
-        set: vi.fn(),
-        clear: clearSpy,
-        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
-        setDefault: vi.fn(),
-    }
-    return { store, activeSpy, clearSpy }
+): TokenStoreHarness<Account> {
+    return buildSingleEntryStore(initial)
 }
 
 function build(
@@ -39,10 +32,8 @@ function build(
     logout: Command
     onCleared: ReturnType<typeof vi.fn>
 } {
-    const { store } = storeOverride ? { store: storeOverride } : buildStore()
-    const program = new Command()
-    program.exitOverride()
-    const auth = program.command('auth')
+    const store = storeOverride ?? buildStore().store
+    const { program, parent: auth } = buildProgram('auth')
     const onCleared = vi.fn()
     const logout = attachLogoutCommand<Account>(auth, {
         store,
@@ -53,15 +44,7 @@ function build(
 }
 
 describe('attachLogoutCommand', () => {
-    let logSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-        logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-        logSpy.mockRestore()
-    })
+    const logSpy = installConsoleLogSpy()
 
     it('clears the store and emits the human success line in plain mode', async () => {
         const built = buildStore()
@@ -71,7 +54,7 @@ describe('attachLogoutCommand', () => {
 
         expect(built.activeSpy).toHaveBeenCalledWith(undefined)
         expect(built.clearSpy).toHaveBeenCalledWith(undefined)
-        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Logged out')
         expect(onCleared).toHaveBeenCalledWith({
             account,
             ref: undefined,
@@ -85,7 +68,7 @@ describe('attachLogoutCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true }))
         expect(onCleared).toHaveBeenCalledWith({
             account,
             ref: undefined,
@@ -99,7 +82,7 @@ describe('attachLogoutCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--ndjson'])
 
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
         expect(onCleared).toHaveBeenCalledWith({
             account,
             ref: undefined,
@@ -145,15 +128,15 @@ describe('attachLogoutCommand', () => {
             'logout',
             '--json',
             '--user',
-            'me@example',
+            'alan@ingen.com',
             '--full',
         ])
 
-        expect(built.activeSpy).toHaveBeenCalledWith('me@example')
-        expect(built.clearSpy).toHaveBeenCalledWith('me@example')
+        expect(built.activeSpy).toHaveBeenCalledWith('alan@ingen.com')
+        expect(built.clearSpy).toHaveBeenCalledWith('alan@ingen.com')
         expect(onCleared).toHaveBeenCalledWith({
             account,
-            ref: 'me@example',
+            ref: 'alan@ingen.com',
             view: { json: true, ndjson: false },
             flags: { full: true },
         })
@@ -297,15 +280,15 @@ describe('attachLogoutCommand', () => {
             'logout',
             '--json',
             '--user',
-            'me@example',
+            'alan@ingen.com',
             '--full',
         ])
 
-        expect(built.activeSpy).toHaveBeenCalledWith('me@example')
+        expect(built.activeSpy).toHaveBeenCalledWith('alan@ingen.com')
         expect(revokeToken).toHaveBeenCalledWith({
             token: 'tok',
             account,
-            ref: 'me@example',
+            ref: 'alan@ingen.com',
             view: { json: true, ndjson: false },
             flags: { full: true },
         })
@@ -346,13 +329,13 @@ describe('attachLogoutCommand', () => {
         const built = buildStore()
         const { program, onCleared } = build({}, built.store)
 
-        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'alice@example'])
+        await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'alan@ingen.com'])
 
-        expect(built.activeSpy).toHaveBeenCalledWith('alice@example')
-        expect(built.clearSpy).toHaveBeenCalledWith('alice@example')
+        expect(built.activeSpy).toHaveBeenCalledWith('alan@ingen.com')
+        expect(built.clearSpy).toHaveBeenCalledWith('alan@ingen.com')
         expect(onCleared).toHaveBeenCalledWith({
             account,
-            ref: 'alice@example',
+            ref: 'alan@ingen.com',
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -372,7 +355,7 @@ describe('attachLogoutCommand', () => {
             code: 'ACCOUNT_NOT_FOUND',
         })
         expect(built.clearSpy).not.toHaveBeenCalled()
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('proceeds with clear(ref) when active(ref) throws AUTH_STORE_READ_FAILED', async () => {
@@ -392,7 +375,7 @@ describe('attachLogoutCommand', () => {
 
         expect(built.clearSpy).toHaveBeenCalledWith('me')
         expect(revokeSpy).not.toHaveBeenCalled()
-        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Logged out')
         // `account` is null (no readable snapshot) but `ref` is populated, so
         // consumers can distinguish "nothing was stored" from "cleared an
         // unreadable record".
@@ -418,7 +401,7 @@ describe('attachLogoutCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me'])
 
         expect(built.clearSpy).toHaveBeenCalledWith('me')
-        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Logged out')
     })
 
     it('still propagates non-read errors from the snapshot pre-flight', async () => {

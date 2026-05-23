@@ -1,7 +1,9 @@
-import { Command } from 'commander'
+import type { Command } from 'commander'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import { type TestAccount as Account, alanGrant } from '../test-support/accounts.js'
+import { buildProgram } from '../test-support/cli-harness.js'
 import { attachLoginCommand } from './login.js'
 import type { AuthProvider, TokenStore } from './types.js'
 
@@ -12,9 +14,7 @@ vi.mock('./flow.js', () => ({
 const { runOAuthFlow } = await import('./flow.js')
 const mockedRunOAuthFlow = vi.mocked(runOAuthFlow)
 
-type Account = { id: string; label?: string; email: string }
-
-const account: Account = { id: '1', label: 'me', email: 'a@b' }
+const account = alanGrant
 
 const provider = {} as AuthProvider<Account>
 const store = {} as TokenStore<Account>
@@ -30,9 +30,7 @@ function build(
     onSuccess: ReturnType<typeof vi.fn>
     resolveScopes: ReturnType<typeof vi.fn>
 } {
-    const program = new Command()
-    program.exitOverride()
-    const auth = program.command('auth')
+    const { program, parent: auth } = buildProgram('auth')
     const onSuccess = vi.fn()
     const resolveScopes = vi.fn(() => ['read'])
     const login = attachLoginCommand<Account>(auth, {
@@ -225,8 +223,7 @@ describe('attachLoginCommand', () => {
     })
 
     it('returns the new Command so the consumer can chain', () => {
-        const program = new Command()
-        const auth = program.command('auth')
+        const { parent: auth } = buildProgram('auth')
         const login = attachLoginCommand<Account>(auth, {
             provider,
             store,

@@ -1,27 +1,27 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import {
+    type TestAccount as Account,
+    buildTokenStore,
+    ianMalcolm,
+} from '../test-support/accounts.js'
 import { persistBundle } from './persist.js'
-import type { AuthAccount, TokenBundle, TokenStore } from './types.js'
+import type { TokenBundle, TokenStore } from './types.js'
 
-type Account = AuthAccount & { id: string; email: string }
-
-const account: Account = { id: '42', email: 'a@b.c' }
+const account = ianMalcolm
 const bundle: TokenBundle = {
     accessToken: 'tok_access',
     refreshToken: 'tok_refresh',
     accessTokenExpiresAt: 1_700_000_000_000,
 }
 
+// Default to a store that implements neither bundle method, so persistBundle's
+// fallback path is the baseline; tests opt into `setBundle`/`set` via overrides.
 function fakeStore(overrides: Partial<TokenStore<Account>> = {}): TokenStore<Account> {
-    return {
-        active: vi.fn(async () => null),
-        set: vi.fn(async () => undefined),
-        clear: vi.fn(async () => null),
-        list: vi.fn(async () => []),
-        setDefault: vi.fn(async () => undefined),
-        ...overrides,
-    }
+    return buildTokenStore({
+        overrides: { setBundle: undefined, activeBundle: undefined, ...overrides },
+    }).store
 }
 
 describe('persistBundle', () => {

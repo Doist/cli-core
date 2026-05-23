@@ -21,33 +21,18 @@ vi.mock('open', () => ({ default: vi.fn(async () => undefined) }))
 import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import openBrowserModule from 'open'
+import {
+    type TestAccount as Account,
+    alanGrant,
+    buildTokenStore,
+    ellieSattler,
+} from '../test-support/accounts.js'
 import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenBundle, TokenStore } from './types.js'
 
-type Account = { id: string; label?: string; email: string }
-
 /** Tiny in-memory `TokenStore` so the flow tests don't need disk I/O. */
-function fakeStore(): TokenStore<Account> & { last?: { account: Account; token: string } } {
-    const state: { last?: { account: Account; token: string } } = {}
-    return {
-        async active() {
-            return state.last ?? null
-        },
-        async set(account, token) {
-            state.last = { account, token }
-        },
-        async clear() {
-            state.last = undefined
-            return null
-        },
-        async list() {
-            return state.last ? [{ account: state.last.account, isDefault: true }] : []
-        },
-        async setDefault() {},
-        get last() {
-            return state.last
-        },
-    }
+function fakeStore(): TokenStore<Account> {
+    return buildTokenStore<Account>({ entries: [] }).store
 }
 
 const renderSuccess = () => '<html>ok</html>'
@@ -79,7 +64,7 @@ function instrument(provider: Partial<AuthProvider<Account>> = {}): {
             return { accessToken: 'tok-1' }
         },
         async validateToken() {
-            return { id: '1', email: 'a@b' }
+            return alanGrant
         },
         ...rest,
         async authorize(input) {
@@ -129,7 +114,7 @@ describe('runOAuthFlow', () => {
     it('drives prepare → authorize → exchange → validate → store and returns the result', async () => {
         const prepare = vi.fn(async () => ({ handshake: { dcrSecret: 'shh' } }))
         const exchangeCode = vi.fn(async () => ({ accessToken: 'tok-1' }))
-        const validateToken = vi.fn(async () => ({ id: '1', email: 'a@b' }))
+        const validateToken = vi.fn(async () => alanGrant)
         const { provider, getRedirect } = instrument({ prepare, exchangeCode, validateToken })
         const store = fakeStore()
         const openBrowser = vi.fn(driveCallback(getRedirect))
@@ -145,14 +130,14 @@ describe('runOAuthFlow', () => {
         )
 
         expect(result.token).toBe('tok-1')
-        expect(result.account).toEqual({ id: '1', email: 'a@b' })
+        expect(result.account).toEqual(alanGrant)
         expect(prepare).toHaveBeenCalledTimes(1)
         expect(exchangeCode).toHaveBeenCalledTimes(1)
         expect(validateToken).toHaveBeenCalledTimes(1)
         expect(openBrowser).toHaveBeenCalledTimes(1)
         expect(await store.active()).toEqual({
             token: 'tok-1',
-            account: { id: '1', email: 'a@b' },
+            account: alanGrant,
         })
     })
 
@@ -161,7 +146,7 @@ describe('runOAuthFlow', () => {
         const { provider, getRedirect } = instrument({
             exchangeCode: async () => ({
                 accessToken: 'tok-1',
-                account: { id: '99', email: 'right@b' },
+                account: ellieSattler,
             }),
             validateToken,
         })
@@ -170,14 +155,14 @@ describe('runOAuthFlow', () => {
         const result = await runOAuthFlow<Account>(
             flowOptions({ provider, store, openBrowser: driveCallback(getRedirect) }),
         )
-        expect(result.account.id).toBe('99')
+        expect(result.account.id).toBe('2')
         expect(validateToken).not.toHaveBeenCalled()
     })
 
     it('threads prepare-time handshake into validateToken even when authorize forgets to forward it', async () => {
         const validateToken = vi.fn(async ({ handshake }) => {
             expect(handshake.dcrSecret).toBe('shh') // came from prepare(), not authorize()
-            return { id: '1', email: 'a@b' }
+            return alanGrant
         })
         const { provider, getRedirect } = instrument({
             prepare: async () => ({ handshake: { dcrSecret: 'shh' } }),
@@ -255,6 +240,9 @@ describe('runOAuthFlow', () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
         const setSpy = vi.spyOn(store, 'set')
+        // `fakeStore` now implements `setBundle` too, so prove neither write
+        // path ran — not just `set()`.
+        const setBundleSpy = vi.spyOn(store, 'setBundle')
 
         await expect(
             runOAuthFlow<Account>(
@@ -273,6 +261,7 @@ describe('runOAuthFlow', () => {
             ),
         ).rejects.toMatchObject({ code: 'AUTH_OAUTH_FAILED' })
         expect(setSpy).not.toHaveBeenCalled()
+        expect(setBundleSpy).not.toHaveBeenCalled()
     })
 
     it('always surfaces the authorize URL via onAuthorizeUrl, even when openBrowser succeeds', async () => {

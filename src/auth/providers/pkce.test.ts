@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { type TestAccount as Account, alanGrant } from '../../test-support/accounts.js'
 import { createPkceProvider } from './pkce.js'
-
-type Account = { id: string; label?: string; email: string }
 
 const respond = (body: unknown, status = 200): Response =>
     new Response(JSON.stringify(body), {
@@ -10,7 +9,7 @@ const respond = (body: unknown, status = 200): Response =>
         headers: { 'Content-Type': 'application/json' },
     })
 
-const validate = async () => ({ id: '1', email: 'a@b' }) as Account
+const validate = async (): Promise<Account> => alanGrant
 
 describe('createPkceProvider', () => {
     it('builds an authorize URL with response_type / client_id / redirect_uri / state / S256 code_challenge / scope', async () => {

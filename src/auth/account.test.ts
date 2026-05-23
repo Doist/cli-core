@@ -1,8 +1,16 @@
-import { Command } from 'commander'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Command } from 'commander'
+import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
+import {
+    type TestAccount as Account,
+    alanGrant,
+    buildTokenStore,
+    ellieSattler,
+    ingenEntries,
+} from '../test-support/accounts.js'
+import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
 import {
     type AttachAccountCurrentCommandOptions,
     type AttachAccountListCommandOptions,
@@ -15,83 +23,17 @@ import {
 } from './account.js'
 import type { TokenStore } from './types.js'
 
-type Account = { id: string; label?: string; email: string }
+const bothAccounts = ingenEntries()
 
-const a1: Account = { id: '1', label: 'Alice', email: 'alice@b' }
-const a2: Account = { id: '2', label: 'Bob', email: 'bob@b' }
-
-type Entry = { account: Account; isDefault: boolean }
-const bothAccounts: Entry[] = [
-    { account: a1, isDefault: true },
-    { account: a2, isDefault: false },
-]
-
-function matches(entry: Entry, ref: string): boolean {
-    return entry.account.id === ref || entry.account.email === ref || entry.account.label === ref
-}
-
-// A store that models multi-account state: `setDefault(ref)` matches by
-// id/email/label and re-points the default marker, so a follow-up `list()`
-// reflects the change (exercises `use`'s canonical-id re-read).
-function buildStore(initial: Entry[] = bothAccounts): {
-    store: TokenStore<Account>
-    listSpy: ReturnType<typeof vi.fn>
-    setDefaultSpy: ReturnType<typeof vi.fn>
-    activeSpy: ReturnType<typeof vi.fn>
-    clearSpy: ReturnType<typeof vi.fn>
-} {
-    const entries = initial.map((entry) => ({ ...entry }))
-    const listSpy = vi.fn(async () =>
-        entries.map((entry) => ({ account: entry.account, isDefault: entry.isDefault })),
-    )
-    const setDefaultSpy = vi.fn(async (ref: string) => {
-        const target = entries.find((entry) => matches(entry, ref))
-        if (!target) throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
-        for (const entry of entries) entry.isDefault = entry === target
-    })
-    // No ref → the default entry (selector-less `current`); a ref → match by
-    // id/email/label. Returns null on miss so the attachers can translate it.
-    const activeSpy = vi.fn(async (ref?: string) => {
-        const target =
-            ref === undefined
-                ? entries.find((entry) => entry.isDefault)
-                : entries.find((entry) => matches(entry, ref))
-        return target ? { token: `token-${target.account.id}`, account: target.account } : null
-    })
-    // Token-free removal: match by id/email/label (or the default when no ref),
-    // drop the entry, and report the removed account + its prior default bit —
-    // mirroring the `TokenStore.clear` contract `attachAccountRemoveCommand`
-    // relies on. Returns `null` on a miss (no-op).
-    const clearSpy = vi.fn(
-        async (ref?: string): Promise<{ account: Account; wasDefault: boolean } | null> => {
-            const idx = entries.findIndex((entry) =>
-                ref === undefined ? entry.isDefault : matches(entry, ref),
-            )
-            if (idx === -1) return null
-            const [removed] = entries.splice(idx, 1)
-            return { account: removed.account, wasDefault: removed.isDefault }
-        },
-    )
-    const store: TokenStore<Account> = {
-        active: activeSpy,
-        set: vi.fn(),
-        clear: clearSpy,
-        list: listSpy,
-        setDefault: setDefaultSpy,
-    }
-    return { store, listSpy, setDefaultSpy, activeSpy, clearSpy }
-}
+type BuiltAccountCommand = { program: Command; command: Command }
 
 function buildList(
     overrides: Partial<AttachAccountListCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): { program: Command; command: Command } {
-    const resolvedStore = store ?? buildStore().store
-    const program = new Command()
-    program.exitOverride()
-    const account = program.command('account')
-    const command = attachAccountListCommand<Account>(account, {
-        store: resolvedStore,
+): BuiltAccountCommand {
+    const { program, parent } = buildProgram('account')
+    const command = attachAccountListCommand<Account>(parent, {
+        store: store ?? buildTokenStore().store,
         ...overrides,
     })
     return { program, command }
@@ -100,13 +42,10 @@ function buildList(
 function buildUse(
     overrides: Partial<AttachAccountUseCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): { program: Command; command: Command } {
-    const resolvedStore = store ?? buildStore().store
-    const program = new Command()
-    program.exitOverride()
-    const account = program.command('account')
-    const command = attachAccountUseCommand<Account>(account, {
-        store: resolvedStore,
+): BuiltAccountCommand {
+    const { program, parent } = buildProgram('account')
+    const command = attachAccountUseCommand<Account>(parent, {
+        store: store ?? buildTokenStore().store,
         ...overrides,
     })
     return { program, command }
@@ -115,13 +54,10 @@ function buildUse(
 function buildCurrent(
     overrides: Partial<AttachAccountCurrentCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): { program: Command; command: Command } {
-    const resolvedStore = store ?? buildStore().store
-    const program = new Command()
-    program.exitOverride()
-    const account = program.command('account')
-    const command = attachAccountCurrentCommand<Account>(account, {
-        store: resolvedStore,
+): BuiltAccountCommand {
+    const { program, parent } = buildProgram('account')
+    const command = attachAccountCurrentCommand<Account>(parent, {
+        store: store ?? buildTokenStore().store,
         ...overrides,
     })
     return { program, command }
@@ -130,36 +66,25 @@ function buildCurrent(
 function buildRemove(
     overrides: Partial<AttachAccountRemoveCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): { program: Command; command: Command } {
-    const resolvedStore = store ?? buildStore().store
-    const program = new Command()
-    program.exitOverride()
-    const account = program.command('account')
-    const command = attachAccountRemoveCommand<Account>(account, {
-        store: resolvedStore,
+): BuiltAccountCommand {
+    const { program, parent } = buildProgram('account')
+    const command = attachAccountRemoveCommand<Account>(parent, {
+        store: store ?? buildTokenStore().store,
         ...overrides,
     })
     return { program, command }
 }
 
 describe('attachAccountListCommand', () => {
-    let logSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-        logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-        logSpy.mockRestore()
-    })
+    const logSpy = installConsoleLogSpy()
 
     it('renders default human lines with a (default) marker only on the default entry', async () => {
         const { program } = buildList()
 
         await program.parseAsync(['node', 'cli', 'account', 'list'])
 
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
-        expect(emitted).toEqual(['Alice (id:1) (default)', 'Bob (id:2)'])
+        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
+        expect(emitted).toEqual(['Alan Grant (id:1) (default)', 'Ellie Sattler (id:2)'])
     })
 
     it('emits a custom renderText string', async () => {
@@ -174,7 +99,7 @@ describe('attachAccountListCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy).toHaveBeenCalledWith('one line')
+        expect(logSpy()).toHaveBeenCalledWith('one line')
     })
 
     it('emits each line when renderText returns an array', async () => {
@@ -183,7 +108,9 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list'])
 
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0]).join('\n')
+        const emitted = logSpy()
+            .mock.calls.map((call: unknown[]) => call[0])
+            .join('\n')
         expect(emitted).toBe('line 1\nline 2\nline 3')
     })
 
@@ -192,11 +119,11 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
-                    { account: a1, isDefault: true },
-                    { account: a2, isDefault: false },
+                    { account: alanGrant, isDefault: true },
+                    { account: ellieSattler, isDefault: false },
                 ],
                 default: '1',
             }),
@@ -215,13 +142,21 @@ describe('attachAccountListCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
         expect(renderJson).toHaveBeenCalledTimes(2)
-        expect(renderJson).toHaveBeenNthCalledWith(1, { account: a1, isDefault: true, flags: {} })
-        expect(renderJson).toHaveBeenNthCalledWith(2, { account: a2, isDefault: false, flags: {} })
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(renderJson).toHaveBeenNthCalledWith(1, {
+            account: alanGrant,
+            isDefault: true,
+            flags: {},
+        })
+        expect(renderJson).toHaveBeenNthCalledWith(2, {
+            account: ellieSattler,
+            isDefault: false,
+            flags: {},
+        })
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
-                    { name: 'Alice', isDefault: true },
-                    { name: 'Bob', isDefault: false },
+                    { name: 'Alan Grant', isDefault: true },
+                    { name: 'Ellie Sattler', isDefault: false },
                 ],
                 default: '1',
             }),
@@ -233,10 +168,10 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--ndjson'])
 
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
+        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
         expect(emitted).toEqual([
-            formatNdjson([{ account: a1, isDefault: true }]),
-            formatNdjson([{ account: a2, isDefault: false }]),
+            formatNdjson([{ account: alanGrant, isDefault: true }]),
+            formatNdjson([{ account: ellieSattler, isDefault: false }]),
         ])
     })
 
@@ -251,12 +186,20 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--ndjson'])
 
-        expect(renderJson).toHaveBeenNthCalledWith(1, { account: a1, isDefault: true, flags: {} })
-        expect(renderJson).toHaveBeenNthCalledWith(2, { account: a2, isDefault: false, flags: {} })
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
+        expect(renderJson).toHaveBeenNthCalledWith(1, {
+            account: alanGrant,
+            isDefault: true,
+            flags: {},
+        })
+        expect(renderJson).toHaveBeenNthCalledWith(2, {
+            account: ellieSattler,
+            isDefault: false,
+            flags: {},
+        })
+        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
         expect(emitted).toEqual([
-            formatNdjson([{ name: 'Alice', isDefault: true }]),
-            formatNdjson([{ name: 'Bob', isDefault: false }]),
+            formatNdjson([{ name: 'Alan Grant', isDefault: true }]),
+            formatNdjson([{ name: 'Ellie Sattler', isDefault: false }]),
         ])
     })
 
@@ -265,12 +208,12 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledTimes(1)
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledTimes(1)
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
-                    { account: a1, isDefault: true },
-                    { account: a2, isDefault: false },
+                    { account: alanGrant, isDefault: true },
+                    { account: ellieSattler, isDefault: false },
                 ],
                 default: '1',
             }),
@@ -298,43 +241,45 @@ describe('attachAccountListCommand', () => {
     })
 
     it('emits an empty envelope under --json when no accounts are stored', async () => {
-        const { program } = buildList({}, buildStore([]).store)
+        const { program } = buildList({}, buildTokenStore({ entries: [] }).store)
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ accounts: [], default: null }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ accounts: [], default: null }))
     })
 
     it('emits nothing under --ndjson when no accounts are stored', async () => {
-        const { program } = buildList({}, buildStore([]).store)
+        const { program } = buildList({}, buildTokenStore({ entries: [] }).store)
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--ndjson'])
 
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('emits the default empty-state message in human mode when no accounts are stored', async () => {
-        const { program } = buildList({}, buildStore([]).store)
+        const { program } = buildList({}, buildTokenStore({ entries: [] }).store)
 
         await program.parseAsync(['node', 'cli', 'account', 'list'])
 
-        expect(logSpy).toHaveBeenCalledWith('No accounts stored.')
+        expect(logSpy()).toHaveBeenCalledWith('No accounts stored.')
     })
 
     it('reports default null when no entry is marked default', async () => {
-        const store = buildStore([
-            { account: a1, isDefault: false },
-            { account: a2, isDefault: false },
-        ]).store
+        const store = buildTokenStore({
+            entries: [
+                { account: alanGrant, isDefault: false },
+                { account: ellieSattler, isDefault: false },
+            ],
+        }).store
         const { program } = buildList({}, store)
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
-                    { account: a1, isDefault: false },
-                    { account: a2, isDefault: false },
+                    { account: alanGrant, isDefault: false },
+                    { account: ellieSattler, isDefault: false },
                 ],
                 default: null,
             }),
@@ -364,64 +309,64 @@ describe('attachAccountListCommand', () => {
 })
 
 describe('attachAccountUseCommand', () => {
-    let logSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-        logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-        logSpy.mockRestore()
-    })
+    const logSpy = installConsoleLogSpy()
 
     it('calls setDefault and echoes the raw ref in the human success line', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildUse({}, built.store)
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b'])
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com'])
 
-        expect(built.setDefaultSpy).toHaveBeenCalledWith('bob@b')
-        expect(logSpy).toHaveBeenCalledWith('✓ Default account set to bob@b')
+        expect(built.setDefaultSpy).toHaveBeenCalledWith('ellie@ingen.com')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Default account set to ellie@ingen.com')
     })
 
     it('emits the canonical resolved id under --json, not the requested ref', async () => {
         const { program } = buildUse()
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b', '--json'])
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
         const { program } = buildUse()
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b', '--json', '--ndjson'])
+        await program.parseAsync([
+            'node',
+            'cli',
+            'account',
+            'use',
+            'ellie@ingen.com',
+            '--json',
+            '--ndjson',
+        ])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
     })
 
     it('does not re-read the store outside --json', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildUse({}, built.store)
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b'])
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com'])
 
-        expect(built.setDefaultSpy).toHaveBeenCalledWith('bob@b')
+        expect(built.setDefaultSpy).toHaveBeenCalledWith('ellie@ingen.com')
         expect(built.listSpy).not.toHaveBeenCalled()
     })
 
     it('is silent under --ndjson but still calls setDefault', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildUse({}, built.store)
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b', '--ndjson'])
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com', '--ndjson'])
 
-        expect(built.setDefaultSpy).toHaveBeenCalledWith('bob@b')
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(built.setDefaultSpy).toHaveBeenCalledWith('ellie@ingen.com')
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('propagates ACCOUNT_NOT_FOUND from setDefault and prints nothing', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildUse({}, built.store)
 
         // `ghost` matches no stored id/email/label, so the store throws naturally.
@@ -429,7 +374,7 @@ describe('attachAccountUseCommand', () => {
             program.parseAsync(['node', 'cli', 'account', 'use', 'ghost']),
         ).rejects.toMatchObject({ constructor: CliError, code: 'ACCOUNT_NOT_FOUND' })
         expect(built.listSpy).not.toHaveBeenCalled()
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('emits the success line before awaiting onDefaultSet', async () => {
@@ -441,14 +386,14 @@ describe('attachAccountUseCommand', () => {
         const { program } = buildUse({ onDefaultSet })
 
         const parsed = program
-            .parseAsync(['node', 'cli', 'account', 'use', 'bob@b'])
+            .parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com'])
             .then(() => 'done')
         await vi.waitFor(() => expect(onDefaultSet).toHaveBeenCalled())
 
         // Success line is already out, but the command is still parked on the hook.
-        expect(logSpy).toHaveBeenCalledWith('✓ Default account set to bob@b')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Default account set to ellie@ingen.com')
         expect(onDefaultSet).toHaveBeenCalledWith({
-            ref: 'bob@b',
+            ref: 'ellie@ingen.com',
             view: { json: false, ndjson: false },
             flags: {},
         })
@@ -463,10 +408,10 @@ describe('attachAccountUseCommand', () => {
         const { program, command } = buildUse({ onDefaultSet })
         command.option('--full', 'Extra')
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b', '--full'])
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com', '--full'])
 
         expect(onDefaultSet).toHaveBeenCalledWith({
-            ref: 'bob@b',
+            ref: 'ellie@ingen.com',
             view: { json: false, ndjson: false },
             flags: { full: true },
         })
@@ -480,32 +425,24 @@ describe('attachAccountUseCommand', () => {
 })
 
 describe('attachAccountCurrentCommand', () => {
-    let logSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-        logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-        logSpy.mockRestore()
-    })
+    const logSpy = installConsoleLogSpy()
 
     it('renders the default human line with a (default) marker for the active account', async () => {
         const { program } = buildCurrent()
 
         await program.parseAsync(['node', 'cli', 'account', 'current'])
 
-        expect(logSpy).toHaveBeenCalledWith('Alice (id:1) (default)')
+        expect(logSpy()).toHaveBeenCalledWith('Alan Grant (id:1) (default)')
     })
 
     it('omits the marker when the active account is not the default', async () => {
         const store: TokenStore<Account> = {
-            active: vi.fn(async () => ({ token: 't', account: a1 })),
+            active: vi.fn(async () => ({ token: 't', account: alanGrant })),
             set: vi.fn(),
             clear: vi.fn(),
             list: vi.fn(async () => [
-                { account: a1, isDefault: false },
-                { account: a2, isDefault: true },
+                { account: alanGrant, isDefault: false },
+                { account: ellieSattler, isDefault: true },
             ]),
             setDefault: vi.fn(),
         }
@@ -513,7 +450,7 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current'])
 
-        expect(logSpy).toHaveBeenCalledWith('Alice (id:1)')
+        expect(logSpy()).toHaveBeenCalledWith('Alan Grant (id:1)')
     })
 
     it('passes account + isDefault to a custom renderText', async () => {
@@ -523,12 +460,12 @@ describe('attachAccountCurrentCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'current'])
 
         expect(renderText).toHaveBeenCalledWith({
-            account: a1,
+            account: alanGrant,
             isDefault: true,
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy).toHaveBeenCalledWith('custom line')
+        expect(logSpy()).toHaveBeenCalledWith('custom line')
     })
 
     it('emits the default { account, isDefault } payload under --json', async () => {
@@ -536,7 +473,7 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ account: a1, isDefault: true }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ account: alanGrant, isDefault: true }))
     })
 
     it('shapes the --json payload via renderJson', async () => {
@@ -545,8 +482,8 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--json'])
 
-        expect(renderJson).toHaveBeenCalledWith({ account: a1, isDefault: true, flags: {} })
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ email: 'alice@b' }))
+        expect(renderJson).toHaveBeenCalledWith({ account: alanGrant, isDefault: true, flags: {} })
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ email: 'alan@ingen.com' }))
     })
 
     it('emits a single payload object under --ndjson', async () => {
@@ -554,7 +491,9 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatNdjson([{ account: a1, isDefault: true }]))
+        expect(logSpy()).toHaveBeenCalledWith(
+            formatNdjson([{ account: alanGrant, isDefault: true }]),
+        )
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
@@ -562,8 +501,8 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--json', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ account: a1, isDefault: true }))
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ account: alanGrant, isDefault: true }))
     })
 
     // Covers both non-serializable shapes: a top-level `undefined`
@@ -584,7 +523,10 @@ describe('attachAccountCurrentCommand', () => {
 
     it('invokes onNotAuthenticated when nothing is active', async () => {
         const onNotAuthenticated = vi.fn()
-        const { program } = buildCurrent({ onNotAuthenticated }, buildStore([]).store)
+        const { program } = buildCurrent(
+            { onNotAuthenticated },
+            buildTokenStore({ entries: [] }).store,
+        )
 
         await program.parseAsync(['node', 'cli', 'account', 'current'])
 
@@ -592,11 +534,11 @@ describe('attachAccountCurrentCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('throws NOT_AUTHENTICATED when nothing is active and no hook is supplied', async () => {
-        const { program } = buildCurrent({}, buildStore([]).store)
+        const { program } = buildCurrent({}, buildTokenStore({ entries: [] }).store)
 
         await expect(
             program.parseAsync(['node', 'cli', 'account', 'current']),
@@ -604,8 +546,8 @@ describe('attachAccountCurrentCommand', () => {
     })
 
     it('prefers store.activeAccount over active() + list() when implemented', async () => {
-        const built = buildStore()
-        built.store.activeAccount = vi.fn(async () => ({ account: a2, isDefault: false }))
+        const built = buildTokenStore()
+        built.store.activeAccount = vi.fn(async () => ({ account: ellieSattler, isDefault: false }))
         const { program } = buildCurrent({}, built.store)
 
         await program.parseAsync(['node', 'cli', 'account', 'current'])
@@ -613,7 +555,7 @@ describe('attachAccountCurrentCommand', () => {
         expect(built.store.activeAccount).toHaveBeenCalledOnce()
         expect(built.activeSpy).not.toHaveBeenCalled()
         expect(built.listSpy).not.toHaveBeenCalled()
-        expect(logSpy).toHaveBeenCalledWith('Bob (id:2)')
+        expect(logSpy()).toHaveBeenCalledWith('Ellie Sattler (id:2)')
     })
 
     it('returns the new Command so the consumer can chain', () => {
@@ -624,41 +566,33 @@ describe('attachAccountCurrentCommand', () => {
 })
 
 describe('attachAccountRemoveCommand', () => {
-    let logSpy: ReturnType<typeof vi.spyOn>
-
-    beforeEach(() => {
-        logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-    })
-
-    afterEach(() => {
-        logSpy.mockRestore()
-    })
+    const logSpy = installConsoleLogSpy()
 
     it('removes the matched account by ref and marks it as the former default', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildRemove({}, built.store)
 
         // Invoked by email; the store matches + clears it token-free.
-        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alice@b'])
+        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alan@ingen.com'])
 
-        expect(built.clearSpy).toHaveBeenCalledWith('alice@b')
-        expect(await built.store.list()).toEqual([{ account: a2, isDefault: false }])
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alice (default)')
+        expect(built.clearSpy).toHaveBeenCalledWith('alan@ingen.com')
+        expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: true }])
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
     })
 
     it('omits the (default) marker when the removed account was not the default', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildRemove({}, built.store)
 
-        await program.parseAsync(['node', 'cli', 'account', 'remove', 'bob@b'])
+        await program.parseAsync(['node', 'cli', 'account', 'remove', 'ellie@ingen.com'])
 
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Bob')
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Ellie Sattler')
     })
 
     it('throws ACCOUNT_NOT_FOUND and removes nothing when the ref misses', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const { program } = buildRemove({}, built.store)
 
         await expect(
@@ -668,7 +602,7 @@ describe('attachAccountRemoveCommand', () => {
     })
 
     it('removes an account whose token is unreadable, never touching active()', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         // A broken keyring entry: `active()` would throw AUTH_STORE_READ_FAILED,
         // but `remove` must still clear it. If the attacher called active() this
         // would surface that error instead of removing the record.
@@ -677,19 +611,19 @@ describe('attachAccountRemoveCommand', () => {
         })
         const { program } = buildRemove({}, built.store)
 
-        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alice@b'])
+        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alan@ingen.com'])
 
         expect(built.store.active).not.toHaveBeenCalled()
-        expect(await built.store.list()).toEqual([{ account: a2, isDefault: false }])
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alice (default)')
+        expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: true }])
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
     })
 
     it('emits { ok, removed } with the canonical id under --json', async () => {
         const { program } = buildRemove()
 
-        await program.parseAsync(['node', 'cli', 'account', 'remove', 'bob@b', '--json'])
+        await program.parseAsync(['node', 'cli', 'account', 'remove', 'ellie@ingen.com', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
@@ -700,24 +634,31 @@ describe('attachAccountRemoveCommand', () => {
             'cli',
             'account',
             'remove',
-            'bob@b',
+            'ellie@ingen.com',
             '--json',
             '--ndjson',
         ])
 
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
     })
 
     it('is silent under --ndjson but still clears and runs onRemoved', async () => {
-        const built = buildStore()
+        const built = buildTokenStore()
         const onRemoved = vi.fn()
         const { program } = buildRemove({ onRemoved }, built.store)
 
-        await program.parseAsync(['node', 'cli', 'account', 'remove', 'bob@b', '--ndjson'])
+        await program.parseAsync([
+            'node',
+            'cli',
+            'account',
+            'remove',
+            'ellie@ingen.com',
+            '--ndjson',
+        ])
 
-        expect(await built.store.list()).toEqual([{ account: a1, isDefault: true }])
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(await built.store.list()).toEqual([{ account: alanGrant, isDefault: true }])
+        expect(logSpy()).not.toHaveBeenCalled()
         expect(onRemoved).toHaveBeenCalledOnce()
     })
 
@@ -726,18 +667,18 @@ describe('attachAccountRemoveCommand', () => {
         const onRemoved = vi.fn()
         const { program } = buildRemove({ renderText, onRemoved })
 
-        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alice@b'])
+        await program.parseAsync(['node', 'cli', 'account', 'remove', 'alan@ingen.com'])
 
         const expectedCtx = {
-            account: a1,
-            ref: 'alice@b',
+            account: alanGrant,
+            ref: 'alan@ingen.com',
             wasDefault: true,
             view: { json: false, ndjson: false },
             flags: {},
         }
         expect(renderText).toHaveBeenCalledWith(expectedCtx)
         expect(onRemoved).toHaveBeenCalledWith(expectedCtx)
-        expect(logSpy).toHaveBeenCalledWith('gone')
+        expect(logSpy()).toHaveBeenCalledWith('gone')
     })
 
     it('emits the success line before awaiting onRemoved', async () => {
@@ -749,12 +690,12 @@ describe('attachAccountRemoveCommand', () => {
         const { program } = buildRemove({ onRemoved })
 
         const parsed = program
-            .parseAsync(['node', 'cli', 'account', 'remove', 'bob@b'])
+            .parseAsync(['node', 'cli', 'account', 'remove', 'ellie@ingen.com'])
             .then(() => 'done')
         await vi.waitFor(() => expect(onRemoved).toHaveBeenCalled())
 
         // Success line is already out, but the command is still parked on the hook.
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Bob')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Ellie Sattler')
         expect(await Promise.race([parsed, Promise.resolve('pending')])).toBe('pending')
 
         releaseHook()

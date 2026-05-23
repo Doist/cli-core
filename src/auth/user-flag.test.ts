@@ -2,30 +2,26 @@ import { Command } from 'commander'
 import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import {
+    type TestAccount as Account,
+    alanGrant,
+    buildSingleEntryStore,
+} from '../test-support/accounts.js'
+import { buildProgram } from '../test-support/cli-harness.js'
 import type { TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
-type Account = { id: string; label?: string; email: string }
-
-const account: Account = { id: '1', label: 'me', email: 'a@b' }
+const account = alanGrant
 
 function buildStore(
     initial: { token: string; account: Account } | null = { token: 'tok', account },
 ): TokenStore<Account> {
-    return {
-        active: vi.fn(async () => initial),
-        set: vi.fn(),
-        clear: vi.fn(),
-        list: vi.fn(async () => (initial ? [{ account: initial.account, isDefault: true }] : [])),
-        setDefault: vi.fn(),
-    }
+    return buildSingleEntryStore(initial).store
 }
 
 describe('attachUserFlag', () => {
     it('attaches `--user <ref>` with a generic description', async () => {
-        const program = new Command()
-        program.exitOverride()
-        const sub = program.command('sub')
+        const { program, parent: sub } = buildProgram('sub')
         attachUserFlag(sub).action(() => {})
 
         await program.parseAsync(['node', 'cli', 'sub', '--user', 'alice'])
@@ -60,10 +56,10 @@ describe('requireSnapshotForRef', () => {
     it('returns the snapshot when ref matches', async () => {
         const store = buildStore({ token: 'tok', account })
 
-        const snapshot = await requireSnapshotForRef(store, 'alice')
+        const snapshot = await requireSnapshotForRef(store, 'alan@ingen.com')
 
         expect(snapshot).toEqual({ token: 'tok', account })
-        expect(store.active).toHaveBeenCalledWith('alice')
+        expect(store.active).toHaveBeenCalledWith('alan@ingen.com')
     })
 
     it('returns null when ref is undefined and the store is empty', async () => {
