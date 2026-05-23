@@ -1,3 +1,9 @@
+## [0.23.0](https://github.com/Doist/cli-core/compare/v0.22.0...v0.23.0) (2026-05-23)
+
+### Features
+
+* **auth:** add account current/remove Commander attachers ([#46](https://github.com/Doist/cli-core/issues/46)) ([294f1fe](https://github.com/Doist/cli-core/commit/294f1fe64c5b165e0c9acf09665b8ef58bcec940))
+
 ## [0.22.0](https://github.com/Doist/cli-core/compare/v0.21.0...v0.22.0) (2026-05-23)
 
 ### Features
