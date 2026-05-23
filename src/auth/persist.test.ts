@@ -19,7 +19,7 @@ const bundle: TokenBundle = {
 // Default to a store that implements neither bundle method, so persistBundle's
 // fallback path is the baseline; tests opt into `setBundle`/`set` via overrides.
 function fakeStore(overrides: Partial<TokenStore<Account>> = {}): TokenStore<Account> {
-    return buildTokenStore<Account>({
+    return buildTokenStore({
         overrides: { setBundle: undefined, activeBundle: undefined, ...overrides },
     }).store
 }

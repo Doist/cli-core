@@ -5,7 +5,7 @@ import { CliError } from '../errors.js'
 import {
     type TestAccount as Account,
     alanGrant,
-    buildTokenStore,
+    buildSingleEntryStore,
 } from '../test-support/accounts.js'
 import { buildProgram } from '../test-support/cli-harness.js'
 import type { TokenStore } from './types.js'
@@ -16,11 +16,7 @@ const account = alanGrant
 function buildStore(
     initial: { token: string; account: Account } | null = { token: 'tok', account },
 ): TokenStore<Account> {
-    return buildTokenStore<Account>({
-        entries: initial
-            ? [{ account: initial.account, isDefault: true, token: initial.token }]
-            : [],
-    }).store
+    return buildSingleEntryStore(initial).store
 }
 
 describe('attachUserFlag', () => {

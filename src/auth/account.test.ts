@@ -1,3 +1,4 @@
+import type { Command } from 'commander'
 import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
@@ -7,6 +8,7 @@ import {
     alanGrant,
     buildTokenStore,
     ellieSattler,
+    ingenEntries,
 } from '../test-support/accounts.js'
 import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
 import {
@@ -21,18 +23,14 @@ import {
 } from './account.js'
 import type { TokenStore } from './types.js'
 
-const bothAccounts = [
-    { account: alanGrant, isDefault: true },
-    { account: ellieSattler, isDefault: false },
-]
+const bothAccounts = ingenEntries()
+
+type BuiltAccountCommand = { program: Command; command: Command }
 
 function buildList(
     overrides: Partial<AttachAccountListCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): {
-    program: ReturnType<typeof buildProgram>['program']
-    command: ReturnType<typeof buildProgram>['parent']
-} {
+): BuiltAccountCommand {
     const { program, parent } = buildProgram('account')
     const command = attachAccountListCommand<Account>(parent, {
         store: store ?? buildTokenStore().store,
@@ -44,10 +42,7 @@ function buildList(
 function buildUse(
     overrides: Partial<AttachAccountUseCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): {
-    program: ReturnType<typeof buildProgram>['program']
-    command: ReturnType<typeof buildProgram>['parent']
-} {
+): BuiltAccountCommand {
     const { program, parent } = buildProgram('account')
     const command = attachAccountUseCommand<Account>(parent, {
         store: store ?? buildTokenStore().store,
@@ -59,10 +54,7 @@ function buildUse(
 function buildCurrent(
     overrides: Partial<AttachAccountCurrentCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): {
-    program: ReturnType<typeof buildProgram>['program']
-    command: ReturnType<typeof buildProgram>['parent']
-} {
+): BuiltAccountCommand {
     const { program, parent } = buildProgram('account')
     const command = attachAccountCurrentCommand<Account>(parent, {
         store: store ?? buildTokenStore().store,
@@ -74,10 +66,7 @@ function buildCurrent(
 function buildRemove(
     overrides: Partial<AttachAccountRemoveCommandOptions<Account>> = {},
     store?: TokenStore<Account>,
-): {
-    program: ReturnType<typeof buildProgram>['program']
-    command: ReturnType<typeof buildProgram>['parent']
-} {
+): BuiltAccountCommand {
     const { program, parent } = buildProgram('account')
     const command = attachAccountRemoveCommand<Account>(parent, {
         store: store ?? buildTokenStore().store,
@@ -587,7 +576,7 @@ describe('attachAccountRemoveCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'alan@ingen.com'])
 
         expect(built.clearSpy).toHaveBeenCalledWith('alan@ingen.com')
-        expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: false }])
+        expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: true }])
         expect(logSpy()).toHaveBeenCalledOnce()
         expect(logSpy()).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
     })
@@ -625,7 +614,7 @@ describe('attachAccountRemoveCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'alan@ingen.com'])
 
         expect(built.store.active).not.toHaveBeenCalled()
-        expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: false }])
+        expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: true }])
         expect(logSpy()).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
     })
 

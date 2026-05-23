@@ -240,6 +240,9 @@ describe('runOAuthFlow', () => {
         const { provider, getRedirect } = instrument()
         const store = fakeStore()
         const setSpy = vi.spyOn(store, 'set')
+        // `fakeStore` now implements `setBundle` too, so prove neither write
+        // path ran — not just `set()`.
+        const setBundleSpy = vi.spyOn(store, 'setBundle')
 
         await expect(
             runOAuthFlow<Account>(
@@ -258,6 +261,7 @@ describe('runOAuthFlow', () => {
             ),
         ).rejects.toMatchObject({ code: 'AUTH_OAUTH_FAILED' })
         expect(setSpy).not.toHaveBeenCalled()
+        expect(setBundleSpy).not.toHaveBeenCalled()
     })
 
     it('always surfaces the authorize URL via onAuthorizeUrl, even when openBrowser succeeds', async () => {

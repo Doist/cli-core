@@ -7,7 +7,7 @@ import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
-    buildTokenStore,
+    buildSingleEntryStore,
 } from '../test-support/accounts.js'
 import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
 import { attachLogoutCommand } from './logout.js'
@@ -20,11 +20,7 @@ const account = alanGrant
 function buildStore(
     initial: { token: string; account: Account } | null = { token: 'tok', account },
 ): TokenStoreHarness<Account> {
-    return buildTokenStore<Account>({
-        entries: initial
-            ? [{ account: initial.account, isDefault: true, token: initial.token }]
-            : [],
-    })
+    return buildSingleEntryStore(initial)
 }
 
 function build(

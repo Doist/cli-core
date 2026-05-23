@@ -8,11 +8,16 @@ import type {
     TokenBundle,
     TokenStore,
 } from '../auth/types.js'
-import { CliError } from '../errors.js'
+import { accountNotFoundError } from '../auth/user-flag.js'
 
 // Shared account fixtures + a canonical in-memory `TokenStore` mock for the
 // auth test suites. Lives under `src/test-support/` so it's excluded from the
 // build (per `tsconfig.build.json`) and never reaches consumers via `dist/`.
+//
+// The mock mirrors `createKeyringTokenStore`'s default-selection rules so tests
+// can't assert states production never produces: the *effective default* is the
+// pinned default when present, else the sole stored account; promotion only
+// pins when nothing is pinned yet.
 
 export type TestAccount = { id: string; label?: string; email: string }
 
@@ -26,6 +31,7 @@ export const ianMalcolm: TestAccount = { id: '3', label: 'Ian Malcolm', email: '
 
 export type StoreEntry<TAccount extends AuthAccount = TestAccount> = {
     account: TAccount
+    /** Seeds the pinned default; after construction the default is tracked separately. */
     isDefault: boolean
     /** Access token returned by `active()`. Defaults to `bundle.accessToken` or `token-<id>`. */
     token?: string
@@ -33,8 +39,8 @@ export type StoreEntry<TAccount extends AuthAccount = TestAccount> = {
     bundle?: TokenBundle
 }
 
-/** Fresh default seed: Alan (default) + Ellie. Copy so callers can mutate safely. */
-function ingenEntries(): StoreEntry[] {
+/** Fresh default seed: Alan (pinned default) + Ellie. Copy so callers can mutate safely. */
+export function ingenEntries(): StoreEntry[] {
     return [
         { account: alanGrant, isDefault: true },
         { account: ellieSattler, isDefault: false },
@@ -59,29 +65,48 @@ export type TokenStoreHarness<TAccount extends AuthAccount> = {
     }
 }
 
+export function buildTokenStore(opts?: {
+    entries?: StoreEntry<TestAccount>[]
+    overrides?: Partial<TokenStore<TestAccount>>
+}): TokenStoreHarness<TestAccount>
+export function buildTokenStore<TAccount extends AuthAccount>(opts: {
+    entries: StoreEntry<TAccount>[]
+    overrides?: Partial<TokenStore<TAccount>>
+}): TokenStoreHarness<TAccount>
 /**
  * Canonical stateful, multi-account `TokenStore` mock. Models the full contract
- * over a mutable entry list: id/email/label matching, default re-pinning,
- * token-free removal returning `ClearedAccount`, and optional bundle read/write.
- * Pass `overrides` to replace (or delete, via `{ method: undefined }`) any
- * method for a specific scenario. Returns the store plus per-method spies and a
- * live `state`.
+ * over a mutable entry list — id/email/label matching, effective-default
+ * resolution, promote-if-unpinned, token-free removal returning `ClearedAccount`,
+ * and bundle read/write with slot replacement. The default Ingen seed only
+ * applies to `TestAccount`; other `TAccount`s must pass explicit `entries`.
+ * Pass `overrides` to replace (or delete, via `{ method: undefined }`) any method.
  */
 export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
     opts: { entries?: StoreEntry<TAccount>[]; overrides?: Partial<TokenStore<TAccount>> } = {},
 ): TokenStoreHarness<TAccount> {
-    const seed = (opts.entries ?? (ingenEntries() as unknown as StoreEntry<TAccount>[])).map(
-        (entry) => ({ ...entry }),
-    )
-    const entries: StoreEntry<TAccount>[] = seed
+    const entries: StoreEntry<TAccount>[] = (
+        opts.entries ?? (ingenEntries() as unknown as StoreEntry<TAccount>[])
+    ).map((entry) => ({ ...entry }))
+    let pinnedDefaultId: string | null =
+        entries.find((entry) => entry.isDefault)?.account.id ?? null
     const setBundleCalls: TokenStoreHarness<TAccount>['state']['setBundleCalls'] = []
 
+    // Pinned default if it still resolves, else the sole stored account, else
+    // none (no records, or several with no pin) — mirrors `effectiveDefault`.
+    const effectiveDefault = (): StoreEntry<TAccount> | undefined => {
+        if (pinnedDefaultId) {
+            const pinned = entries.find((entry) => entry.account.id === pinnedDefaultId)
+            if (pinned) return pinned
+        }
+        return entries.length === 1 ? entries[0] : undefined
+    }
+    const promoteIfUnpinned = (id: string): void => {
+        if (!pinnedDefaultId) pinnedDefaultId = id
+    }
     const tokenFor = (entry: StoreEntry<TAccount>): string =>
         entry.token ?? entry.bundle?.accessToken ?? `token-${entry.account.id}`
     const find = (ref?: AccountRef): StoreEntry<TAccount> | undefined =>
-        ref === undefined
-            ? entries.find((entry) => entry.isDefault)
-            : entries.find((entry) => matchesRef(entry.account, ref))
+        ref === undefined ? effectiveDefault() : entries.find((e) => matchesRef(e.account, ref))
 
     const activeSpy = vi.fn(async (ref?: AccountRef) => {
         const entry = find(ref)
@@ -89,24 +114,34 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
     })
     const setSpy = vi.fn(async (account: TAccount, token: string) => {
         const entry = entries.find((e) => e.account.id === account.id)
-        if (entry) entry.token = token
-        else entries.push({ account, isDefault: entries.length === 0, token })
+        // A fresh write replaces the prior credential shape: drop any stale bundle.
+        if (entry) {
+            entry.token = token
+            entry.bundle = undefined
+        } else {
+            entries.push({ account, isDefault: false, token })
+        }
+        promoteIfUnpinned(account.id)
     })
     const clearSpy = vi.fn(async (ref?: AccountRef): Promise<ClearedAccount<TAccount> | null> => {
-        const idx = entries.findIndex((entry) =>
-            ref === undefined ? entry.isDefault : matchesRef(entry.account, ref),
-        )
-        if (idx === -1) return null
-        const [removed] = entries.splice(idx, 1)
-        return { account: removed.account, wasDefault: removed.isDefault }
+        const target = find(ref)
+        if (!target) return null
+        const wasDefault = effectiveDefault()?.account.id === target.account.id
+        entries.splice(entries.indexOf(target), 1)
+        if (pinnedDefaultId === target.account.id) pinnedDefaultId = null
+        return { account: target.account, wasDefault }
     })
-    const listSpy = vi.fn(async () =>
-        entries.map((entry) => ({ account: entry.account, isDefault: entry.isDefault })),
-    )
+    const listSpy = vi.fn(async () => {
+        const defaultId = effectiveDefault()?.account.id
+        return entries.map((entry) => ({
+            account: entry.account,
+            isDefault: entry.account.id === defaultId,
+        }))
+    })
     const setDefaultSpy = vi.fn(async (ref: AccountRef) => {
-        const target = entries.find((entry) => matchesRef(entry.account, ref))
-        if (!target) throw new CliError('ACCOUNT_NOT_FOUND', `No stored account matches "${ref}".`)
-        for (const entry of entries) entry.isDefault = entry === target
+        const target = entries.find((e) => matchesRef(e.account, ref))
+        if (!target) throw accountNotFoundError(ref)
+        pinnedDefaultId = target.account.id
     })
     const activeBundleSpy = vi.fn(
         async (ref?: AccountRef): Promise<ActiveBundleSnapshot<TAccount> | null> => {
@@ -117,16 +152,16 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
     const setBundleSpy = vi.fn(
         async (account: TAccount, bundle: TokenBundle, options?: unknown) => {
             setBundleCalls.push({ account, bundle, options })
-            let entry = entries.find((e) => e.account.id === account.id)
-            if (entry) entry.bundle = bundle
-            else {
-                entry = { account, isDefault: false, bundle }
-                entries.push(entry)
+            const entry = entries.find((e) => e.account.id === account.id)
+            // A fresh write replaces the prior credential shape: drop any stale token.
+            if (entry) {
+                entry.bundle = bundle
+                entry.token = undefined
+            } else {
+                entries.push({ account, isDefault: false, bundle })
             }
-            // Honour `promoteDefault: true` (first login) by re-pinning the default;
-            // a silent refresh omits it so a background rotation can't re-pin selection.
             if ((options as { promoteDefault?: boolean } | undefined)?.promoteDefault) {
-                for (const e of entries) e.isDefault = e === entry
+                promoteIfUnpinned(account.id)
             }
         },
     )
@@ -150,4 +185,22 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
         setDefaultSpy,
         state: { entries, setBundleCalls },
     }
+}
+
+/**
+ * Single-account convenience over {@link buildTokenStore} — the shape the
+ * `logout` / `status` / `token-view` / `user-flag` suites share. `initial`
+ * mirrors a `store.active()` snapshot (token + account), or `null` for an
+ * empty store.
+ */
+export function buildSingleEntryStore(
+    initial: { token: string; account: TestAccount } | null,
+    overrides?: Partial<TokenStore<TestAccount>>,
+): TokenStoreHarness<TestAccount> {
+    return buildTokenStore({
+        entries: initial
+            ? [{ account: initial.account, isDefault: true, token: initial.token }]
+            : [],
+        overrides,
+    })
 }

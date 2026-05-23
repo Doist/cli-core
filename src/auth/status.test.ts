@@ -7,7 +7,7 @@ import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
-    buildTokenStore,
+    buildSingleEntryStore,
 } from '../test-support/accounts.js'
 import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
 import { attachStatusCommand } from './status.js'
@@ -20,12 +20,7 @@ function buildStore(
 ): TokenStoreHarness<Account> {
     // Drop the bundle read so `fetchLive` resolves via `active()` (access token
     // only) — these suites assert the no-`bundle` `fetchLive` ctx shape.
-    return buildTokenStore<Account>({
-        entries: initial
-            ? [{ account: initial.account, isDefault: true, token: initial.token }]
-            : [],
-        overrides: { activeBundle: undefined },
-    })
+    return buildSingleEntryStore(initial, { activeBundle: undefined })
 }
 
 function build(
