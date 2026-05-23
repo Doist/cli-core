@@ -63,6 +63,12 @@ export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccoun
      * (`refreshAccessToken`) call it without a non-null assertion.
      */
     activeBundle(ref?: AccountRef): Promise<ActiveBundleSnapshot<TAccount> | null>
+    /**
+     * Override `activeAccount` as required (not optional) — the keyring store
+     * always resolves the active account token-free, so cli-core's `current`
+     * attacher can rely on it instead of the `active()` + `list()` fallback.
+     */
+    activeAccount(ref?: AccountRef): Promise<{ account: TAccount; isDefault: boolean } | null>
     /** Storage result from the most recent `set()` / `setBundle()` call, or `undefined` before any (and reset to `undefined` when the most recent write threw). */
     getLastStorageResult(): TokenStorageResult | undefined
     /** Storage result from the most recent `clear()` call, or `undefined` before any (and reset to `undefined` when the most recent `clear()` threw or was a no-op). */
@@ -182,6 +188,21 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             'NO_ACCOUNT_SELECTED',
             'Multiple accounts are stored but none is set as the default. Pass --user <ref>, or set a default in your CLI.',
         )
+    }
+
+    /**
+     * The record `active()` / `list()` treat as the default: the pinned default
+     * when it resolves to a stored record, else the sole record. `null` when
+     * nothing resolves (no records, or several with no pin). Wraps
+     * `resolveTarget`'s `NO_ACCOUNT_SELECTED` throw into `null` — callers here
+     * want the effective marker, not the ambiguity error.
+     */
+    function effectiveDefault(snapshot: Snapshot): UserRecord<TAccount> | null {
+        try {
+            return resolveTarget(snapshot, undefined)
+        } catch {
+            return null
+        }
     }
 
     function fallbackResult(action: string): TokenStorageResult {
@@ -349,7 +370,12 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             // even on the explicit-ref path.
             const snapshot = await readFullSnapshot()
             const record = resolveTarget(snapshot, ref)
-            if (!record) return
+            if (!record) return null
+
+            // Captured before the removal so the reported marker reflects the
+            // pre-clear state (an implicit default among the survivors is a
+            // separate post-clear fact the caller can describe how it likes).
+            const wasDefault = effectiveDefault(snapshot)?.account.id === record.account.id
 
             await userRecords.remove(record.account.id)
 
@@ -380,22 +406,28 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 record.fallbackToken !== undefined ||
                 record.fallbackRefreshToken !== undefined
             lastClearResult = fellBack ? fallbackClear : { storage: 'secure-store' }
+            return { account: record.account, wasDefault }
+        },
+
+        async activeAccount(ref) {
+            // Metadata-only resolution: read the record store (records +
+            // pinned default) but never the token slot, so `account current`
+            // pays a single record-store round-trip instead of `active()`'s
+            // token IPC plus a separate `list()`.
+            const snapshot = await readFullSnapshot()
+            const record = resolveTarget(snapshot, ref)
+            if (!record) return null
+            return {
+                account: record.account,
+                isDefault: effectiveDefault(snapshot)?.account.id === record.account.id,
+            }
         },
 
         async list() {
             const snapshot = await readFullSnapshot()
-            // Use `resolveTarget` to compute the *effective* default so the
-            // `isDefault` markers match what `active()` would resolve — that
-            // includes the implicit single-record case. `resolveTarget` can
-            // throw `NO_ACCOUNT_SELECTED`, which we want to swallow here
-            // (listing accounts is a diagnostic operation that must work
-            // even when no default is pinned).
-            let implicitDefault: UserRecord<TAccount> | null = null
-            try {
-                implicitDefault = resolveTarget(snapshot, undefined)
-            } catch {
-                // multiple records, no default → `isDefault: false` for all
-            }
+            // The effective default matches what `active()` would resolve —
+            // including the implicit single-record case.
+            const implicitDefault = effectiveDefault(snapshot)
             return snapshot.records.map((record) => ({
                 account: record.account,
                 isDefault: record.account.id === implicitDefault?.account.id,

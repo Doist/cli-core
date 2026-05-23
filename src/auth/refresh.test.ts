@@ -61,7 +61,9 @@ function fakeStore(
         activeBundle: state.activeBundleSpy as unknown as TokenStore<Account>['activeBundle'],
         async set() {},
         setBundle: state.setBundleSpy as unknown as TokenStore<Account>['setBundle'],
-        async clear() {},
+        async clear() {
+            return null
+        },
         async list() {
             return []
         },
