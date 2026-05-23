@@ -35,7 +35,7 @@ export type StoreEntry<TAccount extends AuthAccount = TestAccount> = {
 }
 
 /** Fresh default seed: Alan (default) + Ellie. Copy so callers can mutate safely. */
-export function ingenEntries(): StoreEntry[] {
+function ingenEntries(): StoreEntry[] {
     return [
         { account: alanGrant, isDefault: true },
         { account: ellieSattler, isDefault: false },
@@ -50,12 +50,9 @@ function matchesRef(account: AuthAccount, ref: string): boolean {
 export type TokenStoreHarness<TAccount extends AuthAccount> = {
     store: TokenStore<TAccount>
     activeSpy: ReturnType<typeof vi.fn>
-    setSpy: ReturnType<typeof vi.fn>
     clearSpy: ReturnType<typeof vi.fn>
     listSpy: ReturnType<typeof vi.fn>
     setDefaultSpy: ReturnType<typeof vi.fn>
-    activeBundleSpy: ReturnType<typeof vi.fn>
-    setBundleSpy: ReturnType<typeof vi.fn>
     state: {
         /** Live, mutable entry list — tests may reassign `bundle`/`token` to simulate rotation. */
         entries: StoreEntry<TAccount>[]
@@ -149,12 +146,9 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
     return {
         store,
         activeSpy,
-        setSpy,
         clearSpy,
         listSpy,
         setDefaultSpy,
-        activeBundleSpy,
-        setBundleSpy,
         state: { entries, setBundleCalls },
     }
 }
