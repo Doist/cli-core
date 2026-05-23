@@ -1,8 +1,9 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
-import { formatNdjson } from '../json.js'
+import { formatJson, formatNdjson } from '../json.js'
 import { type ViewOptions, emitView } from '../options.js'
 import type { AccountRef, AuthAccount, TokenStore } from './types.js'
+import { accountNotFoundError } from './user-flag.js'
 
 export type AttachAccountListContext<TAccount extends AuthAccount> = {
     /** Every stored account with its default marker, in store order. */
@@ -184,5 +185,199 @@ export function attachAccountUseCommand<TAccount extends AuthAccount = AuthAccou
                 ])
             }
             await options.onDefaultSet?.({ ref, view, flags })
+        })
+}
+
+export type AttachAccountCurrentContext<TAccount extends AuthAccount> = {
+    /** The resolved active account. */
+    account: TAccount
+    /** Whether the active account is the store's effective default. */
+    isDefault: boolean
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
+    view: Required<ViewOptions>
+    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`) are stripped. */
+    flags: Record<string, unknown>
+}
+
+export type AttachAccountCurrentCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
+    store: TokenStore<TAccount>
+    description?: string
+    /**
+     * Human-mode renderer. May return a single string or an array of lines;
+     * lines are joined with `\n` on output. Defaults to `<label ?? id> (id:<id>)`
+     * plus ` (default)` on the default account.
+     */
+    renderText?(ctx: AttachAccountCurrentContext<TAccount>): string | readonly string[]
+    /**
+     * Machine-mode payload, serialized as-is via `formatJson` / `formatNdjson`
+     * (identically across both modes). Defaults to `{ account, isDefault }`.
+     * Only invoked under `--json` / `--ndjson`. A non-serializable return
+     * throws `CliError('INVALID_TYPE', …)`.
+     */
+    renderJson?(ctx: {
+        account: TAccount
+        isDefault: boolean
+        flags: Record<string, unknown>
+    }): unknown
+    /**
+     * Called when `store.active()` resolves nothing. Default behaviour throws
+     * `CliError('NOT_AUTHENTICATED', …)`. Consumers with out-of-store credential
+     * sources (env var, legacy single-user creds) use this hook to render those
+     * cases — mirroring `attachStatusCommand`.
+     */
+    onNotAuthenticated?(ctx: {
+        view: Required<ViewOptions>
+        flags: Record<string, unknown>
+    }): void | Promise<void>
+}
+
+/**
+ * Attach `current` as a subcommand of `parent` (typically an `account` group).
+ * Reads the active credential via `store.active()` (no selector — the active
+ * account is whatever the store resolves by default), derives the `(default)`
+ * marker from `store.list()` keyed on `account.id` (so it stays identical to
+ * `account list`), then dispatches to `renderText` (human) or `renderJson`
+ * (machine). `--json` wins when both flags are present. When `store.active()`
+ * returns null it invokes `onNotAuthenticated` (or throws `NOT_AUTHENTICATED`).
+ * Returns the new `Command` so the consumer can chain.
+ */
+export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthAccount>(
+    parent: Command,
+    options: AttachAccountCurrentCommandOptions<TAccount>,
+): Command {
+    return parent
+        .command('current')
+        .description(options.description ?? 'Show the active account')
+        .option('--json', 'Emit machine-readable JSON output')
+        .option('--ndjson', 'Emit machine-readable NDJSON output')
+        .action(async (cmd: Record<string, unknown>) => {
+            const { view, flags } = splitViewFlags(cmd)
+            const snapshot = await options.store.active()
+            if (!snapshot) {
+                if (options.onNotAuthenticated) {
+                    await options.onNotAuthenticated({ view, flags })
+                    return
+                }
+                throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
+            }
+            const accounts = await options.store.list()
+            const isDefault = accounts.some(
+                (entry) => entry.account.id === snapshot.account.id && entry.isDefault,
+            )
+            if (view.json || view.ndjson) {
+                const payload = options.renderJson
+                    ? options.renderJson({ account: snapshot.account, isDefault, flags })
+                    : { account: snapshot.account, isDefault }
+                if (JSON.stringify(payload) === undefined) {
+                    throw new CliError(
+                        'INVALID_TYPE',
+                        `renderJson returned a non-serializable value for account "${snapshot.account.id}".`,
+                    )
+                }
+                console.log(view.json ? formatJson(payload) : formatNdjson([payload]))
+                return
+            }
+            const ctx: AttachAccountCurrentContext<TAccount> = {
+                account: snapshot.account,
+                isDefault,
+                view,
+                flags,
+            }
+            const text = options.renderText
+                ? options.renderText(ctx)
+                : `${snapshot.account.label ?? snapshot.account.id} (id:${snapshot.account.id})${
+                      isDefault ? ' (default)' : ''
+                  }`
+            const lines = typeof text === 'string' ? [text] : text
+            for (const line of lines) console.log(line)
+        })
+}
+
+export type AttachAccountRemoveContext<TAccount extends AuthAccount> = {
+    /** The account that was removed, resolved before `clear()`. */
+    account: TAccount
+    /** The raw `<ref>` positional the user typed. */
+    ref: AccountRef
+    /** Whether the removed account was the default before clearing. */
+    wasDefault: boolean
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
+    view: Required<ViewOptions>
+    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`) are stripped. */
+    flags: Record<string, unknown>
+}
+
+export type AttachAccountRemoveCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
+    store: TokenStore<TAccount>
+    description?: string
+    /**
+     * Human-mode renderer over the removed account. Defaults to
+     * `✓ Removed <label ?? id>`, plus a `Cleared default account.` line when the
+     * removed account was the default. Consumers override to localise the
+     * wording (e.g. add a CLI-specific "set a new default" hint). Not called
+     * under `--json` / `--ndjson`.
+     */
+    renderText?(ctx: AttachAccountRemoveContext<TAccount>): string | readonly string[]
+    /**
+     * Fires after `clear()` resolves and the success line is emitted (in every
+     * output mode). Awaited. Use for store-specific follow-ups not on the
+     * `TokenStore` contract — e.g. surfacing a keyring-fallback warning to
+     * stderr.
+     */
+    onRemoved?(ctx: AttachAccountRemoveContext<TAccount>): void | Promise<void>
+}
+
+/**
+ * Attach `remove <ref>` as a subcommand of `parent` (typically an `account`
+ * group). Resolves `<ref>` via `store.active(ref)` (throwing
+ * `ACCOUNT_NOT_FOUND` on a miss), captures the default marker from
+ * `store.list()` before clearing, then calls `store.clear(account.id)` — always
+ * the resolved canonical id, never the raw ref, since `clear()` is keyed by id
+ * and silently no-ops on an email/label ref. `--json` emits
+ * `{ ok: true, removed: <id> }`; `--ndjson` is silent (success-action
+ * convention); `--json` wins when both are present. Returns the new `Command`
+ * so the consumer can chain.
+ */
+export function attachAccountRemoveCommand<TAccount extends AuthAccount = AuthAccount>(
+    parent: Command,
+    options: AttachAccountRemoveCommandOptions<TAccount>,
+): Command {
+    return parent
+        .command('remove')
+        .description(options.description ?? 'Remove a stored account')
+        .argument(
+            '<ref>',
+            'Account reference to remove (id, or a store-defined alias such as email)',
+        )
+        .option('--json', 'Emit machine-readable JSON output')
+        .option('--ndjson', 'Emit machine-readable NDJSON output')
+        .action(async (ref: string, cmd: Record<string, unknown>) => {
+            const { view, flags } = splitViewFlags(cmd)
+            const snapshot = await options.store.active(ref)
+            if (!snapshot) throw accountNotFoundError(ref)
+            const accounts = await options.store.list()
+            const wasDefault = accounts.some(
+                (entry) => entry.account.id === snapshot.account.id && entry.isDefault,
+            )
+            await options.store.clear(snapshot.account.id)
+            const ctx: AttachAccountRemoveContext<TAccount> = {
+                account: snapshot.account,
+                ref,
+                wasDefault,
+                view,
+                flags,
+            }
+            if (view.json) {
+                console.log(formatJson({ ok: true, removed: snapshot.account.id }))
+            } else if (!view.ndjson) {
+                const removedLine = `✓ Removed ${snapshot.account.label ?? snapshot.account.id}`
+                const text = options.renderText
+                    ? options.renderText(ctx)
+                    : wasDefault
+                      ? [removedLine, 'Cleared default account.']
+                      : removedLine
+                const lines = typeof text === 'string' ? [text] : text
+                for (const line of lines) console.log(line)
+            }
+            await options.onRemoved?.(ctx)
         })
 }

@@ -1,8 +1,17 @@
 export type { AuthErrorCode } from './errors.js'
-export { attachAccountListCommand, attachAccountUseCommand } from './account.js'
+export {
+    attachAccountCurrentCommand,
+    attachAccountListCommand,
+    attachAccountRemoveCommand,
+    attachAccountUseCommand,
+} from './account.js'
 export type {
+    AttachAccountCurrentCommandOptions,
+    AttachAccountCurrentContext,
     AttachAccountListCommandOptions,
     AttachAccountListContext,
+    AttachAccountRemoveCommandOptions,
+    AttachAccountRemoveContext,
     AttachAccountUseCommandOptions,
 } from './account.js'
 export { runOAuthFlow } from './flow.js'
