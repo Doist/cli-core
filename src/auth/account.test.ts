@@ -201,6 +201,34 @@ describe('attachAccountListCommand', () => {
         ])
     })
 
+    it('prefers --json over --ndjson when both flags are passed', async () => {
+        const { program } = buildList()
+
+        await program.parseAsync(['node', 'cli', 'account', 'list', '--json', '--ndjson'])
+
+        expect(logSpy).toHaveBeenCalledTimes(1)
+        expect(logSpy).toHaveBeenCalledWith(
+            formatJson({
+                accounts: [
+                    { account: a1, isDefault: true },
+                    { account: a2, isDefault: false },
+                ],
+                default: '1',
+            }),
+        )
+    })
+
+    it('throws INVALID_TYPE in both machine modes when renderJson is non-serializable', async () => {
+        const renderJson = vi.fn(() => undefined)
+
+        for (const mode of ['--json', '--ndjson'] as const) {
+            const { program } = buildList({ renderJson })
+            await expect(
+                program.parseAsync(['node', 'cli', 'account', 'list', mode]),
+            ).rejects.toMatchObject({ constructor: CliError, code: 'INVALID_TYPE' })
+        }
+    })
+
     it('does not invoke renderJson in human mode', async () => {
         const renderJson = vi.fn(() => ({ x: 1 }))
         const { program } = buildList({ renderJson })
@@ -300,10 +328,27 @@ describe('attachAccountUseCommand', () => {
     it('emits the canonical resolved id under --json, not the requested ref', async () => {
         const { program } = buildUse()
 
-        // `bob@b` is a2's email; the new default resolves to its canonical id `2`.
         await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b', '--json'])
 
         expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
+    })
+
+    it('prefers --json over --ndjson when both flags are passed', async () => {
+        const { program } = buildUse()
+
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b', '--json', '--ndjson'])
+
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
+    })
+
+    it('does not re-read the store outside --json', async () => {
+        const built = buildStore()
+        const { program } = buildUse({}, built.store)
+
+        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b'])
+
+        expect(built.setDefaultSpy).toHaveBeenCalledWith('bob@b')
+        expect(built.listSpy).not.toHaveBeenCalled()
     })
 
     it('is silent under --ndjson but still calls setDefault', async () => {
@@ -317,38 +362,41 @@ describe('attachAccountUseCommand', () => {
     })
 
     it('propagates ACCOUNT_NOT_FOUND from setDefault and prints nothing', async () => {
-        const thrown = new CliError('ACCOUNT_NOT_FOUND', 'No stored account matches "ghost".')
         const built = buildStore()
-        built.setDefaultSpy.mockRejectedValueOnce(thrown)
         const { program } = buildUse({}, built.store)
 
-        await expect(program.parseAsync(['node', 'cli', 'account', 'use', 'ghost'])).rejects.toBe(
-            thrown,
-        )
+        // `ghost` matches no stored id/email/label, so the store throws naturally.
+        await expect(
+            program.parseAsync(['node', 'cli', 'account', 'use', 'ghost']),
+        ).rejects.toMatchObject({ constructor: CliError, code: 'ACCOUNT_NOT_FOUND' })
         expect(built.listSpy).not.toHaveBeenCalled()
         expect(logSpy).not.toHaveBeenCalled()
     })
 
-    it('awaits onDefaultSet after the success line', async () => {
-        const order: string[] = []
-        const built = buildStore()
-        built.setDefaultSpy.mockImplementationOnce(async () => {
-            order.push('setDefault')
+    it('emits the success line before awaiting onDefaultSet', async () => {
+        let releaseHook!: () => void
+        const hookGate = new Promise<void>((resolve) => {
+            releaseHook = resolve
         })
-        const onDefaultSet = vi.fn(async () => {
-            await Promise.resolve()
-            order.push('onDefaultSet')
-        })
-        const { program } = buildUse({ onDefaultSet }, built.store)
+        const onDefaultSet = vi.fn(() => hookGate)
+        const { program } = buildUse({ onDefaultSet })
 
-        await program.parseAsync(['node', 'cli', 'account', 'use', 'bob@b'])
+        const parsed = program
+            .parseAsync(['node', 'cli', 'account', 'use', 'bob@b'])
+            .then(() => 'done')
+        await vi.waitFor(() => expect(onDefaultSet).toHaveBeenCalled())
 
+        // Success line is already out, but the command is still parked on the hook.
+        expect(logSpy).toHaveBeenCalledWith('✓ Default account set to bob@b')
         expect(onDefaultSet).toHaveBeenCalledWith({
             ref: 'bob@b',
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(order).toEqual(['setDefault', 'onDefaultSet'])
+        expect(await Promise.race([parsed, Promise.resolve('pending')])).toBe('pending')
+
+        releaseHook()
+        expect(await parsed).toBe('done')
     })
 
     it('exposes consumer-attached options in flags but strips --json / --ndjson', async () => {
