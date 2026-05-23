@@ -2,10 +2,10 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
 import type { ViewOptions } from '../options.js'
-import type { AccountRef, AuthAccount, TokenStore } from './types.js'
+import type { AccountRef, AttachContextBase, AuthAccount, TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
-export type AttachLogoutContext<TAccount extends AuthAccount> = {
+export type AttachLogoutContext<TAccount extends AuthAccount> = AttachContextBase & {
     /**
      * The account that was active immediately before `clear()` ran, or
      * `null` if nothing was stored. Also `null` on the `AUTH_STORE_READ_FAILED`
@@ -15,10 +15,6 @@ export type AttachLogoutContext<TAccount extends AuthAccount> = {
     account: TAccount | null
     /** The `--user <ref>` value, or `undefined` when not supplied. Always present so consumers can tell "no stored account" from "cleared an unreadable account by ref". */
     ref: AccountRef | undefined
-    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-    view: Required<ViewOptions>
-    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`, `--user`) are stripped. */
-    flags: Record<string, unknown>
 }
 
 export type AttachLogoutRevokeContext<TAccount extends AuthAccount> = Omit<

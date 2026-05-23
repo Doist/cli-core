@@ -2,18 +2,20 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import { type ViewOptions, emitView } from '../options.js'
-import type { AccountRef, AuthAccount, TokenStore } from './types.js'
+import type {
+    AccountRef,
+    AttachContextBase,
+    AuthAccount,
+    TokenStore,
+    WithAccount,
+} from './types.js'
 import { accountNotFoundError } from './user-flag.js'
 
-export type AttachAccountListContext<TAccount extends AuthAccount> = {
+export type AttachAccountListContext<TAccount extends AuthAccount> = AttachContextBase & {
     /** Every stored account with its default marker, in store order. */
     accounts: ReadonlyArray<{ account: TAccount; isDefault: boolean }>
     /** The default account's ref (its `id`), or `null` when nothing is stored. */
     default: AccountRef | null
-    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-    view: Required<ViewOptions>
-    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`) are stripped. */
-    flags: Record<string, unknown>
 }
 
 export type AttachAccountListCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -49,11 +51,7 @@ export type AttachAccountUseCommandOptions<TAccount extends AuthAccount = AuthAc
      * positional argument. Use for CLI-specific follow-ups (e.g. dropping a
      * cached client bound to the previous default). Awaited.
      */
-    onDefaultSet?(ctx: {
-        ref: AccountRef
-        view: Required<ViewOptions>
-        flags: Record<string, unknown>
-    }): void | Promise<void>
+    onDefaultSet?(ctx: AttachContextBase & { ref: AccountRef }): void | Promise<void>
 }
 
 /** Split the parsed Commander options into the canonical machine-output view + the remaining consumer flags. */
@@ -234,15 +232,9 @@ export function attachAccountUseCommand<TAccount extends AuthAccount = AuthAccou
         })
 }
 
-export type AttachAccountCurrentContext<TAccount extends AuthAccount> = {
-    /** The resolved active account. */
-    account: TAccount
+export type AttachAccountCurrentContext<TAccount extends AuthAccount> = WithAccount<TAccount> & {
     /** Whether the active account is the store's effective default. */
     isDefault: boolean
-    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-    view: Required<ViewOptions>
-    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`) are stripped. */
-    flags: Record<string, unknown>
 }
 
 export type AttachAccountCurrentCommandOptions<TAccount extends AuthAccount = AuthAccount> = {
@@ -271,10 +263,7 @@ export type AttachAccountCurrentCommandOptions<TAccount extends AuthAccount = Au
      * credential sources (env var, legacy single-user creds) use this hook to
      * render those cases — mirroring `attachStatusCommand`.
      */
-    onNotAuthenticated?(ctx: {
-        view: Required<ViewOptions>
-        flags: Record<string, unknown>
-    }): void | Promise<void>
+    onNotAuthenticated?(ctx: AttachContextBase): void | Promise<void>
 }
 
 /**
@@ -329,17 +318,13 @@ export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthA
         })
 }
 
-export type AttachAccountRemoveContext<TAccount extends AuthAccount> = {
+export type AttachAccountRemoveContext<TAccount extends AuthAccount> = AttachContextBase & {
     /** The account that was removed, as reported by `store.clear()`. */
     account: TAccount
     /** The raw `<ref>` positional the user typed. */
     ref: AccountRef
     /** Whether the removed account was the default before clearing. */
     wasDefault: boolean
-    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
-    view: Required<ViewOptions>
-    /** Consumer-attached options. The registrar flags (`--json`, `--ndjson`) are stripped. */
-    flags: Record<string, unknown>
 }
 
 export type AttachAccountRemoveCommandOptions<TAccount extends AuthAccount = AuthAccount> = {

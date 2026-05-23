@@ -1,8 +1,22 @@
+import type { ViewOptions } from '../options.js'
+
 /** A single authenticated identity. `id` is the stable key the store indexes on. */
 export type AuthAccount = {
     id: string
     label?: string
     [key: string]: unknown
+}
+
+/** The view + flags pair every auth attacher callback receives. */
+export type AttachContextBase = {
+    /** `--json` / `--ndjson` flag values, both present (defaulted to `false`). */
+    view: Required<ViewOptions>
+    /** Consumer-attached options. The standard registrar flags (`--json` / `--ndjson`, and `--user` where attached) are stripped. */
+    flags: Record<string, unknown>
+}
+
+export type WithAccount<TAccount extends AuthAccount> = AttachContextBase & {
+    account: TAccount
 }
 
 export type PrepareInput = {
