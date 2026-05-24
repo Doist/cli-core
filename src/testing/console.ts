@@ -2,27 +2,42 @@ import { onTestFinished, vi } from 'vitest'
 
 type ConsoleMethod = 'log' | 'error' | 'warn' | 'info'
 type StdStream = 'stdout' | 'stderr'
+type Spy = ReturnType<typeof vi.spyOn>
 
 /**
- * Spy on a console method, silence it, and auto-restore when the current test
- * finishes. Returns the spy so `.mock.calls` assertions keep working. Call it
- * inside a test or `beforeEach` — `onTestFinished` throws at `describe` top-level.
+ * Install a silencing spy and auto-restore it when the current test finishes.
+ * Call inside a test or `beforeEach` — `onTestFinished` throws at `describe`
+ * top-level. Returns the spy so `.mock.calls` assertions keep working.
  */
-export function captureConsole(method: ConsoleMethod = 'log'): ReturnType<typeof vi.spyOn> {
-    const spy = vi.spyOn(console, method).mockImplementation(() => {})
+function captureSpy(install: () => Spy): Spy {
+    const spy = install()
     onTestFinished(() => {
         spy.mockRestore()
     })
     return spy
 }
 
+// `WriteStream.write` accepts an optional trailing callback (`write(chunk, cb)`
+// or `write(chunk, encoding, cb)`); the real stream invokes it once flushed.
+// The silencing stub mirrors that so code paths awaiting the callback resolve.
+function silentWrite(...args: unknown[]): boolean {
+    const last = args.at(-1)
+    if (typeof last === 'function') {
+        ;(last as (error?: Error | null) => void)()
+    }
+    return true
+}
+
+/** Spy on a console method, silence it, and auto-restore when the test finishes. */
+export function captureConsole(method: ConsoleMethod = 'log'): Spy {
+    return captureSpy(() => vi.spyOn(console, method).mockImplementation(() => {}))
+}
+
 /** Same as {@link captureConsole} for `process.stdout`/`process.stderr.write` (pipe-safe paths). */
-export function captureStream(stream: StdStream = 'stdout'): ReturnType<typeof vi.spyOn> {
-    const spy = vi
-        .spyOn(process[stream], 'write')
-        .mockImplementation((() => true) as typeof process.stdout.write)
-    onTestFinished(() => {
-        spy.mockRestore()
-    })
-    return spy
+export function captureStream(stream: StdStream = 'stdout'): Spy {
+    return captureSpy(() =>
+        vi
+            .spyOn(process[stream], 'write')
+            .mockImplementation(silentWrite as typeof process.stdout.write),
+    )
 }

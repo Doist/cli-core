@@ -21,4 +21,23 @@ describe('buildTokenStore generic reuse', () => {
         // The default id/email/label matcher is overridden, so a label ref no longer resolves.
         await expect(store.active('Alan')).resolves.toBeNull()
     })
+
+    it('applies the custom matchAccount to mutating ref lookups (setDefault)', async () => {
+        const alan: NoEmailAccount = { id: '1', label: 'Alan', authMode: 'rw', authScope: 's' }
+        const ellie: NoEmailAccount = { id: '2', label: 'Ellie', authMode: 'ro', authScope: 's' }
+        const { store } = buildTokenStore<NoEmailAccount>({
+            entries: [
+                { account: alan, isDefault: true },
+                { account: ellie, isDefault: false },
+            ],
+            matchAccount: (account, ref) => account.id === ref,
+        })
+
+        await expect(store.setDefault('2')).resolves.toBeUndefined()
+        const listed = await store.list()
+        expect(listed.find((entry) => entry.isDefault)?.account.id).toBe('2')
+
+        // A label ref misses under the id-only matcher, so setDefault rejects.
+        await expect(store.setDefault('Ellie')).rejects.toThrow()
+    })
 })

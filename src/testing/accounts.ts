@@ -154,7 +154,7 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
         }))
     })
     const setDefaultSpy = vi.fn(async (ref: AccountRef) => {
-        const target = entries.find((e) => matches(e.account, ref))
+        const target = find(ref)
         if (!target) throw accountNotFoundError(ref)
         pinnedDefaultId = target.account.id
     })

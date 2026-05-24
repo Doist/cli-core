@@ -1,9 +1,9 @@
 import type { Command } from 'commander'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
-import { buildProgram } from '../test-support/cli-harness.js'
+import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     alanGrant,
@@ -11,7 +11,6 @@ import {
     ellieSattler,
     ingenEntries,
 } from '../testing/accounts.js'
-import { captureConsole } from '../testing/console.js'
 import {
     type AttachAccountCurrentCommandOptions,
     type AttachAccountListCommandOptions,
@@ -77,18 +76,14 @@ function buildRemove(
 }
 
 describe('attachAccountListCommand', () => {
-    let logSpy: ReturnType<typeof captureConsole>
-
-    beforeEach(() => {
-        logSpy = captureConsole()
-    })
+    const logSpy = installCapturedConsole()
 
     it('renders default human lines with a (default) marker only on the default entry', async () => {
         const { program } = buildList()
 
         await program.parseAsync(['node', 'cli', 'account', 'list'])
 
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
+        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
         expect(emitted).toEqual(['Alan Grant (id:1) (default)', 'Ellie Sattler (id:2)'])
     })
 
@@ -104,7 +99,7 @@ describe('attachAccountListCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy).toHaveBeenCalledWith('one line')
+        expect(logSpy()).toHaveBeenCalledWith('one line')
     })
 
     it('emits each line when renderText returns an array', async () => {
@@ -113,7 +108,9 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list'])
 
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0]).join('\n')
+        const emitted = logSpy()
+            .mock.calls.map((call: unknown[]) => call[0])
+            .join('\n')
         expect(emitted).toBe('line 1\nline 2\nline 3')
     })
 
@@ -122,7 +119,7 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
                     { account: alanGrant, isDefault: true },
@@ -155,7 +152,7 @@ describe('attachAccountListCommand', () => {
             isDefault: false,
             flags: {},
         })
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
                     { name: 'Alan Grant', isDefault: true },
@@ -171,7 +168,7 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--ndjson'])
 
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
+        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
         expect(emitted).toEqual([
             formatNdjson([{ account: alanGrant, isDefault: true }]),
             formatNdjson([{ account: ellieSattler, isDefault: false }]),
@@ -199,7 +196,7 @@ describe('attachAccountListCommand', () => {
             isDefault: false,
             flags: {},
         })
-        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0])
+        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
         expect(emitted).toEqual([
             formatNdjson([{ name: 'Alan Grant', isDefault: true }]),
             formatNdjson([{ name: 'Ellie Sattler', isDefault: false }]),
@@ -211,8 +208,8 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledTimes(1)
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledTimes(1)
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
                     { account: alanGrant, isDefault: true },
@@ -248,7 +245,7 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ accounts: [], default: null }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ accounts: [], default: null }))
     })
 
     it('emits nothing under --ndjson when no accounts are stored', async () => {
@@ -256,7 +253,7 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--ndjson'])
 
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('emits the default empty-state message in human mode when no accounts are stored', async () => {
@@ -264,7 +261,7 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list'])
 
-        expect(logSpy).toHaveBeenCalledWith('No accounts stored.')
+        expect(logSpy()).toHaveBeenCalledWith('No accounts stored.')
     })
 
     it('reports default null when no entry is marked default', async () => {
@@ -278,7 +275,7 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(
+        expect(logSpy()).toHaveBeenCalledWith(
             formatJson({
                 accounts: [
                     { account: alanGrant, isDefault: false },
@@ -312,11 +309,7 @@ describe('attachAccountListCommand', () => {
 })
 
 describe('attachAccountUseCommand', () => {
-    let logSpy: ReturnType<typeof captureConsole>
-
-    beforeEach(() => {
-        logSpy = captureConsole()
-    })
+    const logSpy = installCapturedConsole()
 
     it('calls setDefault and echoes the raw ref in the human success line', async () => {
         const built = buildTokenStore()
@@ -325,7 +318,7 @@ describe('attachAccountUseCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com'])
 
         expect(built.setDefaultSpy).toHaveBeenCalledWith('ellie@ingen.com')
-        expect(logSpy).toHaveBeenCalledWith('✓ Default account set to ellie@ingen.com')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Default account set to ellie@ingen.com')
     })
 
     it('emits the canonical resolved id under --json, not the requested ref', async () => {
@@ -333,7 +326,7 @@ describe('attachAccountUseCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
@@ -349,7 +342,7 @@ describe('attachAccountUseCommand', () => {
             '--ndjson',
         ])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, default: '2' }))
     })
 
     it('does not re-read the store outside --json', async () => {
@@ -369,7 +362,7 @@ describe('attachAccountUseCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'use', 'ellie@ingen.com', '--ndjson'])
 
         expect(built.setDefaultSpy).toHaveBeenCalledWith('ellie@ingen.com')
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('propagates ACCOUNT_NOT_FOUND from setDefault and prints nothing', async () => {
@@ -381,7 +374,7 @@ describe('attachAccountUseCommand', () => {
             program.parseAsync(['node', 'cli', 'account', 'use', 'ghost']),
         ).rejects.toMatchObject({ constructor: CliError, code: 'ACCOUNT_NOT_FOUND' })
         expect(built.listSpy).not.toHaveBeenCalled()
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('emits the success line before awaiting onDefaultSet', async () => {
@@ -398,7 +391,7 @@ describe('attachAccountUseCommand', () => {
         await vi.waitFor(() => expect(onDefaultSet).toHaveBeenCalled())
 
         // Success line is already out, but the command is still parked on the hook.
-        expect(logSpy).toHaveBeenCalledWith('✓ Default account set to ellie@ingen.com')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Default account set to ellie@ingen.com')
         expect(onDefaultSet).toHaveBeenCalledWith({
             ref: 'ellie@ingen.com',
             view: { json: false, ndjson: false },
@@ -432,18 +425,14 @@ describe('attachAccountUseCommand', () => {
 })
 
 describe('attachAccountCurrentCommand', () => {
-    let logSpy: ReturnType<typeof captureConsole>
-
-    beforeEach(() => {
-        logSpy = captureConsole()
-    })
+    const logSpy = installCapturedConsole()
 
     it('renders the default human line with a (default) marker for the active account', async () => {
         const { program } = buildCurrent()
 
         await program.parseAsync(['node', 'cli', 'account', 'current'])
 
-        expect(logSpy).toHaveBeenCalledWith('Alan Grant (id:1) (default)')
+        expect(logSpy()).toHaveBeenCalledWith('Alan Grant (id:1) (default)')
     })
 
     it('omits the marker when the active account is not the default', async () => {
@@ -461,7 +450,7 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current'])
 
-        expect(logSpy).toHaveBeenCalledWith('Alan Grant (id:1)')
+        expect(logSpy()).toHaveBeenCalledWith('Alan Grant (id:1)')
     })
 
     it('passes account + isDefault to a custom renderText', async () => {
@@ -476,7 +465,7 @@ describe('attachAccountCurrentCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy).toHaveBeenCalledWith('custom line')
+        expect(logSpy()).toHaveBeenCalledWith('custom line')
     })
 
     it('emits the default { account, isDefault } payload under --json', async () => {
@@ -484,7 +473,7 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ account: alanGrant, isDefault: true }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ account: alanGrant, isDefault: true }))
     })
 
     it('shapes the --json payload via renderJson', async () => {
@@ -494,7 +483,7 @@ describe('attachAccountCurrentCommand', () => {
         await program.parseAsync(['node', 'cli', 'account', 'current', '--json'])
 
         expect(renderJson).toHaveBeenCalledWith({ account: alanGrant, isDefault: true, flags: {} })
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ email: 'alan@ingen.com' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ email: 'alan@ingen.com' }))
     })
 
     it('emits a single payload object under --ndjson', async () => {
@@ -502,7 +491,9 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatNdjson([{ account: alanGrant, isDefault: true }]))
+        expect(logSpy()).toHaveBeenCalledWith(
+            formatNdjson([{ account: alanGrant, isDefault: true }]),
+        )
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
@@ -510,8 +501,8 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--json', '--ndjson'])
 
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ account: alanGrant, isDefault: true }))
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ account: alanGrant, isDefault: true }))
     })
 
     // Covers both non-serializable shapes: a top-level `undefined`
@@ -543,7 +534,7 @@ describe('attachAccountCurrentCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
     })
 
     it('throws NOT_AUTHENTICATED when nothing is active and no hook is supplied', async () => {
@@ -564,7 +555,7 @@ describe('attachAccountCurrentCommand', () => {
         expect(built.store.activeAccount).toHaveBeenCalledOnce()
         expect(built.activeSpy).not.toHaveBeenCalled()
         expect(built.listSpy).not.toHaveBeenCalled()
-        expect(logSpy).toHaveBeenCalledWith('Ellie Sattler (id:2)')
+        expect(logSpy()).toHaveBeenCalledWith('Ellie Sattler (id:2)')
     })
 
     it('returns the new Command so the consumer can chain', () => {
@@ -575,11 +566,7 @@ describe('attachAccountCurrentCommand', () => {
 })
 
 describe('attachAccountRemoveCommand', () => {
-    let logSpy: ReturnType<typeof captureConsole>
-
-    beforeEach(() => {
-        logSpy = captureConsole()
-    })
+    const logSpy = installCapturedConsole()
 
     it('removes the matched account by ref and marks it as the former default', async () => {
         const built = buildTokenStore()
@@ -590,8 +577,8 @@ describe('attachAccountRemoveCommand', () => {
 
         expect(built.clearSpy).toHaveBeenCalledWith('alan@ingen.com')
         expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: true }])
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
     })
 
     it('omits the (default) marker when the removed account was not the default', async () => {
@@ -600,8 +587,8 @@ describe('attachAccountRemoveCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'ellie@ingen.com'])
 
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Ellie Sattler')
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Ellie Sattler')
     })
 
     it('throws ACCOUNT_NOT_FOUND and removes nothing when the ref misses', async () => {
@@ -628,7 +615,7 @@ describe('attachAccountRemoveCommand', () => {
 
         expect(built.store.active).not.toHaveBeenCalled()
         expect(await built.store.list()).toEqual([{ account: ellieSattler, isDefault: true }])
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Alan Grant (default)')
     })
 
     it('emits { ok, removed } with the canonical id under --json', async () => {
@@ -636,7 +623,7 @@ describe('attachAccountRemoveCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'remove', 'ellie@ingen.com', '--json'])
 
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
@@ -652,8 +639,8 @@ describe('attachAccountRemoveCommand', () => {
             '--ndjson',
         ])
 
-        expect(logSpy).toHaveBeenCalledOnce()
-        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
+        expect(logSpy()).toHaveBeenCalledOnce()
+        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true, removed: '2' }))
     })
 
     it('is silent under --ndjson but still clears and runs onRemoved', async () => {
@@ -671,7 +658,7 @@ describe('attachAccountRemoveCommand', () => {
         ])
 
         expect(await built.store.list()).toEqual([{ account: alanGrant, isDefault: true }])
-        expect(logSpy).not.toHaveBeenCalled()
+        expect(logSpy()).not.toHaveBeenCalled()
         expect(onRemoved).toHaveBeenCalledOnce()
     })
 
@@ -691,7 +678,7 @@ describe('attachAccountRemoveCommand', () => {
         }
         expect(renderText).toHaveBeenCalledWith(expectedCtx)
         expect(onRemoved).toHaveBeenCalledWith(expectedCtx)
-        expect(logSpy).toHaveBeenCalledWith('gone')
+        expect(logSpy()).toHaveBeenCalledWith('gone')
     })
 
     it('emits the success line before awaiting onRemoved', async () => {
@@ -708,7 +695,7 @@ describe('attachAccountRemoveCommand', () => {
         await vi.waitFor(() => expect(onRemoved).toHaveBeenCalled())
 
         // Success line is already out, but the command is still parked on the hook.
-        expect(logSpy).toHaveBeenCalledWith('✓ Removed Ellie Sattler')
+        expect(logSpy()).toHaveBeenCalledWith('✓ Removed Ellie Sattler')
         expect(await Promise.race([parsed, Promise.resolve('pending')])).toBe('pending')
 
         releaseHook()

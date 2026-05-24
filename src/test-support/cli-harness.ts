@@ -1,11 +1,35 @@
 import type { Command } from 'commander'
+import { beforeEach } from 'vitest'
 
+import { captureConsole, captureStream } from '../testing/console.js'
 import { createTestProgram } from '../testing/program.js'
 
 // Shared test scaffolding for the Commander attacher suites. Internal-only
-// (under `src/test-support/`, excluded from the build). Console/stdout spies
-// live in the published `@doist/cli-core/testing` surface — import
-// `captureConsole`/`captureStream` from `../testing/console.js` directly.
+// (under `src/test-support/`, excluded from the build). These thin wrappers
+// own the per-test `beforeEach` lifecycle over the published `captureConsole` /
+// `captureStream` helpers (which self-restore via `onTestFinished`), so the
+// attacher suites declare a spy once per `describe` instead of repeating the
+// `let spy` + `beforeEach` dance.
+
+type Spy = ReturnType<typeof captureConsole>
+
+function installCaptured(make: () => Spy): () => Spy {
+    let spy: Spy
+    beforeEach(() => {
+        spy = make()
+    })
+    return () => spy
+}
+
+/** Re-install a silenced `console` spy before each test; returns a getter for the live spy. */
+export function installCapturedConsole(method?: Parameters<typeof captureConsole>[0]): () => Spy {
+    return installCaptured(() => captureConsole(method))
+}
+
+/** Re-install a silenced `process.std*` write spy before each test; returns a getter. */
+export function installCapturedStream(stream?: Parameters<typeof captureStream>[0]): () => Spy {
+    return installCaptured(() => captureStream(stream))
+}
 
 /**
  * Build a Commander program with `exitOverride()` and a single named parent

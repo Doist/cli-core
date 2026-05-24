@@ -28,7 +28,19 @@ describe('@doist/cli-core/testing subpath wiring', () => {
             expect(existsSync(importPath)).toBe(true)
             expect(existsSync(typesPath)).toBe(true)
             const mod = (await import(importPath)) as Record<string, unknown>
-            expect(typeof mod.describeEmptyMachineOutput).toBe('function')
+            // Assert each runtime export the barrel re-exports: nothing in-repo
+            // imports through the barrel (the suites use relative paths), so a
+            // dropped re-export wouldn't otherwise fail the type-check.
+            for (const name of [
+                'describeEmptyMachineOutput',
+                'createTestProgram',
+                'captureConsole',
+                'captureStream',
+                'buildTokenStore',
+                'buildSingleEntryStore',
+            ]) {
+                expect(typeof mod[name], `${name} should be exported`).toBe('function')
+            }
         },
     )
 })

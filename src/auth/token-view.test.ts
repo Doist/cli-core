@@ -1,14 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
-import { buildProgram } from '../test-support/cli-harness.js'
+import { buildProgram, installCapturedStream } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
 } from '../testing/accounts.js'
-import { captureStream } from '../testing/console.js'
 import { attachTokenViewCommand } from './token-view.js'
 
 const account = alanGrant
@@ -20,11 +19,7 @@ function buildStore(
 }
 
 describe('attachTokenViewCommand', () => {
-    let stdoutSpy: ReturnType<typeof captureStream>
-
-    beforeEach(() => {
-        stdoutSpy = captureStream()
-    })
+    const stdoutSpy = installCapturedStream()
 
     afterEach(() => {
         vi.unstubAllEnvs()
@@ -46,9 +41,11 @@ describe('attachTokenViewCommand', () => {
             })
         }
 
-        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        const emitted = stdoutSpy()
+            .mock.calls.map((call: unknown[]) => call[0])
+            .join('')
         expect(emitted).toBe('tok-xyz')
-        expect(stdoutSpy).toHaveBeenCalledTimes(1)
+        expect(stdoutSpy()).toHaveBeenCalledTimes(1)
     })
 
     it('appends a newline only when stdout is a TTY', async () => {
@@ -67,7 +64,9 @@ describe('attachTokenViewCommand', () => {
             })
         }
 
-        const emitted = stdoutSpy.mock.calls.map((call: unknown[]) => call[0]).join('')
+        const emitted = stdoutSpy()
+            .mock.calls.map((call: unknown[]) => call[0])
+            .join('')
         expect(emitted).toBe('tok-xyz\n')
     })
 
@@ -82,7 +81,7 @@ describe('attachTokenViewCommand', () => {
             code: 'TOKEN_FROM_ENV',
         })
         expect(activeSpy).not.toHaveBeenCalled()
-        expect(stdoutSpy).not.toHaveBeenCalled()
+        expect(stdoutSpy()).not.toHaveBeenCalled()
     })
 
     it('prints normally when envVarName is set but env is empty', async () => {
@@ -93,7 +92,7 @@ describe('attachTokenViewCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'token'])
 
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('throws CliError(NOT_AUTHENTICATED) when the store is empty', async () => {
@@ -105,7 +104,7 @@ describe('attachTokenViewCommand', () => {
             constructor: CliError,
             code: 'NOT_AUTHENTICATED',
         })
-        expect(stdoutSpy).not.toHaveBeenCalled()
+        expect(stdoutSpy()).not.toHaveBeenCalled()
     })
 
     it('registers under a custom name when supplied', async () => {
@@ -116,7 +115,7 @@ describe('attachTokenViewCommand', () => {
         expect(cmd.name()).toBe('view')
 
         await program.parseAsync(['node', 'cli', 'auth', 'view'])
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('returns the new Command so the consumer can chain', () => {
@@ -135,7 +134,7 @@ describe('attachTokenViewCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alan@ingen.com'])
 
         expect(activeSpy).toHaveBeenCalledWith('alan@ingen.com')
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('calls store.active(undefined) when --user is absent', async () => {
@@ -146,7 +145,7 @@ describe('attachTokenViewCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'token'])
 
         expect(activeSpy).toHaveBeenCalledWith(undefined)
-        expect(stdoutSpy).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
     })
 
     it('throws ACCOUNT_NOT_FOUND when --user does not match a stored account', async () => {
@@ -160,6 +159,6 @@ describe('attachTokenViewCommand', () => {
             constructor: CliError,
             code: 'ACCOUNT_NOT_FOUND',
         })
-        expect(stdoutSpy).not.toHaveBeenCalled()
+        expect(stdoutSpy()).not.toHaveBeenCalled()
     })
 })
