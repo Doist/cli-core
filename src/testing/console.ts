@@ -1,8 +1,12 @@
+import type { MockInstance } from 'vitest'
 import { onTestFinished, vi } from 'vitest'
 
 type ConsoleMethod = 'log' | 'error' | 'warn' | 'info'
 type StdStream = 'stdout' | 'stderr'
-type Spy = ReturnType<typeof vi.spyOn>
+// Use vitest's `MockInstance` (not `ReturnType<typeof vi.spyOn>`, which erases
+// down to a shape whose `.mock.calls` is `any`) so consumers keep usable
+// `.mock.calls` typing — making these a true drop-in for hand-rolled spies.
+type Spy = MockInstance
 
 /**
  * Install a silencing spy and auto-restore it when the current test finishes.
