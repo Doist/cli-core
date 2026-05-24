@@ -1,11 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
-import {
-    type TestAccount as Account,
-    buildTokenStore,
-    ianMalcolm,
-} from '../test-support/accounts.js'
+import { type TestAccount as Account, buildTokenStore, ianMalcolm } from '../testing/accounts.js'
 import { persistBundle } from './persist.js'
 import type { TokenBundle, TokenStore } from './types.js'
 

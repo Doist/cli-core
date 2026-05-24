@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as {
     exports?: Record<string, { types?: string; import?: string }>
 }
@@ -27,8 +27,14 @@ describe('@doist/cli-core/testing subpath wiring', () => {
             const typesPath = resolve(repoRoot, entry?.types ?? '')
             expect(existsSync(importPath)).toBe(true)
             expect(existsSync(typesPath)).toBe(true)
-            const mod = (await import(importPath)) as Record<string, unknown>
-            expect(typeof mod.describeEmptyMachineOutput).toBe('function')
+            const dist = (await import(importPath)) as Record<string, unknown>
+            // The source barrel is the source of truth for the subpath surface;
+            // assert the built dist module exposes exactly the same runtime
+            // exports. Nothing in-repo imports through the barrel (the suites use
+            // relative paths), so a dropped re-export wouldn't otherwise fail the
+            // type-check.
+            const source = await import('./index.js')
+            expect(Object.keys(dist).sort()).toEqual(Object.keys(source).sort())
         },
     )
 })

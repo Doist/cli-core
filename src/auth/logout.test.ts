@@ -3,13 +3,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
+import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
-} from '../test-support/accounts.js'
-import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
+} from '../testing/accounts.js'
 import { attachLogoutCommand } from './logout.js'
 import type { TokenStore } from './types.js'
 
@@ -44,7 +44,7 @@ function build(
 }
 
 describe('attachLogoutCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    const logSpy = installCapturedConsole()
 
     it('clears the store and emits the human success line in plain mode', async () => {
         const built = buildStore()

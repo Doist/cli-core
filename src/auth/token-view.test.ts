@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import { buildProgram, installCapturedStream } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
-} from '../test-support/accounts.js'
-import { buildProgram, installStdoutSpy } from '../test-support/cli-harness.js'
+} from '../testing/accounts.js'
 import { attachTokenViewCommand } from './token-view.js'
 
 const account = alanGrant
@@ -19,7 +19,7 @@ function buildStore(
 }
 
 describe('attachTokenViewCommand', () => {
-    const stdoutSpy = installStdoutSpy()
+    const stdoutSpy = installCapturedStream()
 
     afterEach(() => {
         vi.unstubAllEnvs()

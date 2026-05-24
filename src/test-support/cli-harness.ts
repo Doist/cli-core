@@ -1,43 +1,32 @@
-import { Command } from 'commander'
-import { afterEach, beforeEach, vi } from 'vitest'
+import type { Command } from 'commander'
+import { beforeEach } from 'vitest'
+
+import { captureConsole, captureStream } from '../testing/console.js'
+import { createTestProgram } from '../testing/program.js'
 
 // Shared test scaffolding for the Commander attacher suites. Internal-only
-// (under `src/test-support/`, excluded from the build).
+// (under `src/test-support/`, excluded from the build). These thin wrappers
+// own the per-test `beforeEach` lifecycle over the published `captureConsole` /
+// `captureStream` helpers (which self-restore via `onTestFinished`), so the
+// attacher suites declare a spy once per `describe` instead of repeating the
+// `let spy` + `beforeEach` dance.
 
-type Spy = ReturnType<typeof vi.spyOn>
+type Spy = ReturnType<typeof captureConsole>
 
-/**
- * Own the `beforeEach`/`afterEach` spy lifecycle: `register` creates + configures
- * a fresh spy before each test (where the target's types are concrete, so no
- * casts), and the spy is restored afterwards. Returns a getter for the live spy
- * — call it inside the test body, since a new spy is installed per test.
- */
-function installSpy(register: () => Spy): () => Spy {
+function installCaptured(make: () => Spy): () => Spy {
     let spy: Spy
     beforeEach(() => {
-        spy = register()
-    })
-    afterEach(() => {
-        spy.mockRestore()
+        spy = make()
     })
     return () => spy
 }
 
-/**
- * Silence + spy on `console.log`. Call once at the top of a `describe`:
- *
- * ```ts
- * const logSpy = installConsoleLogSpy()
- * it('...', () => { expect(logSpy()).toHaveBeenCalledWith('…') })
- * ```
- */
-export function installConsoleLogSpy(): () => Spy {
-    return installSpy(() => vi.spyOn(console, 'log').mockImplementation(() => {}))
+export function installCapturedConsole(method?: Parameters<typeof captureConsole>[0]): () => Spy {
+    return installCaptured(() => captureConsole(method))
 }
 
-/** Same as {@link installConsoleLogSpy} for `process.stdout.write` (pipe-safe output). */
-export function installStdoutSpy(): () => Spy {
-    return installSpy(() => vi.spyOn(process.stdout, 'write').mockImplementation(() => true))
+export function installCapturedStream(stream?: Parameters<typeof captureStream>[0]): () => Spy {
+    return installCaptured(() => captureStream(stream))
 }
 
 /**
@@ -45,8 +34,9 @@ export function installStdoutSpy(): () => Spy {
  * subcommand to attach to — the boilerplate every attacher suite repeats.
  */
 export function buildProgram(parentName: string): { program: Command; parent: Command } {
-    const program = new Command()
-    program.exitOverride()
-    const parent = program.command(parentName)
+    let parent!: Command
+    const program = createTestProgram((p) => {
+        parent = p.command(parentName)
+    })
     return { program, parent }
 }

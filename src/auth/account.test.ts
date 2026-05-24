@@ -3,14 +3,14 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
+import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     alanGrant,
     buildTokenStore,
     ellieSattler,
     ingenEntries,
-} from '../test-support/accounts.js'
-import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
+} from '../testing/accounts.js'
 import {
     type AttachAccountCurrentCommandOptions,
     type AttachAccountListCommandOptions,
@@ -76,7 +76,7 @@ function buildRemove(
 }
 
 describe('attachAccountListCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    const logSpy = installCapturedConsole()
 
     it('renders default human lines with a (default) marker only on the default entry', async () => {
         const { program } = buildList()
@@ -309,7 +309,7 @@ describe('attachAccountListCommand', () => {
 })
 
 describe('attachAccountUseCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    const logSpy = installCapturedConsole()
 
     it('calls setDefault and echoes the raw ref in the human success line', async () => {
         const built = buildTokenStore()
@@ -425,7 +425,7 @@ describe('attachAccountUseCommand', () => {
 })
 
 describe('attachAccountCurrentCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    const logSpy = installCapturedConsole()
 
     it('renders the default human line with a (default) marker for the active account', async () => {
         const { program } = buildCurrent()
@@ -566,7 +566,7 @@ describe('attachAccountCurrentCommand', () => {
 })
 
 describe('attachAccountRemoveCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    const logSpy = installCapturedConsole()
 
     it('removes the matched account by ref and marks it as the former default', async () => {
         const built = buildTokenStore()

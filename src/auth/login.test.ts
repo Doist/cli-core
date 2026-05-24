@@ -2,8 +2,8 @@ import type { Command } from 'commander'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
-import { type TestAccount as Account, alanGrant } from '../test-support/accounts.js'
 import { buildProgram } from '../test-support/cli-harness.js'
+import { type TestAccount as Account, alanGrant } from '../testing/accounts.js'
 import { attachLoginCommand } from './login.js'
 import type { AuthProvider, TokenStore } from './types.js'
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { type TestAccount as Account, alanGrant } from '../../test-support/accounts.js'
+import { type TestAccount as Account, alanGrant } from '../../testing/accounts.js'
 import { createPkceProvider } from './pkce.js'
 
 const respond = (body: unknown, status = 200): Response =>
