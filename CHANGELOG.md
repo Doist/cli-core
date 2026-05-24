@@ -1,3 +1,9 @@
+## [0.24.0](https://github.com/Doist/cli-core/compare/v0.23.0...v0.24.0) (2026-05-24)
+
+### Features
+
+* **testing:** publish shared test helpers + fixtures via ./testing ([#49](https://github.com/Doist/cli-core/issues/49)) ([44b38e9](https://github.com/Doist/cli-core/commit/44b38e9ed9ce47af26942fe9bd435c75a9ef463e))
+
 ## [0.23.0](https://github.com/Doist/cli-core/compare/v0.22.0...v0.23.0) (2026-05-23)
 
 ### Features
