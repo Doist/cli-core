@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { printEmpty } from './empty.js'
-import { describeEmptyMachineOutput } from './testing.js'
+import { describeEmptyMachineOutput } from './testing/index.js'
 
 const HUMAN_MESSAGE = 'No threads in inbox.'
 

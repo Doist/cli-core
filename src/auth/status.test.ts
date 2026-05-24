@@ -1,15 +1,16 @@
 import type { Command } from 'commander'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
+import { buildProgram } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
-} from '../test-support/accounts.js'
-import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
+} from '../testing/accounts.js'
+import { captureConsole } from '../testing/console.js'
 import { attachStatusCommand } from './status.js'
 import type { TokenStore } from './types.js'
 
@@ -43,7 +44,11 @@ function build(
 }
 
 describe('attachStatusCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    let logSpy: ReturnType<typeof captureConsole>
+
+    beforeEach(() => {
+        logSpy = captureConsole()
+    })
 
     it('emits renderText output in plain mode', async () => {
         const { program, renderText } = build()
@@ -55,7 +60,7 @@ describe('attachStatusCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy()).toHaveBeenCalledWith('Signed in as alan@ingen.com')
+        expect(logSpy).toHaveBeenCalledWith('Signed in as alan@ingen.com')
     })
 
     it('emits each line when renderText returns an array', async () => {
@@ -64,9 +69,7 @@ describe('attachStatusCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'status'])
 
-        const emitted = logSpy()
-            .mock.calls.map((call: unknown[]) => call[0])
-            .join('\n')
+        const emitted = logSpy.mock.calls.map((call: unknown[]) => call[0]).join('\n')
         expect(emitted).toBe('line 1\nline 2\nline 3')
     })
 
@@ -76,7 +79,7 @@ describe('attachStatusCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--json'])
 
         expect(renderText).not.toHaveBeenCalled()
-        expect(logSpy()).toHaveBeenCalledWith(formatJson(account))
+        expect(logSpy).toHaveBeenCalledWith(formatJson(account))
     })
 
     it('emits renderJson payload when supplied under --json', async () => {
@@ -89,7 +92,7 @@ describe('attachStatusCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--json'])
 
         expect(renderJson).toHaveBeenCalledWith({ account, flags: {} })
-        expect(logSpy()).toHaveBeenCalledWith(formatJson({ id: '1', email: 'alan@ingen.com' }))
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ id: '1', email: 'alan@ingen.com' }))
     })
 
     it('emits a single NDJSON line under --ndjson', async () => {
@@ -97,7 +100,7 @@ describe('attachStatusCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--ndjson'])
 
-        expect(logSpy()).toHaveBeenCalledWith(formatNdjson([account]))
+        expect(logSpy).toHaveBeenCalledWith(formatNdjson([account]))
     })
 
     it('does not invoke renderJson in human mode', async () => {
@@ -127,7 +130,7 @@ describe('attachStatusCommand', () => {
             view: { json: false, ndjson: false },
             flags: {},
         })
-        expect(logSpy()).toHaveBeenCalledWith('Signed in as live@ingen.com')
+        expect(logSpy).toHaveBeenCalledWith('Signed in as live@ingen.com')
     })
 
     it('propagates fetchLive throws', async () => {
@@ -149,7 +152,7 @@ describe('attachStatusCommand', () => {
             constructor: CliError,
             code: 'NOT_AUTHENTICATED',
         })
-        expect(logSpy()).not.toHaveBeenCalled()
+        expect(logSpy).not.toHaveBeenCalled()
     })
 
     it('awaits an async onNotAuthenticated when supplied instead of throwing', async () => {

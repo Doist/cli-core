@@ -2,12 +2,12 @@ import { Command } from 'commander'
 import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import { buildProgram } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     alanGrant,
     buildSingleEntryStore,
-} from '../test-support/accounts.js'
-import { buildProgram } from '../test-support/cli-harness.js'
+} from '../testing/accounts.js'
 import type { TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 

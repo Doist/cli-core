@@ -10,9 +10,9 @@ import type {
 } from '../auth/types.js'
 import { accountNotFoundError } from '../auth/user-flag.js'
 
-// Shared account fixtures + a canonical in-memory `TokenStore` mock for the
-// auth test suites. Lives under `src/test-support/` so it's excluded from the
-// build (per `tsconfig.build.json`) and never reaches consumers via `dist/`.
+// Shared account fixtures + a canonical in-memory `TokenStore` mock for auth
+// test suites, shipped via the `@doist/cli-core/testing` subpath so consuming
+// CLIs can reuse them instead of hand-rolling store mocks.
 //
 // The mock mirrors `createKeyringTokenStore`'s default-selection rules so tests
 // can't assert states production never produces: the *effective default* is the
@@ -47,8 +47,14 @@ export function ingenEntries(): StoreEntry[] {
     ]
 }
 
-/** Stores own the matching rule; the mock matches by id, email, or label. */
-function matchesRef(account: AuthAccount, ref: string): boolean {
+/** Account matcher used to resolve a ref. The default matches by id, email, or label. */
+export type MatchAccount<TAccount extends AuthAccount> = (
+    account: TAccount,
+    ref: AccountRef,
+) => boolean
+
+/** Default ref matcher: id, email, or label. Pass a consumer's own matcher via `matchAccount`. */
+function defaultMatchAccount(account: AuthAccount, ref: AccountRef): boolean {
     return account.id === ref || account.email === ref || account.label === ref
 }
 
@@ -68,22 +74,31 @@ export type TokenStoreHarness<TAccount extends AuthAccount> = {
 export function buildTokenStore(opts?: {
     entries?: StoreEntry<TestAccount>[]
     overrides?: Partial<TokenStore<TestAccount>>
+    matchAccount?: MatchAccount<TestAccount>
 }): TokenStoreHarness<TestAccount>
 export function buildTokenStore<TAccount extends AuthAccount>(opts: {
     entries: StoreEntry<TAccount>[]
     overrides?: Partial<TokenStore<TAccount>>
+    matchAccount?: MatchAccount<TAccount>
 }): TokenStoreHarness<TAccount>
 /**
  * Canonical stateful, multi-account `TokenStore` mock. Models the full contract
- * over a mutable entry list — id/email/label matching, effective-default
- * resolution, promote-if-unpinned, token-free removal returning `ClearedAccount`,
- * and bundle read/write with slot replacement. The default Ingen seed only
- * applies to `TestAccount`; other `TAccount`s must pass explicit `entries`.
- * Pass `overrides` to replace (or delete, via `{ method: undefined }`) any method.
+ * over a mutable entry list — ref matching, effective-default resolution,
+ * promote-if-unpinned, token-free removal returning `ClearedAccount`, and bundle
+ * read/write with slot replacement. The default Ingen seed only applies to
+ * `TestAccount`; other `TAccount`s must pass explicit `entries`. Ref matching
+ * defaults to id/email/label; pass `matchAccount` to mirror a consumer's own
+ * store matcher (e.g. numeric-id or case-insensitive label rules). Pass
+ * `overrides` to replace (or delete, via `{ method: undefined }`) any method.
  */
 export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
-    opts: { entries?: StoreEntry<TAccount>[]; overrides?: Partial<TokenStore<TAccount>> } = {},
+    opts: {
+        entries?: StoreEntry<TAccount>[]
+        overrides?: Partial<TokenStore<TAccount>>
+        matchAccount?: MatchAccount<TAccount>
+    } = {},
 ): TokenStoreHarness<TAccount> {
+    const matches: MatchAccount<TAccount> = opts.matchAccount ?? defaultMatchAccount
     const entries: StoreEntry<TAccount>[] = (
         opts.entries ?? (ingenEntries() as unknown as StoreEntry<TAccount>[])
     ).map((entry) => ({ ...entry }))
@@ -106,7 +121,7 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
     const tokenFor = (entry: StoreEntry<TAccount>): string =>
         entry.token ?? entry.bundle?.accessToken ?? `token-${entry.account.id}`
     const find = (ref?: AccountRef): StoreEntry<TAccount> | undefined =>
-        ref === undefined ? effectiveDefault() : entries.find((e) => matchesRef(e.account, ref))
+        ref === undefined ? effectiveDefault() : entries.find((e) => matches(e.account, ref))
 
     const activeSpy = vi.fn(async (ref?: AccountRef) => {
         const entry = find(ref)
@@ -139,7 +154,7 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
         }))
     })
     const setDefaultSpy = vi.fn(async (ref: AccountRef) => {
-        const target = entries.find((e) => matchesRef(e.account, ref))
+        const target = entries.find((e) => matches(e.account, ref))
         if (!target) throw accountNotFoundError(ref)
         pinnedDefaultId = target.account.id
     })

@@ -10,7 +10,7 @@ import {
     type TokenStoreHarness,
     buildTokenStore,
     ianMalcolm,
-} from '../test-support/accounts.js'
+} from '../testing/accounts.js'
 import { refreshAccessToken } from './refresh.js'
 import type {
     ActiveBundleSnapshot,

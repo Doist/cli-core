@@ -26,7 +26,7 @@ import {
     alanGrant,
     buildTokenStore,
     ellieSattler,
-} from '../test-support/accounts.js'
+} from '../testing/accounts.js'
 import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenBundle, TokenStore } from './types.js'
 

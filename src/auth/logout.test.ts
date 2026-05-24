@@ -1,15 +1,16 @@
 import type { Command } from 'commander'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson } from '../json.js'
+import { buildProgram } from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
-} from '../test-support/accounts.js'
-import { buildProgram, installConsoleLogSpy } from '../test-support/cli-harness.js'
+} from '../testing/accounts.js'
+import { captureConsole } from '../testing/console.js'
 import { attachLogoutCommand } from './logout.js'
 import type { TokenStore } from './types.js'
 
@@ -44,7 +45,11 @@ function build(
 }
 
 describe('attachLogoutCommand', () => {
-    const logSpy = installConsoleLogSpy()
+    let logSpy: ReturnType<typeof captureConsole>
+
+    beforeEach(() => {
+        logSpy = captureConsole()
+    })
 
     it('clears the store and emits the human success line in plain mode', async () => {
         const built = buildStore()
@@ -54,7 +59,7 @@ describe('attachLogoutCommand', () => {
 
         expect(built.activeSpy).toHaveBeenCalledWith(undefined)
         expect(built.clearSpy).toHaveBeenCalledWith(undefined)
-        expect(logSpy()).toHaveBeenCalledWith('✓ Logged out')
+        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
         expect(onCleared).toHaveBeenCalledWith({
             account,
             ref: undefined,
@@ -68,7 +73,7 @@ describe('attachLogoutCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--json'])
 
-        expect(logSpy()).toHaveBeenCalledWith(formatJson({ ok: true }))
+        expect(logSpy).toHaveBeenCalledWith(formatJson({ ok: true }))
         expect(onCleared).toHaveBeenCalledWith({
             account,
             ref: undefined,
@@ -82,7 +87,7 @@ describe('attachLogoutCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--ndjson'])
 
-        expect(logSpy()).not.toHaveBeenCalled()
+        expect(logSpy).not.toHaveBeenCalled()
         expect(onCleared).toHaveBeenCalledWith({
             account,
             ref: undefined,
@@ -355,7 +360,7 @@ describe('attachLogoutCommand', () => {
             code: 'ACCOUNT_NOT_FOUND',
         })
         expect(built.clearSpy).not.toHaveBeenCalled()
-        expect(logSpy()).not.toHaveBeenCalled()
+        expect(logSpy).not.toHaveBeenCalled()
     })
 
     it('proceeds with clear(ref) when active(ref) throws AUTH_STORE_READ_FAILED', async () => {
@@ -375,7 +380,7 @@ describe('attachLogoutCommand', () => {
 
         expect(built.clearSpy).toHaveBeenCalledWith('me')
         expect(revokeSpy).not.toHaveBeenCalled()
-        expect(logSpy()).toHaveBeenCalledWith('✓ Logged out')
+        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
         // `account` is null (no readable snapshot) but `ref` is populated, so
         // consumers can distinguish "nothing was stored" from "cleared an
         // unreadable record".
@@ -401,7 +406,7 @@ describe('attachLogoutCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'logout', '--user', 'me'])
 
         expect(built.clearSpy).toHaveBeenCalledWith('me')
-        expect(logSpy()).toHaveBeenCalledWith('✓ Logged out')
+        expect(logSpy).toHaveBeenCalledWith('✓ Logged out')
     })
 
     it('still propagates non-read errors from the snapshot pre-flight', async () => {

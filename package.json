@@ -23,8 +23,8 @@
             "import": "./dist/markdown.js"
         },
         "./testing": {
-            "types": "./dist/testing.d.ts",
-            "import": "./dist/testing.js"
+            "types": "./dist/testing/index.d.ts",
+            "import": "./dist/testing/index.js"
         }
     },
     "scripts": {
