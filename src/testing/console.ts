@@ -18,12 +18,13 @@ function captureSpy(install: () => Spy): Spy {
 }
 
 // `WriteStream.write` accepts an optional trailing callback (`write(chunk, cb)`
-// or `write(chunk, encoding, cb)`); the real stream invokes it once flushed.
-// The silencing stub mirrors that so code paths awaiting the callback resolve.
+// or `write(chunk, encoding, cb)`) and invokes it asynchronously once the write
+// is handled. Queue it on the microtask queue rather than calling inline so
+// callback ordering matches the real stream.
 function silentWrite(...args: unknown[]): boolean {
     const last = args.at(-1)
     if (typeof last === 'function') {
-        ;(last as (error?: Error | null) => void)()
+        queueMicrotask(last as (error?: Error | null) => void)
     }
     return true
 }

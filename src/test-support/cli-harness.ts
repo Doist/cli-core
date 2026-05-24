@@ -21,12 +21,10 @@ function installCaptured(make: () => Spy): () => Spy {
     return () => spy
 }
 
-/** Re-install a silenced `console` spy before each test; returns a getter for the live spy. */
 export function installCapturedConsole(method?: Parameters<typeof captureConsole>[0]): () => Spy {
     return installCaptured(() => captureConsole(method))
 }
 
-/** Re-install a silenced `process.std*` write spy before each test; returns a getter. */
 export function installCapturedStream(stream?: Parameters<typeof captureStream>[0]): () => Spy {
     return installCaptured(() => captureStream(stream))
 }

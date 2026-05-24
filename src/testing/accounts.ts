@@ -58,6 +58,18 @@ function defaultMatchAccount(account: AuthAccount, ref: AccountRef): boolean {
     return account.id === ref || account.email === ref || account.label === ref
 }
 
+/**
+ * Overridable store members. Only the optional contract methods
+ * (`activeAccount` / `setBundle` / `activeBundle`) can be replaced or omitted
+ * (via `undefined`); the required methods stay intact so the built `store` is
+ * always a valid `TokenStore`.
+ */
+export type StoreOverrides<TAccount extends AuthAccount> = {
+    [K in keyof TokenStore<TAccount> as undefined extends TokenStore<TAccount>[K]
+        ? K
+        : never]?: TokenStore<TAccount>[K]
+}
+
 export type TokenStoreHarness<TAccount extends AuthAccount> = {
     store: TokenStore<TAccount>
     activeSpy: ReturnType<typeof vi.fn>
@@ -73,12 +85,12 @@ export type TokenStoreHarness<TAccount extends AuthAccount> = {
 
 export function buildTokenStore(opts?: {
     entries?: StoreEntry<TestAccount>[]
-    overrides?: Partial<TokenStore<TestAccount>>
+    overrides?: StoreOverrides<TestAccount>
     matchAccount?: MatchAccount<TestAccount>
 }): TokenStoreHarness<TestAccount>
 export function buildTokenStore<TAccount extends AuthAccount>(opts: {
     entries: StoreEntry<TAccount>[]
-    overrides?: Partial<TokenStore<TAccount>>
+    overrides?: StoreOverrides<TAccount>
     matchAccount?: MatchAccount<TAccount>
 }): TokenStoreHarness<TAccount>
 /**
@@ -94,7 +106,7 @@ export function buildTokenStore<TAccount extends AuthAccount>(opts: {
 export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
     opts: {
         entries?: StoreEntry<TAccount>[]
-        overrides?: Partial<TokenStore<TAccount>>
+        overrides?: StoreOverrides<TAccount>
         matchAccount?: MatchAccount<TAccount>
     } = {},
 ): TokenStoreHarness<TAccount> {
@@ -210,7 +222,7 @@ export function buildTokenStore<TAccount extends AuthAccount = TestAccount>(
  */
 export function buildSingleEntryStore(
     initial: { token: string; account: TestAccount } | null,
-    overrides?: Partial<TokenStore<TestAccount>>,
+    overrides?: StoreOverrides<TestAccount>,
 ): TokenStoreHarness<TestAccount> {
     return buildTokenStore({
         entries: initial

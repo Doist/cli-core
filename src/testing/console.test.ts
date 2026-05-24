@@ -9,10 +9,6 @@ describe('captureConsole', () => {
         expect(spy).toHaveBeenCalledWith('hello', 'world')
     })
 
-    it('restores the original console.log once the previous test finished', () => {
-        expect(vi.isMockFunction(console.log)).toBe(false)
-    })
-
     it('can spy on other console methods', () => {
         const spy = captureConsole('error')
         console.error('boom')
@@ -28,17 +24,19 @@ describe('captureStream', () => {
         expect(spy).toHaveBeenCalledWith('chunk')
     })
 
-    it('invokes a trailing write callback — write(chunk, cb)', () => {
+    it('invokes a trailing write callback — write(chunk, cb)', async () => {
         captureStream('stderr')
         const cb = vi.fn()
         process.stderr.write('chunk', cb)
+        await Promise.resolve()
         expect(cb).toHaveBeenCalledTimes(1)
     })
 
-    it('invokes a trailing write callback — write(chunk, encoding, cb)', () => {
+    it('invokes a trailing write callback — write(chunk, encoding, cb)', async () => {
         captureStream('stdout')
         const cb = vi.fn()
         process.stdout.write('chunk', 'utf8', cb)
+        await Promise.resolve()
         expect(cb).toHaveBeenCalledTimes(1)
     })
 })

@@ -30,6 +30,8 @@ describe('createTestProgram', () => {
             p.command('greet').action(() => {})
         })
 
-        await expect(program.parseAsync(['node', 'cli', 'nope'])).rejects.toBeDefined()
+        await expect(program.parseAsync(['node', 'cli', 'nope'])).rejects.toMatchObject({
+            code: 'commander.unknownCommand',
+        })
     })
 })
