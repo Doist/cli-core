@@ -1,3 +1,9 @@
+## [0.25.0](https://github.com/Doist/cli-core/compare/v0.24.0...v0.25.0) (2026-06-05)
+
+### Features
+
+* **auth:** add resource indicator, refresh, and client caching to DCR provider ([#60](https://github.com/Doist/cli-core/issues/60)) ([0db0cf3](https://github.com/Doist/cli-core/commit/0db0cf3e9258d5c2c31e877619e90cbfb9fd407f))
+
 ## [0.24.0](https://github.com/Doist/cli-core/compare/v0.23.0...v0.24.0) (2026-05-24)
 
 ### Features
