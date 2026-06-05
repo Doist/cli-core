@@ -1,5 +1,4 @@
 import type { AuthorizationServer, Client, TokenEndpointRequestOptions } from 'oauth4webapi'
-import { CliError, getErrorMessage } from '../../errors.js'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
     AuthAccount,
@@ -16,6 +15,7 @@ import {
     buildPkceAuthorizeUrl,
     expiresAtFromExpiresIn,
     loadOauth4webapi,
+    mapRefreshError,
     postTokenEndpoint,
     resolve,
 } from './oauth.js'
@@ -193,41 +193,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                     expiresAt: expiresAtFromExpiresIn(result.expires_in),
                 }
             } catch (error) {
-                // A ResponseBodyError carries the server's OAuth error JSON.
-                // `invalid_grant` (any status — some proxies remap 400 → 401)
-                // means the refresh token itself was rejected; re-login is the
-                // only recovery. Every other code is transient from cli-core's
-                // POV — but surface the actual `error`/`error_description` so a
-                // misconfigured server (e.g. `invalid_request: Missing
-                // client_secret`) is diagnosable rather than hidden behind
-                // oauth4webapi's generic "server responded with an error".
-                if (error instanceof oauth.ResponseBodyError) {
-                    const detail = error.error_description
-                        ? `${error.error} (${error.error_description})`
-                        : error.error
-                    if (error.error === 'invalid_grant') {
-                        throw new CliError(
-                            'AUTH_REFRESH_EXPIRED',
-                            `Refresh token rejected: ${detail}`,
-                            {
-                                hints: ['Re-run the login command to reauthorize.'],
-                            },
-                        )
-                    }
-                    throw new CliError(
-                        'AUTH_REFRESH_TRANSIENT',
-                        `Refresh request failed: ${detail}`,
-                        {
-                            hints: ['Try again.'],
-                        },
-                    )
-                }
-                // Network failure, non-JSON body, WWWAuthenticateChallengeError, …
-                throw new CliError(
-                    'AUTH_REFRESH_TRANSIENT',
-                    `Refresh request failed: ${getErrorMessage(error)}`,
-                    { hints: ['Try again.'] },
-                )
+                throw mapRefreshError(error, oauth)
             }
         },
     }

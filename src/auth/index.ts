@@ -45,6 +45,7 @@ export { createDcrProvider } from './providers/dcr.js'
 export type {
     DcrClientMetadata,
     DcrProviderOptions,
+    DcrRegisteredClient,
     DcrTokenEndpointAuthMethod,
 } from './providers/dcr.js'
 export type {

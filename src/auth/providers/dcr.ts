@@ -1,4 +1,9 @@
-import type { AuthorizationServer, Client, ClientAuth } from 'oauth4webapi'
+import type {
+    AuthorizationServer,
+    Client,
+    ClientAuth,
+    TokenEndpointRequestOptions,
+} from 'oauth4webapi'
 
 import { getErrorMessage } from '../../errors.js'
 import type { CliError } from '../../errors.js'
@@ -13,6 +18,7 @@ import type {
     ExchangeResult,
     PrepareInput,
     PrepareResult,
+    RefreshInput,
     ValidateInput,
 } from '../types.js'
 import {
@@ -20,9 +26,15 @@ import {
     buildPkceAuthorizeUrl,
     expiresAtFromExpiresIn,
     loadOauth4webapi,
+    mapRefreshError,
     resolve,
 } from './oauth.js'
 import type { OAuthLazyString } from './pkce.js'
+
+// Upper bound on the refresh-token POST, mirroring createPkceProvider — kept
+// under the refresh helper's stale-lock threshold so a timed-out grant releases
+// the lock before another invocation considers it abandoned.
+const REFRESH_TIMEOUT_MS = 10_000
 
 export type DcrTokenEndpointAuthMethod = 'client_secret_basic' | 'client_secret_post' | 'none'
 
@@ -51,6 +63,18 @@ export type DcrClientMetadata = {
     extra?: Record<string, unknown>
 }
 
+/**
+ * A registered DCR client, as stashed in the handshake by `prepare()` and
+ * surfaced to / supplied by the optional caching hooks. The shape a consumer
+ * persists to reuse a registration across logins.
+ */
+export type DcrRegisteredClient = {
+    clientId: string
+    clientSecret?: string
+    /** Server-authoritative method from the registration response, when supported. */
+    tokenEndpointAuthMethod?: DcrTokenEndpointAuthMethod
+}
+
 export type DcrProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     /** RFC 7591 registration endpoint. Function form supports per-flow base URLs. */
     registrationUrl: OAuthLazyString
@@ -58,12 +82,36 @@ export type DcrProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     authorizeUrl: OAuthLazyString
     /** OAuth 2.0 token endpoint. */
     tokenUrl: OAuthLazyString
+    /**
+     * RFC 8707 resource indicator. When set, it's appended to the authorize URL
+     * and added to the `authorization_code` and `refresh_token` token requests,
+     * so the authorization server issues a token whose audience targets this
+     * protected resource. Function form supports per-flow resources.
+     */
+    resource?: OAuthLazyString
     clientMetadata: DcrClientMetadata
     /** How to join scopes in the authorize URL. Default `' '` (RFC 6749). */
     scopeSeparator?: string
     verifierAlphabet?: string
     /** Default 64. */
     verifierLength?: number
+    /**
+     * Return a previously-registered client to reuse instead of registering a
+     * fresh one on every `prepare()`. `null`/`undefined` → register anew. The
+     * consumer owns where the client is persisted (config file, keyring, …);
+     * pair with `saveClient` to populate that store. cli-core does no caching
+     * of its own.
+     */
+    loadClient?: (
+        input: PrepareInput,
+    ) => Promise<DcrRegisteredClient | null | undefined> | DcrRegisteredClient | null | undefined
+    /**
+     * Persist a freshly-registered client so a later `prepare()` can reuse it
+     * via `loadClient`. Called only after a successful registration, never on a
+     * cache hit. A rejection propagates — handle/swallow inside the hook if a
+     * persistence failure shouldn't fail the login.
+     */
+    saveClient?: (client: DcrRegisteredClient, input: PrepareInput) => Promise<void> | void
     /** Probe an authenticated endpoint to confirm the token works and resolve the account. */
     validate: (input: ValidateInput) => Promise<TAccount>
     /**
@@ -91,16 +139,22 @@ const VALID_AUTH_METHODS: ReadonlySet<DcrTokenEndpointAuthMethod> = new Set([
  * driven by [`oauth4webapi`](https://github.com/panva/oauth4webapi) (an
  * optional peer dep — installed only by DCR/refresh consumers).
  *
- *  - `prepare`: register via `dynamicClientRegistrationRequest`. Stash the
- *    issued `client_id`, optional `client_secret`, and the server-returned
- *    `token_endpoint_auth_method` (RFC 7591 §3.2.1 — server is authoritative)
- *    in the handshake.
- *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake.
+ *  - `prepare`: reuse a cached client via `loadClient` when supplied, else
+ *    register via `dynamicClientRegistrationRequest` (persisting through
+ *    `saveClient`). Stash the issued `client_id`, optional `client_secret`, and
+ *    the server-returned `token_endpoint_auth_method` (RFC 7591 §3.2.1 — server
+ *    is authoritative) in the handshake.
+ *  - `authorize`: standard PKCE S256 with `client_id` read from the handshake,
+ *    plus the optional RFC 8707 `resource` indicator.
  *  - `exchangeCode`: `authorizationCodeGrantRequest` authenticated per the
  *    handshake's server-returned auth method (falling back to the configured
  *    one) — HTTP Basic (RFC 3986-encoded, see `clientSecretBasicRfc3986`),
  *    client-secret POST, or public-client `None` (the last also when the
- *    registration response carried no `client_secret`).
+ *    registration response carried no `client_secret`). Threads the `resource`
+ *    indicator into the token request.
+ *  - `refreshToken`: `refreshTokenGrantRequest` with the same client auth and
+ *    `resource` as the code exchange, bounded by a 10s timeout. Maps server
+ *    rejections onto `AUTH_REFRESH_EXPIRED` / `AUTH_REFRESH_TRANSIENT`.
  *  - `validateToken`: caller-supplied.
  */
 export function createDcrProvider<TAccount extends AuthAccount>(
@@ -112,6 +166,13 @@ export function createDcrProvider<TAccount extends AuthAccount>(
 
     return {
         async prepare(input: PrepareInput): Promise<PrepareResult> {
+            // Reuse a cached registration when the consumer supplies one — skip
+            // the registration round-trip (and the oauth4webapi load) entirely.
+            const cached = options.loadClient ? await options.loadClient(input) : undefined
+            if (cached?.clientId) {
+                return { handshake: clientHandshake(cached) }
+            }
+
             const oauth = await loadOauth4webapi({
                 code: 'AUTH_DCR_FAILED',
                 missingMessage: 'oauth4webapi is required for Dynamic Client Registration.',
@@ -147,9 +208,9 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                 )
             }
 
-            const handshake: Record<string, unknown> = { clientId: client.client_id }
+            const registered: DcrRegisteredClient = { clientId: client.client_id }
             if (typeof client.client_secret === 'string') {
-                handshake.clientSecret = client.client_secret
+                registered.clientSecret = client.client_secret
             }
             // Per RFC 7591 §3.2.1 the server's chosen method is authoritative.
             // Honour a supported one; fail fast on a method we can't perform
@@ -164,9 +225,10 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                         options.errorHints,
                     )
                 }
-                handshake.tokenEndpointAuthMethod = serverMethod
+                registered.tokenEndpointAuthMethod = serverMethod as DcrTokenEndpointAuthMethod
             }
-            return { handshake }
+            if (options.saveClient) await options.saveClient(registered, input)
+            return { handshake: clientHandshake(registered) }
         },
 
         async authorize(input: AuthorizeInput): Promise<AuthorizeResult> {
@@ -184,6 +246,9 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
+            const resource = options.resource
+                ? await resolve(options.resource, input.handshake, input.flags)
+                : undefined
             const authorizeUrl = buildPkceAuthorizeUrl({
                 authorizeUrl: await resolve(options.authorizeUrl, input.handshake, input.flags),
                 clientId,
@@ -192,6 +257,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                 scopes: input.scopes,
                 scopeSeparator,
                 codeChallenge: challenge,
+                additionalParameters: { resource },
             })
 
             return {
@@ -210,18 +276,6 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                     options.errorHints,
                 )
             }
-            const clientSecretRaw = input.handshake.clientSecret
-            const clientSecret = typeof clientSecretRaw === 'string' ? clientSecretRaw : undefined
-            const issuedMethodRaw = input.handshake.tokenEndpointAuthMethod
-            const issuedMethod: DcrTokenEndpointAuthMethod | undefined =
-                typeof issuedMethodRaw === 'string' &&
-                VALID_AUTH_METHODS.has(issuedMethodRaw as DcrTokenEndpointAuthMethod)
-                    ? (issuedMethodRaw as DcrTokenEndpointAuthMethod)
-                    : undefined
-            // Server-issued method wins (RFC 7591 §3.2.1). Fall back to the
-            // configured one only when the server didn't echo a known method.
-            const effectiveAuthMethod = issuedMethod ?? configuredAuthMethod
-
             const oauth = await loadOauth4webapi({
                 code: 'AUTH_TOKEN_EXCHANGE_FAILED',
                 missingMessage: 'oauth4webapi is required for the DCR token exchange.',
@@ -230,21 +284,12 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             })
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
             const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
+            const resource = options.resource
+                ? await resolve(options.resource, input.handshake, flags)
+                : undefined
             const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
             const client: Client = { client_id: clientId }
-
-            // Public-client fallback: a registration with no `client_secret`
-            // can't authenticate Basic/Post regardless of the requested method,
-            // so we POST `client_id` like a non-confidential client. Otherwise
-            // honour the effective auth method.
-            let clientAuth: ClientAuth
-            if (!clientSecret || effectiveAuthMethod === 'none') {
-                clientAuth = oauth.None()
-            } else if (effectiveAuthMethod === 'client_secret_post') {
-                clientAuth = oauth.ClientSecretPost(clientSecret)
-            } else {
-                clientAuth = clientSecretBasicRfc3986(clientSecret)
-            }
+            const clientAuth = selectClientAuth(oauth, input.handshake, configuredAuthMethod)
 
             try {
                 // The flow runtime owns CSRF state validation; skip oauth4webapi's
@@ -262,7 +307,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                     callbackParameters,
                     input.redirectUri,
                     verifier,
-                    customFetchOptions(oauth, options.fetchImpl),
+                    tokenRequestOptions(oauth, options.fetchImpl, resource),
                 )
                 const result = await oauth.processAuthorizationCodeResponse(as, client, response)
                 return {
@@ -282,6 +327,58 @@ export function createDcrProvider<TAccount extends AuthAccount>(
         },
 
         validateToken: options.validate,
+
+        async refreshToken(input: RefreshInput): Promise<ExchangeResult<TAccount>> {
+            const clientId = input.handshake.clientId
+            if (typeof clientId !== 'string') {
+                throw buildAuthError(
+                    'AUTH_REFRESH_UNAVAILABLE',
+                    'Internal: DCR refresh handshake missing clientId.',
+                    options.errorHints,
+                )
+            }
+            const oauth = await loadOauth4webapi({
+                code: 'AUTH_REFRESH_UNAVAILABLE',
+                missingMessage: 'oauth4webapi is required for refresh-token support.',
+                userHints: options.errorHints,
+                missingHints: MISSING_PEER_HINTS,
+            })
+            // Mirror `exchangeCode`: a resolver that reads `flags` sees the same
+            // view during silent refresh as it did at authorize time.
+            const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
+            const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
+            const resource = options.resource
+                ? await resolve(options.resource, input.handshake, flags)
+                : undefined
+            const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
+            const client: Client = { client_id: clientId }
+            const clientAuth = selectClientAuth(oauth, input.handshake, configuredAuthMethod)
+            // Bound the network call so a hung token endpoint can't hold the
+            // refresh lock forever (see createPkceProvider for the rationale).
+            const requestOptions = tokenRequestOptions(
+                oauth,
+                options.fetchImpl,
+                resource,
+                AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+            )
+            try {
+                const response = await oauth.refreshTokenGrantRequest(
+                    as,
+                    client,
+                    clientAuth,
+                    input.refreshToken,
+                    requestOptions,
+                )
+                const result = await oauth.processRefreshTokenResponse(as, client, response)
+                return {
+                    accessToken: result.access_token,
+                    refreshToken: result.refresh_token,
+                    expiresAt: expiresAtFromExpiresIn(result.expires_in),
+                }
+            } catch (error) {
+                throw mapRefreshError(error, oauth)
+            }
+        },
     }
 }
 
@@ -311,6 +408,61 @@ function customFetchOptions(
     fetchImpl: typeof fetch | undefined,
 ): { [k: symbol]: typeof fetch } | undefined {
     return fetchImpl ? { [oauth.customFetch]: fetchImpl } : undefined
+}
+
+/** Build the handshake fields a registered (or cached) client contributes. */
+function clientHandshake(client: DcrRegisteredClient): Record<string, unknown> {
+    const handshake: Record<string, unknown> = { clientId: client.clientId }
+    if (client.clientSecret !== undefined) handshake.clientSecret = client.clientSecret
+    if (client.tokenEndpointAuthMethod !== undefined) {
+        handshake.tokenEndpointAuthMethod = client.tokenEndpointAuthMethod
+    }
+    return handshake
+}
+
+/**
+ * Pick the token-endpoint client authentication for `authorization_code` /
+ * `refresh_token` grants from the handshake. Server-issued method wins (RFC
+ * 7591 §3.2.1), falling back to the configured one. A registration with no
+ * `client_secret` can't authenticate Basic/Post regardless of the requested
+ * method, so it drops to public-client `None` (POST `client_id` only).
+ */
+function selectClientAuth(
+    oauth: typeof import('oauth4webapi'),
+    handshake: Record<string, unknown>,
+    configuredAuthMethod: DcrTokenEndpointAuthMethod,
+): ClientAuth {
+    const clientSecretRaw = handshake.clientSecret
+    const clientSecret = typeof clientSecretRaw === 'string' ? clientSecretRaw : undefined
+    const issuedMethodRaw = handshake.tokenEndpointAuthMethod
+    const issuedMethod: DcrTokenEndpointAuthMethod | undefined =
+        typeof issuedMethodRaw === 'string' &&
+        VALID_AUTH_METHODS.has(issuedMethodRaw as DcrTokenEndpointAuthMethod)
+            ? (issuedMethodRaw as DcrTokenEndpointAuthMethod)
+            : undefined
+    const effectiveAuthMethod = issuedMethod ?? configuredAuthMethod
+
+    if (!clientSecret || effectiveAuthMethod === 'none') return oauth.None()
+    if (effectiveAuthMethod === 'client_secret_post') return oauth.ClientSecretPost(clientSecret)
+    return clientSecretBasicRfc3986(clientSecret)
+}
+
+/**
+ * Assemble the oauth4webapi token-request options: the injected `fetchImpl`
+ * (via the `customFetch` symbol), the RFC 8707 `resource` indicator (as an
+ * `additionalParameters` body field), and an optional abort `signal`.
+ */
+function tokenRequestOptions(
+    oauth: typeof import('oauth4webapi'),
+    fetchImpl: typeof fetch | undefined,
+    resource: string | undefined,
+    signal?: AbortSignal,
+): TokenEndpointRequestOptions {
+    const opts: TokenEndpointRequestOptions = {}
+    if (fetchImpl) opts[oauth.customFetch] = fetchImpl
+    if (resource) opts.additionalParameters = { resource }
+    if (signal) opts.signal = signal
+    return opts
 }
 
 /**

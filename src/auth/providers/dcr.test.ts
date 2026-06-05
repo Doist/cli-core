@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { createDcrProvider } from './dcr.js'
+import type { DcrRegisteredClient } from './dcr.js'
 
 type Account = { id: string; label?: string }
 
@@ -389,5 +390,171 @@ describe('createDcrProvider', () => {
         await expect(
             provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
         ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
+    })
+
+    it('threads the RFC 8707 resource indicator into the authorize URL and the token request body', async () => {
+        const { calls, fetchImpl } = makeFetchRecorder((u) =>
+            u === REGISTRATION_URL
+                ? registration({ client_id: 'pub' })
+                : token({ access_token: 'tok', expires_in: 3600 }),
+        )
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            resource: 'https://api.example.com',
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'none' },
+            validate,
+            fetchImpl,
+        })
+
+        const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
+        const authorize = await provider.authorize({
+            redirectUri: REDIRECT_URI,
+            state: 'state-123',
+            scopes: ['user:read'],
+            readOnly: false,
+            flags: {},
+            handshake: prepared.handshake,
+        })
+        expect(new URL(authorize.authorizeUrl).searchParams.get('resource')).toBe(
+            'https://api.example.com',
+        )
+
+        await provider.exchangeCode({
+            code: 'auth-code',
+            state: 'state-123',
+            redirectUri: REDIRECT_URI,
+            handshake: authorize.handshake,
+        })
+        const tokenBody = bodyOf(calls.find((c) => c.url === TOKEN_URL)!)
+        expect(tokenBody.get('resource')).toBe('https://api.example.com')
+    })
+
+    it('refreshToken runs the refresh_token grant, forwarding the resource indicator', async () => {
+        const { calls, fetchImpl } = makeFetchRecorder(() =>
+            token({ access_token: 'tok-2', refresh_token: 'rt-2', expires_in: 3600 }),
+        )
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            resource: 'https://api.example.com',
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'none' },
+            validate,
+            fetchImpl,
+        })
+
+        const result = await provider.refreshToken!({
+            refreshToken: 'rt-1',
+            handshake: { clientId: 'pub' },
+        })
+        expect(result.accessToken).toBe('tok-2')
+        expect(result.refreshToken).toBe('rt-2')
+        expect(result.expiresAt).toBeGreaterThan(Date.now())
+
+        const tokenBody = bodyOf(calls.find((c) => c.url === TOKEN_URL)!)
+        expect(tokenBody.get('grant_type')).toBe('refresh_token')
+        expect(tokenBody.get('refresh_token')).toBe('rt-1')
+        expect(tokenBody.get('resource')).toBe('https://api.example.com')
+    })
+
+    it('refreshToken authenticates a confidential client per the handshake auth method', async () => {
+        const { calls, fetchImpl } = makeFetchRecorder(() => token({ access_token: 'tok' }))
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'client_secret_post' },
+            validate,
+            fetchImpl,
+        })
+
+        await provider.refreshToken!({
+            refreshToken: 'rt',
+            handshake: {
+                clientId: 'cid',
+                clientSecret: 'sec',
+                tokenEndpointAuthMethod: 'client_secret_post',
+            },
+        })
+        const tokenBody = bodyOf(calls.find((c) => c.url === TOKEN_URL)!)
+        expect(tokenBody.get('client_id')).toBe('cid')
+        expect(tokenBody.get('client_secret')).toBe('sec')
+    })
+
+    it('maps an invalid_grant refresh rejection to AUTH_REFRESH_EXPIRED', async () => {
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'none' },
+            validate,
+            fetchImpl: (() =>
+                Promise.resolve(respond({ error: 'invalid_grant' }, 400))) as typeof fetch,
+        })
+        await expect(
+            provider.refreshToken!({ refreshToken: 'rt', handshake: { clientId: 'pub' } }),
+        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_EXPIRED' })
+    })
+
+    it('refreshToken without a clientId in the handshake is AUTH_REFRESH_UNAVAILABLE', async () => {
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI' },
+            validate,
+            fetchImpl: (() => Promise.resolve(token({ access_token: 'x' }))) as typeof fetch,
+        })
+        await expect(
+            provider.refreshToken!({ refreshToken: 'rt', handshake: {} }),
+        ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
+    })
+
+    it('reuses a cached client via loadClient without a registration POST', async () => {
+        const { calls, fetchImpl } = makeFetchRecorder(() => {
+            throw new Error('registration must not be called on a cache hit')
+        })
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI' },
+            loadClient: () => ({ clientId: 'cached', tokenEndpointAuthMethod: 'none' }),
+            validate,
+            fetchImpl,
+        })
+
+        const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
+        expect(prepared.handshake).toEqual({
+            clientId: 'cached',
+            tokenEndpointAuthMethod: 'none',
+        })
+        expect(calls).toHaveLength(0)
+    })
+
+    it('registers and persists a fresh client via saveClient on a cache miss', async () => {
+        const saved: DcrRegisteredClient[] = []
+        const { calls, fetchImpl } = makeFetchRecorder(() =>
+            registration({ client_id: 'fresh', client_secret: 'sec' }),
+        )
+        const provider = createDcrProvider<Account>({
+            registrationUrl: REGISTRATION_URL,
+            authorizeUrl: AUTHORIZE_URL,
+            tokenUrl: TOKEN_URL,
+            clientMetadata: { clientName: 'CLI' },
+            loadClient: () => null,
+            saveClient: (client) => {
+                saved.push(client)
+            },
+            validate,
+            fetchImpl,
+        })
+
+        const prepared = await provider.prepare!({ redirectUri: REDIRECT_URI, flags: {} })
+        expect(calls).toHaveLength(1)
+        expect(prepared.handshake).toEqual({ clientId: 'fresh', clientSecret: 'sec' })
+        expect(saved).toEqual([{ clientId: 'fresh', clientSecret: 'sec' }])
     })
 })
