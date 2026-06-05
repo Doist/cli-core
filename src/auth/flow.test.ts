@@ -488,13 +488,11 @@ describe('runOAuthFlow default opener selection', () => {
         Object.defineProperty(process, 'platform', { value, configurable: true })
     }
 
-    it('routes WSL via cmd.exe with the URL quoted and `%` doubled', async () => {
-        // Two escapes are load-bearing for cmd.exe:
-        //   1. quote the URL so `&` doesn't split the command line
-        //   2. double `%` so cmd.exe doesn't try to expand percent-encoded
-        //      OAuth params (`%3A`, `%2F`, …) as env-var references.
-        // Use an authorize URL with both `&` and `%` so the assertion
-        // exercises both escapes.
+    it('routes WSL via rundll32, passing the URL verbatim (no shell, no escaping)', async () => {
+        // rundll32 is not a shell, so the URL is handed to the protocol handler
+        // as-is: `&` can't split the command and `%HH` (incl. multi-byte UTF-8
+        // like `%C3%A9`) can't be mistaken for `%VAR%` env-expansion. The URL
+        // here carries `&`, ASCII `%HH`, and an encoded `é` to lock that in.
         stubPlatform('linux')
         vi.mocked(readFileSync).mockReturnValue('Linux 5.15 #1 SMP microsoft-WSL2')
         const execFileMock = vi.mocked(execFile)
@@ -510,7 +508,7 @@ describe('runOAuthFlow default opener selection', () => {
 
         const { provider, getRedirect } = instrument({
             authorize: async (input) => ({
-                authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}&redirect_uri=http%3A%2F%2Flocalhost%3A8080`,
+                authorizeUrl: `https://example.com/oauth/authorize?state=${input.state}&redirect_uri=http%3A%2F%2Flocalhost%3A8080&name=Andr%C3%A9`,
                 handshake: { codeVerifier: 'v1' },
             }),
         })
@@ -522,11 +520,11 @@ describe('runOAuthFlow default opener selection', () => {
         expect(execFileMock).toHaveBeenCalledTimes(1)
         const [cmd, args] = execFileMock.mock.calls[0]
         const url = onAuthorizeUrl.mock.calls[0][0] as string
-        expect(cmd).toBe('cmd.exe')
-        expect(args).toEqual(['/c', 'start', '""', `"${url.replaceAll('%', '%%')}"`])
-        // Sanity: the URL we built does contain both special chars.
-        expect(url).toMatch(/&/)
-        expect(url).toMatch(/%/)
+        expect(cmd).toBe('rundll32.exe')
+        // URL is passed verbatim — no quoting, no caret-escaping, no `%%`.
+        expect(args).toEqual(['url.dll,FileProtocolHandler', url])
+        expect(url).toContain('&')
+        expect(url).toContain('%C3%A9')
     })
 
     it('skips the default opener entirely on headless Linux', async () => {
