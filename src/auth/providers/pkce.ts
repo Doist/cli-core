@@ -148,6 +148,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 accessToken: result.accessToken,
                 refreshToken: result.refreshToken,
                 expiresAt: result.expiresAt,
+                scope: result.scope,
             }
         },
 
@@ -191,6 +192,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                     accessToken: result.access_token,
                     refreshToken: result.refresh_token,
                     expiresAt: expiresAtFromExpiresIn(result.expires_in),
+                    scope: result.scope,
                 }
             } catch (error) {
                 throw mapRefreshError(error, oauth)

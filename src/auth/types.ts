@@ -64,6 +64,13 @@ export type ExchangeResult<TAccount extends AuthAccount = AuthAccount> = {
     expiresAt?: number
     /** Refresh-token expiry, unix-epoch ms. */
     refreshTokenExpiresAt?: number
+    /**
+     * The raw `scope` from the token response, when the server returned one
+     * (RFC 6749 §5.1 — present especially when the granted scope differs from
+     * what was requested). Lets a provider's `validateToken` record the
+     * server-authoritative scope rather than re-deriving it from the request.
+     */
+    scope?: string
     /** Set when the token endpoint already identifies the account; skips `validateToken`. */
     account?: TAccount
 }

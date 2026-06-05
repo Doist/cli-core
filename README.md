@@ -586,12 +586,12 @@ A `TokenStore` MAY throw `CliError('AUTH_STORE_READ_FAILED', …)` from `active(
 
 Implement `AuthProvider` directly for device code, magic-link, username / password, or any other flow not covered by `createPkceProvider` / `createDcrProvider`. The four hooks fire in this order during `runOAuthFlow`:
 
-| Hook            | When                               | Purpose                                                                                                       |
-| --------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `prepare?`      | Before the callback server binds   | Pre-flight (e.g. DCR to mint a `client_id`). The returned `handshake` is threaded into every later hook.      |
-| `authorize`     | After the callback server is up    | Build the URL the user opens. Returns the URL plus any handshake state needed at exchange (PKCE verifier, …). |
-| `exchangeCode`  | After the browser callback fires   | Trade the `code` for an `accessToken`. Optionally returns a fully-resolved `account` to skip `validateToken`. |
-| `validateToken` | When `exchangeCode` had no account | Probe an authenticated endpoint to resolve the account.                                                       |
+| Hook            | When                               | Purpose                                                                                                                                                                                                   |
+| --------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prepare?`      | Before the callback server binds   | Pre-flight (e.g. DCR to mint a `client_id`). The returned `handshake` is threaded into every later hook.                                                                                                  |
+| `authorize`     | After the callback server is up    | Build the URL the user opens. Returns the URL plus any handshake state needed at exchange (PKCE verifier, …).                                                                                             |
+| `exchangeCode`  | After the browser callback fires   | Trade the `code` for an `accessToken`. May also return the server-granted `scope` (so `validateToken` records the authoritative scope) and optionally a fully-resolved `account` to skip `validateToken`. |
+| `validateToken` | When `exchangeCode` had no account | Probe an authenticated endpoint to resolve the account.                                                                                                                                                   |
 
 Skeleton:
 

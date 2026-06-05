@@ -330,6 +330,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                     accessToken: result.access_token,
                     refreshToken: result.refresh_token,
                     expiresAt: expiresAtFromExpiresIn(result.expires_in),
+                    scope: result.scope,
                 }
             } catch (error) {
                 throw mapOauthError(
@@ -397,6 +398,7 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                     accessToken: result.access_token,
                     refreshToken: result.refresh_token,
                     expiresAt: expiresAtFromExpiresIn(result.expires_in),
+                    scope: result.scope,
                 }
             } catch (error) {
                 throw mapRefreshError(error, oauth)

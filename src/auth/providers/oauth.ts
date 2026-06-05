@@ -151,6 +151,8 @@ type PostTokenEndpointResult = {
     refreshToken?: string
     /** Unix-epoch ms. Computed from `expires_in` when the server returns it. */
     expiresAt?: number
+    /** Raw `scope` from the token response, when present (RFC 6749 §5.1). */
+    scope?: string
 }
 
 /**
@@ -174,6 +176,7 @@ export async function postTokenEndpoint(
         access_token?: string
         refresh_token?: string
         expires_in?: number
+        scope?: string
     }>({
         url: input.url,
         headers,
@@ -194,6 +197,7 @@ export async function postTokenEndpoint(
         accessToken: payload.access_token,
         refreshToken: payload.refresh_token,
         expiresAt: expiresAtFromExpiresIn(payload.expires_in),
+        scope: typeof payload.scope === 'string' ? payload.scope : undefined,
     }
 }
 

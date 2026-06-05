@@ -396,7 +396,7 @@ describe('createDcrProvider', () => {
         const { calls, fetchImpl } = makeFetchRecorder((u) =>
             u === REGISTRATION_URL
                 ? registration({ client_id: 'pub' })
-                : token({ access_token: 'tok', expires_in: 3600 }),
+                : token({ access_token: 'tok', expires_in: 3600, scope: 'user:read' }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -421,19 +421,26 @@ describe('createDcrProvider', () => {
             'https://api.example.com',
         )
 
-        await provider.exchangeCode({
+        const result = await provider.exchangeCode({
             code: 'auth-code',
             state: 'state-123',
             redirectUri: REDIRECT_URI,
             handshake: authorize.handshake,
         })
+        // The server-granted scope is surfaced for validateToken to record.
+        expect(result.scope).toBe('user:read')
         const tokenBody = bodyOf(calls.find((c) => c.url === TOKEN_URL)!)
         expect(tokenBody.get('resource')).toBe('https://api.example.com')
     })
 
     it('refreshToken runs the refresh_token grant, forwarding the resource indicator', async () => {
         const { calls, fetchImpl } = makeFetchRecorder(() =>
-            token({ access_token: 'tok-2', refresh_token: 'rt-2', expires_in: 3600 }),
+            token({
+                access_token: 'tok-2',
+                refresh_token: 'rt-2',
+                expires_in: 3600,
+                scope: 'user:read',
+            }),
         )
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
@@ -452,6 +459,7 @@ describe('createDcrProvider', () => {
         expect(result.accessToken).toBe('tok-2')
         expect(result.refreshToken).toBe('rt-2')
         expect(result.expiresAt).toBeGreaterThan(Date.now())
+        expect(result.scope).toBe('user:read')
 
         const tokenBody = bodyOf(calls.find((c) => c.url === TOKEN_URL)!)
         expect(tokenBody.get('grant_type')).toBe('refresh_token')
