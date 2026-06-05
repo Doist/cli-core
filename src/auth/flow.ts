@@ -484,9 +484,9 @@ async function openOrFallback(
 
 async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | null> {
     // WSL check must run before the headless check: WSL is `platform === 'linux'`
-    // and often has no DISPLAY, but `cmd.exe` does work and reaches the user's
-    // real Windows browser, so it's worth the spawn.
-    if (isWsl()) return openViaCmdExe
+    // and often has no DISPLAY, but the Windows interop opener does work and
+    // reaches the user's real Windows browser, so it's worth the spawn.
+    if (isWsl()) return openViaWindows
     if (isHeadlessLinux()) return null
     try {
         const mod = (await import('open')) as { default: (url: string) => Promise<unknown> }
@@ -500,31 +500,21 @@ async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | n
 
 const execFileAsync = promisify(execFile)
 
-// `cmd.exe /c` is a shell, so cmd metacharacters in the URL have to be escaped
-// or they break the command. The naive defence — wrapping the URL in double
-// quotes — does NOT work under WSL: the interop layer re-quotes argv entries
-// itself, so the literal quotes are mangled and an unescaped `&` (every OAuth
-// URL has several) still acts as a statement separator. Only the prefix up to
-// the first `&` then reaches `start`, and Windows tries to open that fragment
-// as a path ("Windows cannot find '\https://…'").
+// Launch the Windows default browser through rundll32's URL protocol handler.
+// Crucially this is NOT a shell, so the URL is passed as a single argv that
+// `CreateProcess` hands to the handler verbatim — there is no `cmd.exe` parsing
+// pass, so `&` can't split the command and percent-encoded bytes (including
+// multi-byte UTF-8 like `%C3%A9` for `é`) can't be mistaken for `%VAR%`
+// env-expansion.
 //
-// Caret-escaping the metacharacters survives interop (there are no quotes for
-// it to mangle) and is the reliable way to pass them through cmd verbatim.
-//
-// `%` is deliberately left untouched: OAuth URLs are RFC 3986 percent-encoded
-// (`%HH`), which never matches cmd's `%NAME%` env-expansion, and there is no
-// command-line caret-escape for `%`. Doubling it to `%%` does NOT collapse on
-// the `cmd /c` command line (that only happens inside batch files), so it would
-// corrupt every `%HH` byte in the URL.
-export function escapeUrlForCmd(url: string): string {
-    return url.replace(/[&|<>^()"]/g, '^$&')
-}
-
-// `start ""` — the empty title arg is mandatory; otherwise `start` consumes
-// the URL as a window title and never launches a browser. (`execFile`'s
-// no-shell guarantee doesn't apply when the target is itself a shell.)
-async function openViaCmdExe(url: string): Promise<void> {
-    await execFileAsync('cmd.exe', ['/c', 'start', '""', escapeUrlForCmd(url)], {
+// The previous `cmd.exe /c start "" "<url>"` approach was doubly broken on WSL:
+// its literal double-quotes don't survive WSL interop's own argv re-quoting (so
+// `&` leaked through and Windows opened the truncated fragment as a path —
+// "Windows cannot find '\https://…'"), and `%`→`%%` doubling doesn't collapse on
+// the `cmd /c` command line, so it corrupted every `%HH` byte. Avoiding the
+// shell sidesteps both, with no fragile escaping to maintain.
+async function openViaWindows(url: string): Promise<void> {
+    await execFileAsync('rundll32.exe', ['url.dll,FileProtocolHandler', url], {
         windowsHide: true,
     })
 }
