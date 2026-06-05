@@ -47,11 +47,23 @@ type BuildPkceAuthorizeUrlInput = {
     scopes: string[]
     scopeSeparator: string
     codeChallenge: string
+    /**
+     * Extra query parameters for the authorize URL, e.g. the RFC 8707
+     * `resource` indicator. Applied *before* the standard PKCE params so the
+     * latter always win — a caller can't accidentally clobber
+     * `client_id`/`state`/etc. `undefined` values are skipped.
+     */
+    additionalParameters?: Record<string, string | undefined>
 }
 
 /** Construct the standard PKCE S256 authorize URL. */
 export function buildPkceAuthorizeUrl(input: BuildPkceAuthorizeUrlInput): string {
     const url = new URL(input.authorizeUrl)
+    // Set extras first; the standard params below overwrite any collision, so
+    // the PKCE essentials can never be displaced by a caller-supplied value.
+    for (const [key, value] of Object.entries(input.additionalParameters ?? {})) {
+        if (value !== undefined) url.searchParams.set(key, value)
+    }
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('client_id', input.clientId)
     url.searchParams.set('redirect_uri', input.redirectUri)
@@ -139,6 +151,8 @@ type PostTokenEndpointResult = {
     refreshToken?: string
     /** Unix-epoch ms. Computed from `expires_in` when the server returns it. */
     expiresAt?: number
+    /** Raw `scope` from the token response, when present (RFC 6749 §5.1). */
+    scope?: string
 }
 
 /**
@@ -162,6 +176,7 @@ export async function postTokenEndpoint(
         access_token?: string
         refresh_token?: string
         expires_in?: number
+        scope?: string
     }>({
         url: input.url,
         headers,
@@ -182,12 +197,47 @@ export async function postTokenEndpoint(
         accessToken: payload.access_token,
         refreshToken: payload.refresh_token,
         expiresAt: expiresAtFromExpiresIn(payload.expires_in),
+        scope: typeof payload.scope === 'string' ? payload.scope : undefined,
     }
 }
 
 /** Convert an OAuth `expires_in` (seconds from now) into a Unix-epoch ms deadline. */
 export function expiresAtFromExpiresIn(expiresIn: number | undefined): number | undefined {
     return typeof expiresIn === 'number' ? Date.now() + expiresIn * 1000 : undefined
+}
+
+/**
+ * Map a `refreshTokenGrantRequest` failure onto the refresh error taxonomy,
+ * shared by every provider that exposes `refreshToken`. A `ResponseBodyError`
+ * carries the server's OAuth error JSON: `invalid_grant` (any status — some
+ * proxies remap 400 → 401) means the refresh token itself was rejected, so
+ * re-login is the only recovery (`AUTH_REFRESH_EXPIRED`). Every other code is
+ * transient from cli-core's POV (`AUTH_REFRESH_TRANSIENT`) — but the actual
+ * `error`/`error_description` is surfaced so a misconfigured server is
+ * diagnosable rather than hidden behind a generic message.
+ */
+export function mapRefreshError(error: unknown, oauth: typeof import('oauth4webapi')): CliError {
+    if (error instanceof oauth.ResponseBodyError) {
+        const detail = error.error_description
+            ? `${error.error} (${error.error_description})`
+            : error.error
+        if (error.error === 'invalid_grant') {
+            return new CliError('AUTH_REFRESH_EXPIRED', `Refresh token rejected: ${detail}`, {
+                hints: ['Re-run the login command to reauthorize.'],
+            })
+        }
+        return new CliError('AUTH_REFRESH_TRANSIENT', `Refresh request failed: ${detail}`, {
+            hints: ['Try again.'],
+        })
+    }
+    // Network failure, non-JSON body, WWWAuthenticateChallengeError, …
+    return new CliError(
+        'AUTH_REFRESH_TRANSIENT',
+        `Refresh request failed: ${getErrorMessage(error)}`,
+        {
+            hints: ['Try again.'],
+        },
+    )
 }
 
 // Optional peer dep — only DCR and refresh consumers install it. The dynamic
