@@ -27,7 +27,7 @@ import {
     buildTokenStore,
     ellieSattler,
 } from '../testing/accounts.js'
-import { type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
+import { escapeUrlForCmd, type RunOAuthFlowOptions, runOAuthFlow } from './flow.js'
 import type { AuthProvider, TokenBundle, TokenStore } from './types.js'
 
 /** Tiny in-memory `TokenStore` so the flow tests don't need disk I/O. */
@@ -488,13 +488,11 @@ describe('runOAuthFlow default opener selection', () => {
         Object.defineProperty(process, 'platform', { value, configurable: true })
     }
 
-    it('routes WSL via cmd.exe with the URL quoted and `%` doubled', async () => {
-        // Two escapes are load-bearing for cmd.exe:
-        //   1. quote the URL so `&` doesn't split the command line
-        //   2. double `%` so cmd.exe doesn't try to expand percent-encoded
-        //      OAuth params (`%3A`, `%2F`, …) as env-var references.
-        // Use an authorize URL with both `&` and `%` so the assertion
-        // exercises both escapes.
+    it('routes WSL via cmd.exe, caret-escaping `&` and leaving `%HH` intact', async () => {
+        // cmd.exe is a shell: `&` must be caret-escaped or it splits the command
+        // (quoting doesn't survive WSL interop). `%HH` is left alone — doubling
+        // it would not collapse on the `cmd /c` command line and would corrupt
+        // the URL. Use an authorize URL with both `&` and `%` to exercise this.
         stubPlatform('linux')
         vi.mocked(readFileSync).mockReturnValue('Linux 5.15 #1 SMP microsoft-WSL2')
         const execFileMock = vi.mocked(execFile)
@@ -523,10 +521,32 @@ describe('runOAuthFlow default opener selection', () => {
         const [cmd, args] = execFileMock.mock.calls[0]
         const url = onAuthorizeUrl.mock.calls[0][0] as string
         expect(cmd).toBe('cmd.exe')
-        expect(args).toEqual(['/c', 'start', '""', `"${url.replaceAll('%', '%%')}"`])
+        expect(args).toEqual(['/c', 'start', '""', escapeUrlForCmd(url)])
+        // The escaped arg caret-protects `&`, leaves `%HH` untouched, and adds no
+        // surrounding quotes — so stripping the carets recovers the exact URL.
+        const escaped = (args as string[])[3]
+        expect(escaped).toContain('^&')
+        expect(escaped).toContain('%3A')
+        expect(escaped).not.toContain('%%')
+        expect(escaped.startsWith('"')).toBe(false)
+        expect(escaped.replaceAll('^', '')).toBe(url)
         // Sanity: the URL we built does contain both special chars.
         expect(url).toMatch(/&/)
         expect(url).toMatch(/%/)
+    })
+
+    it('escapeUrlForCmd caret-escapes cmd metacharacters and preserves percent-encoding', () => {
+        // `&` `|` `<` `>` `^` `(` `)` `"` each get a single caret prefix; `%HH`
+        // and the rest of the URL pass through verbatim. Stripping carets must
+        // round-trip to the original.
+        const url =
+            'https://todoist.com/oauth/authorize?resource=https%3A%2F%2Fcomms.todoist.com' +
+            '&response_type=code&redirect_uri=http%3A%2F%2Flocalhost%3A8766%2Fcallback&scope=user%3Aread'
+        const escaped = escapeUrlForCmd(url)
+        expect(escaped).not.toContain('%%')
+        expect(escaped).not.toMatch(/(^|[^^])&/) // every `&` is caret-prefixed
+        expect(escaped.replaceAll('^', '')).toBe(url)
+        expect(escapeUrlForCmd('a&b|c<d>e(f)g^h"i')).toBe('a^&b^|c^<d^>e^(f^)g^^h^"i')
     })
 
     it('skips the default opener entirely on headless Linux', async () => {

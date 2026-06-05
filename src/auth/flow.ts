@@ -500,20 +500,31 @@ async function loadDefaultOpener(): Promise<((url: string) => Promise<void>) | n
 
 const execFileAsync = promisify(execFile)
 
-// Two layers of escaping are needed because `cmd.exe /c` is a shell:
-//   1. Wrap the URL in literal double quotes. WSL interop only auto-quotes
-//      args that contain spaces; an OAuth URL (no spaces, plenty of `&`s)
-//      would otherwise be re-parsed by cmd.exe with `&` acting as a
-//      statement separator, so only the prefix up to the first `&` would
-//      reach `start`.
-//   2. Double every `%` to `%%`. cmd.exe expands `%NAME%` even inside
-//      quoted strings; OAuth URLs are full of percent-encoded bytes
-//      (`%3A`, `%2F`, …) and a chance match against a defined env var
-//      (`%PATH%`, `%TEMP%`, …) would silently mangle the URL.
+// `cmd.exe /c` is a shell, so cmd metacharacters in the URL have to be escaped
+// or they break the command. The naive defence — wrapping the URL in double
+// quotes — does NOT work under WSL: the interop layer re-quotes argv entries
+// itself, so the literal quotes are mangled and an unescaped `&` (every OAuth
+// URL has several) still acts as a statement separator. Only the prefix up to
+// the first `&` then reaches `start`, and Windows tries to open that fragment
+// as a path ("Windows cannot find '\https://…'").
+//
+// Caret-escaping the metacharacters survives interop (there are no quotes for
+// it to mangle) and is the reliable way to pass them through cmd verbatim.
+//
+// `%` is deliberately left untouched: OAuth URLs are RFC 3986 percent-encoded
+// (`%HH`), which never matches cmd's `%NAME%` env-expansion, and there is no
+// command-line caret-escape for `%`. Doubling it to `%%` does NOT collapse on
+// the `cmd /c` command line (that only happens inside batch files), so it would
+// corrupt every `%HH` byte in the URL.
+export function escapeUrlForCmd(url: string): string {
+    return url.replace(/[&|<>^()"]/g, '^$&')
+}
+
 // `start ""` — the empty title arg is mandatory; otherwise `start` consumes
 // the URL as a window title and never launches a browser. (`execFile`'s
 // no-shell guarantee doesn't apply when the target is itself a shell.)
 async function openViaCmdExe(url: string): Promise<void> {
-    const escaped = url.replaceAll('%', '%%')
-    await execFileAsync('cmd.exe', ['/c', 'start', '""', `"${escaped}"`], { windowsHide: true })
+    await execFileAsync('cmd.exe', ['/c', 'start', '""', escapeUrlForCmd(url)], {
+        windowsHide: true,
+    })
 }
