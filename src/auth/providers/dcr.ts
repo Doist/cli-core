@@ -101,6 +101,14 @@ export type DcrProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
      * consumer owns where the client is persisted (config file, keyring, …);
      * pair with `saveClient` to populate that store. cli-core does no caching
      * of its own.
+     *
+     * IMPORTANT: an RFC 7591 registration is bound to the `redirect_uris` it
+     * was registered with, and `runOAuthFlow` can pick a different callback
+     * port/path on a later login. Key the cache on `input.redirectUri` (it's
+     * provided here) and return a hit only for a matching URI, or the reused
+     * client will send an unregistered `redirect_uri` and the authorize call
+     * will fail. The returned shape is validated (string `clientId`, supported
+     * `tokenEndpointAuthMethod`) before use.
      */
     loadClient?: (
         input: PrepareInput,
@@ -168,8 +176,14 @@ export function createDcrProvider<TAccount extends AuthAccount>(
         async prepare(input: PrepareInput): Promise<PrepareResult> {
             // Reuse a cached registration when the consumer supplies one — skip
             // the registration round-trip (and the oauth4webapi load) entirely.
-            const cached = options.loadClient ? await options.loadClient(input) : undefined
-            if (cached?.clientId) {
+            // Validate the persisted shape so a cached client behaves exactly
+            // like a freshly registered one rather than failing later in
+            // authorize/exchange or silently using the wrong auth method.
+            const cached = validateCachedClient(
+                options.loadClient ? await options.loadClient(input) : undefined,
+                options.errorHints,
+            )
+            if (cached) {
                 return { handshake: clientHandshake(cached) }
             }
 
@@ -246,11 +260,13 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
-            const resource = options.resource
-                ? await resolve(options.resource, input.handshake, input.flags)
-                : undefined
+            // Resolve concurrently — both may be async (config read / prompt).
+            const [authorizeBaseUrl, resource] = await Promise.all([
+                resolve(options.authorizeUrl, input.handshake, input.flags),
+                resolveResource(options.resource, input.handshake, input.flags),
+            ])
             const authorizeUrl = buildPkceAuthorizeUrl({
-                authorizeUrl: await resolve(options.authorizeUrl, input.handshake, input.flags),
+                authorizeUrl: authorizeBaseUrl,
                 clientId,
                 redirectUri: input.redirectUri,
                 state: input.state,
@@ -283,10 +299,10 @@ export function createDcrProvider<TAccount extends AuthAccount>(
                 missingHints: MISSING_PEER_HINTS,
             })
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
-            const resource = options.resource
-                ? await resolve(options.resource, input.handshake, flags)
-                : undefined
+            const [tokenUrl, resource] = await Promise.all([
+                resolve(options.tokenUrl, input.handshake, flags),
+                resolveResource(options.resource, input.handshake, flags),
+            ])
             const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
             const client: Client = { client_id: clientId }
             const clientAuth = selectClientAuth(oauth, input.handshake, configuredAuthMethod)
@@ -329,11 +345,18 @@ export function createDcrProvider<TAccount extends AuthAccount>(
         validateToken: options.validate,
 
         async refreshToken(input: RefreshInput): Promise<ExchangeResult<TAccount>> {
+            // Unlike createPkceProvider (whose clientId is a static provider
+            // option), a DCR clientId is minted at registration. cli-core does
+            // not persist the handshake — `runOAuthFlow` stores only the token
+            // bundle — so the consumer must supply it on the refresh handshake,
+            // reconstructed from persisted account metadata, via
+            // `refreshAccessToken({ handshake })`. (Confidential clients pass
+            // `clientSecret`/`tokenEndpointAuthMethod` the same way.)
             const clientId = input.handshake.clientId
             if (typeof clientId !== 'string') {
                 throw buildAuthError(
                     'AUTH_REFRESH_UNAVAILABLE',
-                    'Internal: DCR refresh handshake missing clientId.',
+                    'DCR refresh requires a clientId on the handshake (reconstruct it from the stored account and pass it via refreshAccessToken({ handshake })).',
                     options.errorHints,
                 )
             }
@@ -346,10 +369,10 @@ export function createDcrProvider<TAccount extends AuthAccount>(
             // Mirror `exchangeCode`: a resolver that reads `flags` sees the same
             // view during silent refresh as it did at authorize time.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
-            const resource = options.resource
-                ? await resolve(options.resource, input.handshake, flags)
-                : undefined
+            const [tokenUrl, resource] = await Promise.all([
+                resolve(options.tokenUrl, input.handshake, flags),
+                resolveResource(options.resource, input.handshake, flags),
+            ])
             const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
             const client: Client = { client_id: clientId }
             const clientAuth = selectClientAuth(oauth, input.handshake, configuredAuthMethod)
@@ -408,6 +431,49 @@ function customFetchOptions(
     fetchImpl: typeof fetch | undefined,
 ): { [k: symbol]: typeof fetch } | undefined {
     return fetchImpl ? { [oauth.customFetch]: fetchImpl } : undefined
+}
+
+/**
+ * Validate a client returned by `loadClient` before trusting it. A JSON-backed
+ * hook can hand back arbitrary shapes; reject a missing/empty `clientId` or an
+ * unsupported `tokenEndpointAuthMethod` here so a cached client can't behave
+ * differently from a freshly registered one (which the registration path
+ * already validates). Returns `undefined` for a cache miss (`null`/`undefined`).
+ */
+function validateCachedClient(
+    cached: DcrRegisteredClient | null | undefined,
+    errorHints: string[] | undefined,
+): DcrRegisteredClient | undefined {
+    if (cached === null || cached === undefined) return undefined
+    if (typeof cached.clientId !== 'string' || cached.clientId.length === 0) {
+        throw buildAuthError(
+            'AUTH_DCR_FAILED',
+            'Cached OAuth client is missing a string clientId.',
+            errorHints,
+        )
+    }
+    if (
+        cached.tokenEndpointAuthMethod !== undefined &&
+        !VALID_AUTH_METHODS.has(cached.tokenEndpointAuthMethod)
+    ) {
+        throw buildAuthError(
+            'AUTH_DCR_FAILED',
+            `Cached OAuth client has an unsupported token_endpoint_auth_method: ${String(
+                cached.tokenEndpointAuthMethod,
+            )}.`,
+            errorHints,
+        )
+    }
+    return cached
+}
+
+/** Resolve the optional RFC 8707 resource indicator, or `undefined` when unset. */
+function resolveResource(
+    resource: OAuthLazyString | undefined,
+    handshake: Record<string, unknown>,
+    flags: Record<string, unknown>,
+): Promise<string | undefined> {
+    return resource ? resolve(resource, handshake, flags) : Promise.resolve(undefined)
 }
 
 /** Build the handshake fields a registered (or cached) client contributes. */

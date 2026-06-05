@@ -459,13 +459,17 @@ describe('createDcrProvider', () => {
         expect(tokenBody.get('resource')).toBe('https://api.example.com')
     })
 
-    it('refreshToken authenticates a confidential client per the handshake auth method', async () => {
+    it('refreshToken honours the handshake auth method over the configured one', async () => {
         const { calls, fetchImpl } = makeFetchRecorder(() => token({ access_token: 'tok' }))
+        // Configured: client_secret_basic. Handshake (server-issued at
+        // registration): client_secret_post. The refresh must follow the
+        // handshake — so the secret goes in the body and no Basic header is
+        // sent. Differing the two values is what makes this assert precedence.
         const provider = createDcrProvider<Account>({
             registrationUrl: REGISTRATION_URL,
             authorizeUrl: AUTHORIZE_URL,
             tokenUrl: TOKEN_URL,
-            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'client_secret_post' },
+            clientMetadata: { clientName: 'CLI', tokenEndpointAuthMethod: 'client_secret_basic' },
             validate,
             fetchImpl,
         })
@@ -478,7 +482,9 @@ describe('createDcrProvider', () => {
                 tokenEndpointAuthMethod: 'client_secret_post',
             },
         })
-        const tokenBody = bodyOf(calls.find((c) => c.url === TOKEN_URL)!)
+        const tokenCall = calls.find((c) => c.url === TOKEN_URL)!
+        const tokenBody = bodyOf(tokenCall)
+        expect(headersOf(tokenCall).has('authorization')).toBe(false)
         expect(tokenBody.get('client_id')).toBe('cid')
         expect(tokenBody.get('client_secret')).toBe('sec')
     })
@@ -512,7 +518,7 @@ describe('createDcrProvider', () => {
         ).rejects.toMatchObject({ code: 'AUTH_REFRESH_UNAVAILABLE' })
     })
 
-    it('reuses a cached client via loadClient without a registration POST', async () => {
+    it('reuses a cached client via an async loadClient without a registration POST', async () => {
         const { calls, fetchImpl } = makeFetchRecorder(() => {
             throw new Error('registration must not be called on a cache hit')
         })
@@ -521,7 +527,14 @@ describe('createDcrProvider', () => {
             authorizeUrl: AUTHORIZE_URL,
             tokenUrl: TOKEN_URL,
             clientMetadata: { clientName: 'CLI' },
-            loadClient: () => ({ clientId: 'cached', tokenEndpointAuthMethod: 'none' }),
+            // Async hook: a dropped `await` in the provider would surface a
+            // Promise here instead of the resolved client and fail the assert.
+            loadClient: (input) =>
+                Promise.resolve(
+                    input.redirectUri === REDIRECT_URI
+                        ? { clientId: 'cached', tokenEndpointAuthMethod: 'none' }
+                        : null,
+                ),
             validate,
             fetchImpl,
         })
@@ -534,7 +547,7 @@ describe('createDcrProvider', () => {
         expect(calls).toHaveLength(0)
     })
 
-    it('registers and persists a fresh client via saveClient on a cache miss', async () => {
+    it('registers and persists a fresh client via an async saveClient on a cache miss', async () => {
         const saved: DcrRegisteredClient[] = []
         const { calls, fetchImpl } = makeFetchRecorder(() =>
             registration({ client_id: 'fresh', client_secret: 'sec' }),
@@ -544,8 +557,9 @@ describe('createDcrProvider', () => {
             authorizeUrl: AUTHORIZE_URL,
             tokenUrl: TOKEN_URL,
             clientMetadata: { clientName: 'CLI' },
-            loadClient: () => null,
-            saveClient: (client) => {
+            loadClient: () => Promise.resolve(null),
+            saveClient: async (client) => {
+                await Promise.resolve()
                 saved.push(client)
             },
             validate,
@@ -556,5 +570,30 @@ describe('createDcrProvider', () => {
         expect(calls).toHaveLength(1)
         expect(prepared.handshake).toEqual({ clientId: 'fresh', clientSecret: 'sec' })
         expect(saved).toEqual([{ clientId: 'fresh', clientSecret: 'sec' }])
+    })
+
+    it('rejects a malformed cached client from loadClient', async () => {
+        const make = (cached: unknown) =>
+            createDcrProvider<Account>({
+                registrationUrl: REGISTRATION_URL,
+                authorizeUrl: AUTHORIZE_URL,
+                tokenUrl: TOKEN_URL,
+                clientMetadata: { clientName: 'CLI' },
+                loadClient: () => cached as DcrRegisteredClient,
+                validate,
+                fetchImpl: (() => {
+                    throw new Error('registration must not be reached')
+                }) as typeof fetch,
+            })
+
+        await expect(
+            make({ clientId: 42 }).prepare!({ redirectUri: REDIRECT_URI, flags: {} }),
+        ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
+        await expect(
+            make({ clientId: 'cid', tokenEndpointAuthMethod: 'private_key_jwt' }).prepare!({
+                redirectUri: REDIRECT_URI,
+                flags: {},
+            }),
+        ).rejects.toMatchObject({ code: 'AUTH_DCR_FAILED' })
     })
 })

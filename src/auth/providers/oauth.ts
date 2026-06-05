@@ -48,10 +48,10 @@ type BuildPkceAuthorizeUrlInput = {
     scopeSeparator: string
     codeChallenge: string
     /**
-     * Extra query parameters appended to the authorize URL, e.g. the RFC 8707
-     * `resource` indicator. Set after the standard PKCE params, so a caller
-     * can't accidentally clobber `client_id`/`state`/etc. `undefined` values
-     * are skipped.
+     * Extra query parameters for the authorize URL, e.g. the RFC 8707
+     * `resource` indicator. Applied *before* the standard PKCE params so the
+     * latter always win — a caller can't accidentally clobber
+     * `client_id`/`state`/etc. `undefined` values are skipped.
      */
     additionalParameters?: Record<string, string | undefined>
 }
@@ -59,6 +59,11 @@ type BuildPkceAuthorizeUrlInput = {
 /** Construct the standard PKCE S256 authorize URL. */
 export function buildPkceAuthorizeUrl(input: BuildPkceAuthorizeUrlInput): string {
     const url = new URL(input.authorizeUrl)
+    // Set extras first; the standard params below overwrite any collision, so
+    // the PKCE essentials can never be displaced by a caller-supplied value.
+    for (const [key, value] of Object.entries(input.additionalParameters ?? {})) {
+        if (value !== undefined) url.searchParams.set(key, value)
+    }
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('client_id', input.clientId)
     url.searchParams.set('redirect_uri', input.redirectUri)
@@ -67,9 +72,6 @@ export function buildPkceAuthorizeUrl(input: BuildPkceAuthorizeUrlInput): string
     url.searchParams.set('code_challenge_method', 'S256')
     if (input.scopes.length > 0) {
         url.searchParams.set('scope', input.scopes.join(input.scopeSeparator))
-    }
-    for (const [key, value] of Object.entries(input.additionalParameters ?? {})) {
-        if (value !== undefined) url.searchParams.set(key, value)
     }
     return url.toString()
 }
