@@ -1,3 +1,9 @@
+## [0.25.1](https://github.com/Doist/cli-core/compare/v0.25.0...v0.25.1) (2026-06-05)
+
+### Bug Fixes
+
+* **auth:** caret-escape cmd metacharacters when opening the browser on WSL ([#61](https://github.com/Doist/cli-core/issues/61)) ([9abcfea](https://github.com/Doist/cli-core/commit/9abcfea502babb0fc78d564723f15939534d09d1))
+
 ## [0.25.0](https://github.com/Doist/cli-core/compare/v0.24.0...v0.25.0) (2026-06-05)
 
 ### Features
