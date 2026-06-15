@@ -76,7 +76,7 @@
         "open": "11.0.0",
         "oxfmt": "0.53.0",
         "oxlint": "1.68.0",
-        "semantic-release": "25.0.3",
+        "semantic-release": "25.0.5",
         "typescript": "6.0.3",
         "vitest": "4.1.8"
     },
