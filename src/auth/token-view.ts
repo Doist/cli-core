@@ -50,7 +50,55 @@ export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccoun
         if (!snapshot) {
             throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
         }
-        process.stdout.write(snapshot.token)
-        if (isStdoutTTY()) process.stdout.write('\n')
+        await writeStdout(snapshot.token + (isStdoutTTY() ? '\n' : ''))
     })
+}
+
+function writeStdout(chunk: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        let settled = false
+
+        function cleanup(): void {
+            process.stdout.off('error', onError)
+        }
+
+        function settle(error?: unknown): void {
+            if (settled) return
+            settled = true
+            cleanup()
+            if (!error || isBrokenPipeError(error)) {
+                resolve()
+                return
+            }
+            reject(error)
+        }
+
+        function settleErrorFromCallback(error: Error): void {
+            if (settled) return
+            setImmediate(() => {
+                settle(error)
+            })
+        }
+
+        function onError(error: Error): void {
+            settle(error)
+        }
+
+        process.stdout.once('error', onError)
+        try {
+            process.stdout.write(chunk, (error?: Error | null) => {
+                if (error) {
+                    settleErrorFromCallback(error)
+                    return
+                }
+                settle()
+            })
+        } catch (error) {
+            settle(error)
+        }
+    })
+}
+
+function isBrokenPipeError(error: unknown): boolean {
+    return error instanceof Error && (error as { code?: unknown }).code === 'EPIPE'
 }

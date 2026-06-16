@@ -70,6 +70,40 @@ describe('attachTokenViewCommand', () => {
         expect(emitted).toBe('tok-xyz\n')
     })
 
+    it('ignores EPIPE when downstream closes the pipe early', async () => {
+        const { program, parent: auth } = buildProgram('auth')
+        const { store } = buildStore({ token: 'redacted-token', account })
+        const brokenPipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })
+        attachTokenViewCommand<Account>(auth, { store })
+        stdoutSpy().mockImplementation(((...args: unknown[]) => {
+            const callback = args.findLast((arg) => typeof arg === 'function') as
+                | ((error?: Error) => void)
+                | undefined
+            queueMicrotask(() => {
+                process.stdout.emit('error', brokenPipe)
+                callback?.(brokenPipe)
+            })
+            return false
+        }) as typeof process.stdout.write)
+
+        await program.parseAsync(['node', 'cli', 'auth', 'token'])
+    })
+
+    it('propagates non-EPIPE stdout write errors', async () => {
+        const { program, parent: auth } = buildProgram('auth')
+        const { store } = buildStore({ token: 'redacted-token', account })
+        const writeError = Object.assign(new Error('write failed'), { code: 'EIO' })
+        attachTokenViewCommand<Account>(auth, { store })
+        stdoutSpy().mockImplementation((() => {
+            queueMicrotask(() => {
+                process.stdout.emit('error', writeError)
+            })
+            return false
+        }) as typeof process.stdout.write)
+
+        await expect(program.parseAsync(['node', 'cli', 'auth', 'token'])).rejects.toBe(writeError)
+    })
+
     it('throws CliError(TOKEN_FROM_ENV) when envVarName is set and env is populated', async () => {
         vi.stubEnv('TODOIST_API_TOKEN', 'env-token')
         const { program, parent: auth } = buildProgram('auth')
@@ -92,7 +126,7 @@ describe('attachTokenViewCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'token'])
 
-        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy().mock.calls[0]?.[0]).toBe('tok-xyz')
     })
 
     it('throws CliError(NOT_AUTHENTICATED) when the store is empty', async () => {
@@ -115,7 +149,7 @@ describe('attachTokenViewCommand', () => {
         expect(cmd.name()).toBe('view')
 
         await program.parseAsync(['node', 'cli', 'auth', 'view'])
-        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy().mock.calls[0]?.[0]).toBe('tok-xyz')
     })
 
     it('returns the new Command so the consumer can chain', () => {
@@ -134,7 +168,7 @@ describe('attachTokenViewCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alan@ingen.com'])
 
         expect(activeSpy).toHaveBeenCalledWith('alan@ingen.com')
-        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy().mock.calls[0]?.[0]).toBe('tok-xyz')
     })
 
     it('calls store.active(undefined) when --user is absent', async () => {
@@ -145,7 +179,7 @@ describe('attachTokenViewCommand', () => {
         await program.parseAsync(['node', 'cli', 'auth', 'token'])
 
         expect(activeSpy).toHaveBeenCalledWith(undefined)
-        expect(stdoutSpy()).toHaveBeenCalledWith('tok-xyz')
+        expect(stdoutSpy().mock.calls[0]?.[0]).toBe('tok-xyz')
     })
 
     it('throws ACCOUNT_NOT_FOUND when --user does not match a stored account', async () => {
