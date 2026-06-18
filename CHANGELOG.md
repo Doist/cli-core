@@ -1,3 +1,9 @@
+## [0.26.0](https://github.com/Doist/cli-core/compare/v0.25.1...v0.26.0) (2026-06-18)
+
+### Features
+
+* **auth:** Add auth refresh-token view command ([#76](https://github.com/Doist/cli-core/issues/76)) ([48d7248](https://github.com/Doist/cli-core/commit/48d7248b51130ce348682a1967da819ba637667d))
+
 ## [0.25.1](https://github.com/Doist/cli-core/compare/v0.25.0...v0.25.1) (2026-06-05)
 
 ### Bug Fixes
