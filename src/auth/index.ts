@@ -26,6 +26,8 @@ export type {
 } from './logout.js'
 export { attachStatusCommand } from './status.js'
 export type { AttachStatusCommandOptions, AttachStatusContext } from './status.js'
+export { attachRefreshTokenViewCommand } from './refresh-token-view.js'
+export type { AttachRefreshTokenViewCommandOptions } from './refresh-token-view.js'
 export { attachTokenViewCommand } from './token-view.js'
 export type { AttachTokenViewCommandOptions } from './token-view.js'
 export {
