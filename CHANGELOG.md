@@ -1,3 +1,9 @@
+## [0.26.1](https://github.com/Doist/cli-core/compare/v0.26.0...v0.26.1) (2026-07-14)
+
+### Bug Fixes
+
+* **deps:** update dependency yocto-spinner to v1.2.1 ([#85](https://github.com/Doist/cli-core/issues/85)) ([9c8e111](https://github.com/Doist/cli-core/commit/9c8e111c4a3cfa3fcb21b0ce18d3f1c43cd4d0d2))
+
 ## [0.26.0](https://github.com/Doist/cli-core/compare/v0.25.1...v0.26.0) (2026-06-18)
 
 ### Features
