@@ -53,14 +53,28 @@ type ParsedVersion = {
 /**
  * Parse a semver-ish string into core triplet + optional prerelease tag. Build
  * metadata (`+build…`) is stripped per semver §10 since it doesn't affect
- * ordering. Throws on input that doesn't have a numeric `major.minor.patch`.
+ * ordering. Partial versions are accepted — omitted trailing components
+ * default to 0 (`24` → `24.0.0`) — but the input must have at least a numeric
+ * major component; otherwise it throws.
  */
 export function parseVersion(version: string): ParsedVersion {
     // Strip leading `v` and any `+build` metadata before splitting prerelease.
     const stripped = version.replace(/^v/, '').split('+', 1)[0]
     const [core, ...rest] = stripped.split('-')
-    const [major, minor, patch] = core.split('.').map(Number)
-    if (!Number.isInteger(major) || !Number.isInteger(minor) || !Number.isInteger(patch)) {
+    const parts = core.split('.')
+    // Accept partial versions (e.g. `24`, `24.1`) by treating omitted trailing
+    // components as 0, so engine ranges like `>=24` compare correctly. An empty
+    // or whitespace-only component (e.g. `24.`, `24. `, `1..3`) is still
+    // rejected as invalid — `Number('')`/`Number(' ')` are 0, so guard first.
+    const [major, minor = 0, patch = 0] = parts.map((part) =>
+        part.trim() === '' ? NaN : Number(part),
+    )
+    if (
+        parts.length > 3 ||
+        !Number.isInteger(major) ||
+        !Number.isInteger(minor) ||
+        !Number.isInteger(patch)
+    ) {
         throw new Error(`Invalid version string: '${version}'`)
     }
     return { major, minor, patch, prerelease: rest.length > 0 ? rest.join('-') : undefined }
