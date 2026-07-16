@@ -1,3 +1,13 @@
+## [1.0.0](https://github.com/Doist/cli-core/compare/v0.26.2...v1.0.0) (2026-07-16)
+
+### ⚠ BREAKING CHANGES
+
+* require node >=24, test on 24 & 26, support npm >=11 (#92)
+
+### Features
+
+* require node >=24, test on 24 & 26, support npm >=11 ([#92](https://github.com/Doist/cli-core/issues/92)) ([c0dcb38](https://github.com/Doist/cli-core/commit/c0dcb38d2e33333cf46798c48b3373825f11b559))
+
 ## [0.26.2](https://github.com/Doist/cli-core/compare/v0.26.1...v0.26.2) (2026-07-16)
 
 ### Bug Fixes
