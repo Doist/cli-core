@@ -113,6 +113,25 @@ describe('semver helpers', () => {
         })
     })
 
+    it('parseVersion pads partial versions and rejects malformed ones', () => {
+        // Omitted trailing components default to 0, so `>=24`-style ranges work.
+        expect(parseVersion('24')).toEqual({ major: 24, minor: 0, patch: 0, prerelease: undefined })
+        expect(parseVersion('v24.1')).toEqual({
+            major: 24,
+            minor: 1,
+            patch: 0,
+            prerelease: undefined,
+        })
+        // Partial operands compare correctly against full versions.
+        expect(compareVersions('v24.1.0', '24')).toBe(1)
+        expect(compareVersions('24.0.0', '24')).toBe(0)
+        expect(compareVersions('20.19.0', '24')).toBe(-1)
+        // Genuinely malformed strings still throw.
+        for (const bad of ['', 'v', 'abc', '1.x', '24.', '1..3', '1.2.3.4']) {
+            expect(() => parseVersion(bad)).toThrow('Invalid version string')
+        }
+    })
+
     it('compareVersions / isNewer rank core, then prerelease below release, then numerically', () => {
         // Core triplet.
         expect(compareVersions('1.2.3', '1.2.4')).toBe(-1)
@@ -536,9 +555,9 @@ describe('parseVersion edge cases', () => {
         })
     })
 
-    it('throws on inputs without a numeric major.minor.patch', () => {
+    it('throws on inputs without a numeric major', () => {
         expect(() => parseVersion('not-a-version')).toThrow(/Invalid version string/)
-        expect(() => parseVersion('1.2')).toThrow(/Invalid version string/)
+        expect(() => parseVersion('1.x')).toThrow(/Invalid version string/)
     })
 })
 

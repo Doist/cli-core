@@ -59,8 +59,17 @@ export function parseVersion(version: string): ParsedVersion {
     // Strip leading `v` and any `+build` metadata before splitting prerelease.
     const stripped = version.replace(/^v/, '').split('+', 1)[0]
     const [core, ...rest] = stripped.split('-')
-    const [major, minor, patch] = core.split('.').map(Number)
-    if (!Number.isInteger(major) || !Number.isInteger(minor) || !Number.isInteger(patch)) {
+    const parts = core.split('.')
+    // Accept partial versions (e.g. `24`, `24.1`) by treating omitted trailing
+    // components as 0, so engine ranges like `>=24` compare correctly. An empty
+    // component (e.g. `24.` or `1..3`) is still rejected as invalid.
+    const [major, minor = 0, patch = 0] = parts.map((part) => (part === '' ? NaN : Number(part)))
+    if (
+        parts.length > 3 ||
+        !Number.isInteger(major) ||
+        !Number.isInteger(minor) ||
+        !Number.isInteger(patch)
+    ) {
         throw new Error(`Invalid version string: '${version}'`)
     }
     return { major, minor, patch, prerelease: rest.length > 0 ? rest.join('-') : undefined }
