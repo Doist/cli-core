@@ -1,6 +1,6 @@
 {
     "name": "@doist/cli-core",
-    "version": "0.26.1",
+    "version": "0.26.2",
     "description": "Shared core utilities for Doist CLI projects",
     "type": "module",
     "main": "dist/index.js",

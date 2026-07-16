@@ -1,3 +1,9 @@
+## [0.26.2](https://github.com/Doist/cli-core/compare/v0.26.1...v0.26.2) (2026-07-16)
+
+### Bug Fixes
+
+* accept partial versions in parseVersion ([#93](https://github.com/Doist/cli-core/issues/93)) ([5db884e](https://github.com/Doist/cli-core/commit/5db884e8526ebb993e2e5de292c6acaee5ec5587))
+
 ## [0.26.1](https://github.com/Doist/cli-core/compare/v0.26.0...v0.26.1) (2026-07-14)
 
 ### Bug Fixes
