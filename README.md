@@ -2,7 +2,7 @@
 
 Shared core utilities for Doist CLI projects ([todoist-cli](https://github.com/Doist/todoist-cli), [twist-cli](https://github.com/Doist/twist-cli), [outline-cli](https://github.com/Doist/outline-cli)).
 
-TypeScript, ESM-only, Node ≥ 20.18.1.
+TypeScript, ESM-only, Node ≥ 24, npm ≥ 11.
 
 ## Install
 
