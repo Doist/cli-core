@@ -43,6 +43,42 @@ describe('writeRecordWithKeyringFallback', () => {
         expect(state.records.get('42')?.fallbackToken).toBe('tok_plain')
     })
 
+    it('does not write a fallbackToken in strict system mode', async () => {
+        const secureStore = buildSingleSlot()
+        secureStore.setSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no dbus'))
+        const { store: userRecords, state } = buildUserRecords<Account>()
+
+        await expect(
+            writeRecordWithKeyringFallback({
+                secureStore,
+                userRecords,
+                account,
+                token: 'tok_plain',
+                credentialStore: 'system',
+            }),
+        ).rejects.toMatchObject({ code: 'AUTH_STORE_WRITE_FAILED' })
+
+        expect(state.records.size).toBe(0)
+    })
+
+    it('writes directly to fallbackToken in explicit plaintext mode', async () => {
+        const secureStore = buildSingleSlot()
+        const { store: userRecords, state } = buildUserRecords<Account>()
+
+        const result = await writeRecordWithKeyringFallback({
+            secureStore,
+            userRecords,
+            account,
+            token: 'tok_plain',
+            credentialStore: 'plaintext',
+        })
+
+        expect(result.storedSecurely).toBe(false)
+        expect(secureStore.setSpy).not.toHaveBeenCalled()
+        expect(secureStore.deleteSpy).not.toHaveBeenCalled()
+        expect(state.records.get('42')?.fallbackToken).toBe('tok_plain')
+    })
+
     it('rethrows non-keyring errors from setSecret without writing the record', async () => {
         const secureStore = buildSingleSlot()
         const cause = new Error('unexpected backend explosion')
@@ -184,6 +220,25 @@ describe('writeBundleWithKeyringFallback', () => {
                 bundle,
             }),
         ).rejects.toThrow('refresh slot blew up')
+
+        expect(accessStore.deleteSpy).toHaveBeenCalledTimes(1)
+        expect(state.records.size).toBe(0)
+    })
+
+    it('rolls back the access slot when strict system storage cannot write the refresh token', async () => {
+        const { accessStore, refreshStore, store: userRecords, state } = harness()
+        refreshStore.setSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no dbus'))
+
+        await expect(
+            writeBundleWithKeyringFallback({
+                accessStore,
+                refreshStore,
+                userRecords,
+                account,
+                bundle,
+                credentialStore: 'system',
+            }),
+        ).rejects.toMatchObject({ code: 'AUTH_STORE_WRITE_FAILED' })
 
         expect(accessStore.deleteSpy).toHaveBeenCalledTimes(1)
         expect(state.records.size).toBe(0)
