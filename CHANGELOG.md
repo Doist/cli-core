@@ -1,3 +1,9 @@
+## [1.1.0](https://github.com/Doist/cli-core/compare/v1.0.1...v1.1.0) (2026-07-29)
+
+### Features
+
+* **auth:** add credential storage policies ([#105](https://github.com/Doist/cli-core/issues/105)) ([68f0f7e](https://github.com/Doist/cli-core/commit/68f0f7e98120fc2ab237dc37ced7ea7b36266069))
+
 ## [1.0.1](https://github.com/Doist/cli-core/compare/v1.0.0...v1.0.1) (2026-07-22)
 
 ### Bug Fixes
