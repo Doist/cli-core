@@ -3,12 +3,20 @@ import type { AuthAccount } from '../types.js'
 /** Where a token was (or wasn't) persisted on the most recent write/clear. */
 export type TokenStorageLocation = 'secure-store' | 'config-file'
 
+/**
+ * Policy for writing credentials through `createKeyringTokenStore`.
+ *
+ * `fallback` preserves the original behavior: prefer the system credential
+ * manager and use the consumer's config record only when it is unavailable.
+ */
+export type CredentialStore = 'system' | 'plaintext' | 'fallback'
+
 export type TokenStorageResult = {
     storage: TokenStorageLocation
     /**
-     * Present when the OS keyring was unavailable and the operation fell back
-     * to (or left state in) the consumer's config file. Suitable for surfacing
-     * to the user as a `Warning:` line on stderr.
+     * Present when a write used (or a clear left state in) the consumer's
+     * config file. Suitable for surfacing to the user as a `Warning:` line on
+     * stderr.
      */
     warning?: string
 }
@@ -16,11 +24,12 @@ export type TokenStorageResult = {
 export type UserRecord<TAccount extends AuthAccount> = {
     account: TAccount
     /**
-     * Plaintext token, present only when the keyring was unavailable at write
-     * time. The runtime reads it in preference to the keyring slot, so a
-     * stale fallback would mask a fresh keyring-backed write — consumers
+     * Plaintext token, present when the keyring was unavailable under the
+     * `'fallback'` policy or when the consumer explicitly selected
+     * `'plaintext'`. The runtime reads it in preference to the keyring slot,
+     * so a stale fallback would mask a fresh keyring-backed write — consumers
      * implementing `upsert` as replace-not-merge (per the contract below)
-     * guarantees the field is cleared on every successful keyring write.
+     * guarantee the field is cleared on every successful keyring write.
      * Surface its presence as security-relevant: it is the same material
      * that would otherwise live in the OS credential manager.
      */

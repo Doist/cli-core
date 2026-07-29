@@ -83,6 +83,7 @@ export type {
     SecureStore,
     TokenStorageLocation,
     TokenStorageResult,
+    CredentialStore,
     UserRecord,
     UserRecordStore,
 } from './keyring/index.js'

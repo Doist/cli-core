@@ -142,6 +142,59 @@ describe('createKeyringTokenStore', () => {
         expect(keyring.getSpy).not.toHaveBeenCalled()
     })
 
+    it('rejects an unavailable keyring in strict system mode without writing plaintext', async () => {
+        const keyring = buildSingleSlot()
+        keyring.setSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no dbus'))
+        const { store, state } = fixture({
+            keyring,
+            factoryOpts: { credentialStore: 'system' },
+        })
+
+        await expect(store.set(account, 'tok_secret')).rejects.toMatchObject({
+            code: 'AUTH_STORE_WRITE_FAILED',
+            message: 'The system credential manager could not store the credential.',
+        })
+
+        expect(state.records.size).toBe(0)
+        expect(store.getLastStorageResult()).toBeUndefined()
+    })
+
+    it('uses an explicit plaintext resolver without calling the keyring', async () => {
+        const keyring = buildSingleSlot()
+        let credentialStore: 'system' | 'plaintext' = 'system'
+        const { store, state } = fixture({
+            keyring,
+            factoryOpts: { credentialStore: () => credentialStore },
+        })
+        credentialStore = 'plaintext'
+
+        await store.setBundle(
+            account,
+            {
+                accessToken: 'tok_a',
+                refreshToken: 'tok_r',
+                accessTokenExpiresAt: 1_700_000_000_000,
+                refreshTokenExpiresAt: 1_701_000_000_000,
+            },
+            { promoteDefault: true },
+        )
+
+        expect(keyring.setSpy).not.toHaveBeenCalled()
+        expect(keyring.deleteSpy).not.toHaveBeenCalled()
+        expect(state.records.get('42')).toEqual({
+            account,
+            fallbackToken: 'tok_a',
+            fallbackRefreshToken: 'tok_r',
+            accessTokenExpiresAt: 1_700_000_000_000,
+            refreshTokenExpiresAt: 1_701_000_000_000,
+            hasRefreshToken: true,
+        })
+        expect(store.getLastStorageResult()).toEqual({
+            storage: 'config-file',
+            warning: 'credential stored as plaintext in /tmp/fake/config.json',
+        })
+    })
+
     it('set() still succeeds when the best-effort default promotion fails', async () => {
         const { store, state, setDefaultSpy } = fixture()
         setDefaultSpy.mockRejectedValueOnce(new Error('default-write blew up'))

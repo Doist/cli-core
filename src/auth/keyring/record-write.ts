@@ -1,7 +1,7 @@
 import { CliError } from '../../errors.js'
 import type { AuthAccount, TokenBundle } from '../types.js'
 import { type SecureStore, SecureStoreUnavailableError } from './secure-store.js'
-import type { UserRecord, UserRecordStore } from './types.js'
+import type { CredentialStore, UserRecord, UserRecordStore } from './types.js'
 
 type WriteRecordOptions<TAccount extends AuthAccount> = {
     /** Per-account keyring slot, already configured by the caller (e.g. via `createSecureStore`). */
@@ -16,10 +16,11 @@ type WriteRecordOptions<TAccount extends AuthAccount> = {
     userRecords: UserRecordStore<TAccount>
     account: TAccount
     token: string
+    credentialStore?: CredentialStore
 }
 
 type WriteRecordResult = {
-    /** `true` when the secret landed in the OS keyring; `false` when the keyring was unavailable and the token was written to `fallbackToken` on the user record. */
+    /** `true` when the secret landed in the OS keyring; `false` when it was written to `fallbackToken` on the user record. */
     storedSecurely: boolean
 }
 
@@ -31,14 +32,15 @@ type WriteBundleOptions<TAccount extends AuthAccount> = {
     userRecords: UserRecordStore<TAccount>
     account: TAccount
     bundle: TokenBundle
+    credentialStore?: CredentialStore
 }
 
 type WriteBundleResult = {
-    /** `true` when the access token landed in the OS keyring; `false` when it fell back to `fallbackToken`. */
+    /** `true` when the access token landed in the OS keyring; `false` when it was written to `fallbackToken`. */
     accessStoredSecurely: boolean
     /**
      * `true` when a refresh token landed in the OS keyring. `false` when it
-     * fell back to `fallbackRefreshToken`. `undefined` when the bundle
+     * was written to `fallbackRefreshToken`. `undefined` when the bundle
      * carried no refresh token (nothing to store).
      */
     refreshStoredSecurely: boolean | undefined
@@ -46,7 +48,7 @@ type WriteBundleResult = {
 
 /**
  * Single-token write. Thin wrapper over `writeBundleWithKeyringFallback`
- * passing a refresh-less bundle, so trim/validate, access-slot fallback,
+ * passing a refresh-less bundle, so trim/validate, access-slot storage,
  * upsert rollback, and the deferred refresh-slot wipe all share one
  * implementation.
  *
@@ -57,7 +59,7 @@ type WriteBundleResult = {
 export async function writeRecordWithKeyringFallback<TAccount extends AuthAccount>(
     options: WriteRecordOptions<TAccount>,
 ): Promise<WriteRecordResult> {
-    const { secureStore, refreshStore, userRecords, account, token } = options
+    const { secureStore, refreshStore, userRecords, account, token, credentialStore } = options
 
     const { accessStoredSecurely } = await writeBundleWithKeyringFallback({
         accessStore: secureStore,
@@ -68,6 +70,7 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
         userRecords,
         account,
         bundle: { accessToken: token },
+        credentialStore,
     })
 
     return { storedSecurely: accessStoredSecurely }
@@ -78,19 +81,22 @@ export async function writeRecordWithKeyringFallback<TAccount extends AuthAccoun
  * refresh wipe.
  *
  *   1. Validate `bundle.accessToken` (non-empty after trim).
- *   2. `accessStore.setSecret`. `SecureStoreUnavailableError` degrades to
- *      `fallbackToken` on the record; any other error rethrows.
- *   3. `refreshStore.setSecret` when `bundle.refreshToken` is present.
- *      `SecureStoreUnavailableError` degrades to `fallbackRefreshToken`. A
- *      non-keyring failure rolls back the access slot before rethrowing
- *      (no partial credentials left behind for an unregistered user).
+ *   2. Under `'system'` or `'fallback'`, `accessStore.setSecret` runs.
+ *      `'fallback'` degrades a `SecureStoreUnavailableError` to
+ *      `fallbackToken`; `'system'` rejects it. `'plaintext'` writes the
+ *      fallback field directly without calling the keyring.
+ *   3. Under `'system'` or `'fallback'`, `refreshStore.setSecret` runs when
+ *      `bundle.refreshToken` is present. Under `'fallback'`,
+ *      `SecureStoreUnavailableError` degrades to `fallbackRefreshToken`; under
+ *      `'system'`, it rolls back a successful access-slot write before
+ *      rejecting. A non-keyring failure has the same rollback behavior.
  *   4. `userRecords.upsert(record)`. On failure, best-effort
  *      `Promise.allSettled` rollback of any slot writes that succeeded.
- *   5. Only after a successful upsert: if the bundle has no refresh token,
- *      wipe any orphan slot from a prior `setBundle` (best-effort). Doing
- *      this BEFORE the upsert would lose refresh state if the upsert then
- *      rejected — the new record's `hasRefreshToken` would still claim
- *      false but the old slot would be gone with no rollback path.
+ *   5. Only after a successful non-plaintext upsert: if the bundle has no
+ *      refresh token, wipe any orphan slot from a prior `setBundle`
+ *      (best-effort). Doing this BEFORE the upsert would lose refresh state if
+ *      the upsert then rejected — the new record's `hasRefreshToken` would
+ *      still claim false but the old slot would be gone with no rollback path.
  *
  * Default promotion is external — preference, not correctness, and an
  * error there must not dirty up a successful credential write.
@@ -99,6 +105,7 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
     options: WriteBundleOptions<TAccount>,
 ): Promise<WriteBundleResult> {
     const { accessStore, refreshStore, userRecords, account, bundle } = options
+    const credentialStore = options.credentialStore ?? 'fallback'
     const accessToken = bundle.accessToken.trim()
     if (!accessToken) {
         throw new CliError(
@@ -109,20 +116,23 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
     const refreshToken = bundle.refreshToken?.trim()
 
     let accessStoredSecurely = false
-    try {
-        await accessStore.setSecret(accessToken)
-        accessStoredSecurely = true
-    } catch (error) {
-        if (!(error instanceof SecureStoreUnavailableError)) throw error
+    if (credentialStore !== 'plaintext') {
+        try {
+            await accessStore.setSecret(accessToken)
+            accessStoredSecurely = true
+        } catch (error) {
+            if (!(error instanceof SecureStoreUnavailableError)) throw error
+            if (credentialStore === 'system') throw credentialStoreUnavailableError()
+        }
     }
 
     let refreshStoredSecurely: boolean | undefined
-    if (refreshToken) {
+    if (refreshToken && credentialStore !== 'plaintext') {
         try {
             await refreshStore.setSecret(refreshToken)
             refreshStoredSecurely = true
         } catch (error) {
-            if (error instanceof SecureStoreUnavailableError) {
+            if (error instanceof SecureStoreUnavailableError && credentialStore === 'fallback') {
                 refreshStoredSecurely = false
             } else {
                 if (accessStoredSecurely) {
@@ -132,9 +142,14 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
                         // best-effort
                     }
                 }
+                if (error instanceof SecureStoreUnavailableError) {
+                    throw credentialStoreUnavailableError()
+                }
                 throw error
             }
         }
+    } else if (refreshToken) {
+        refreshStoredSecurely = false
     }
 
     const record: UserRecord<TAccount> = {
@@ -168,7 +183,7 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
     // that the new record (with `hasRefreshToken: false`) is durable. If
     // this fails the gate already prevents readers from consulting it; the
     // worst case is a stale keyring entry that `clear()` will pick up.
-    if (!refreshToken) {
+    if (!refreshToken && credentialStore !== 'plaintext') {
         try {
             await refreshStore.deleteSecret()
         } catch {
@@ -177,6 +192,19 @@ export async function writeBundleWithKeyringFallback<TAccount extends AuthAccoun
     }
 
     return { accessStoredSecurely, refreshStoredSecurely }
+}
+
+function credentialStoreUnavailableError(): CliError {
+    return new CliError(
+        'AUTH_STORE_WRITE_FAILED',
+        'The system credential manager could not store the credential.',
+        {
+            hints: [
+                'Make the system credential manager available and retry.',
+                'Configure plaintext credential storage explicitly to store the credential in the config file.',
+            ],
+        },
+    )
 }
 
 /**

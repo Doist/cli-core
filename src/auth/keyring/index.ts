@@ -10,6 +10,7 @@ export type { MigrateAuthResult, MigrateLegacyAuthOptions, MigrateSkipReason } f
 export type {
     TokenStorageLocation,
     TokenStorageResult,
+    CredentialStore,
     UserRecord,
     UserRecordStore,
 } from './types.js'

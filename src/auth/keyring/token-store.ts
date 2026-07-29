@@ -20,7 +20,7 @@ import {
     type SecureStore,
 } from './secure-store.js'
 import { refreshAccountSlot } from './slot-naming.js'
-import type { TokenStorageResult, UserRecord, UserRecordStore } from './types.js'
+import type { CredentialStore, TokenStorageResult, UserRecord, UserRecordStore } from './types.js'
 
 export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
     /** Application identifier used for every keyring entry (e.g. `'todoist-cli'`). */
@@ -44,6 +44,12 @@ export type CreateKeyringTokenStoreOptions<TAccount extends AuthAccount> = {
      * (e.g. case-insensitive email, alias map).
      */
     matchAccount?: (account: TAccount, ref: AccountRef) => boolean
+    /**
+     * Credential-write policy. Defaults to `'fallback'` for backwards
+     * compatibility. A resolver is useful when a consumer's CLI option is
+     * parsed after the store is constructed.
+     */
+    credentialStore?: CredentialStore | (() => CredentialStore)
 }
 
 export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccount> & {
@@ -92,10 +98,11 @@ function accessReadError(outcome: Extract<ReadAccessTokenOutcome, { ok: false }>
 
 /**
  * Multi-account `TokenStore` that keeps secrets in the OS credential manager
- * and per-user metadata in the consumer's `UserRecordStore`. Falls back to a
- * plaintext token on the user record when the keyring is unreachable (WSL
- * without D-Bus, missing native binary, locked Keychain, …) so the CLI keeps
- * working at the cost of a visible warning.
+ * and per-user metadata in the consumer's `UserRecordStore`. Its default
+ * `'fallback'` policy writes plaintext to the user record when the keyring is
+ * unreachable (WSL without D-Bus, missing native binary, locked Keychain,
+ * …), with a visible warning. Consumers can instead select strict `'system'`
+ * storage or explicit `'plaintext'` storage.
  *
  * Read order in `active()` is `fallbackToken` first, then the keyring. That
  * matches the write semantics in `writeRecordWithKeyringFallback`: when the
@@ -121,6 +128,11 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     const { serviceName, userRecords, recordsLocation } = options
     const accountForUser = options.accountForUser ?? DEFAULT_ACCOUNT_FOR_USER
     const matchAccount = options.matchAccount ?? DEFAULT_MATCH_ACCOUNT
+
+    function resolveCredentialStore(): CredentialStore {
+        const configured = options.credentialStore
+        return typeof configured === 'function' ? configured() : (configured ?? 'fallback')
+    }
 
     let lastStorageResult: TokenStorageResult | undefined
     let lastClearResult: TokenStorageResult | undefined
@@ -223,7 +235,14 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     function bundleStorageResult(
         accessStored: boolean,
         refreshStored: boolean | undefined,
+        credentialStore: CredentialStore,
     ): TokenStorageResult {
+        if (credentialStore === 'plaintext') {
+            return {
+                storage: 'config-file',
+                warning: `credential stored as plaintext in ${recordsLocation}`,
+            }
+        }
         const accessFallback = !accessStored
         const refreshFallback = refreshStored === false
         if (!accessFallback && !refreshFallback) return { storage: 'secure-store' }
@@ -325,22 +344,25 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             // warning leaking through `getLastStorageResult`.
             lastStorageResult = undefined
 
+            const credentialStore = resolveCredentialStore()
             const { storedSecurely } = await writeRecordWithKeyringFallback({
                 secureStore: secureStoreFor(account),
                 refreshStore: refreshSecureStoreFor(account),
                 userRecords,
                 account,
                 token,
+                credentialStore,
             })
 
             await promoteDefaultIfNeeded(account.id)
 
-            lastStorageResult = bundleStorageResult(storedSecurely, undefined)
+            lastStorageResult = bundleStorageResult(storedSecurely, undefined, credentialStore)
         },
 
         async setBundle(account, bundle, options) {
             lastStorageResult = undefined
 
+            const credentialStore = resolveCredentialStore()
             const { accessStoredSecurely, refreshStoredSecurely } =
                 await writeBundleWithKeyringFallback({
                     accessStore: secureStoreFor(account),
@@ -348,6 +370,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                     userRecords,
                     account,
                     bundle,
+                    credentialStore,
                 })
 
             // Opt-in: silent refresh omits `promoteDefault` so it can't
@@ -356,7 +379,11 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
                 await promoteDefaultIfNeeded(account.id)
             }
 
-            lastStorageResult = bundleStorageResult(accessStoredSecurely, refreshStoredSecurely)
+            lastStorageResult = bundleStorageResult(
+                accessStoredSecurely,
+                refreshStoredSecurely,
+                credentialStore,
+            )
         },
 
         async clear(ref) {
