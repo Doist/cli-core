@@ -1,3 +1,9 @@
+## [1.2.0](https://github.com/Doist/cli-core/compare/v1.1.0...v1.2.0) (2026-08-15)
+
+### Features
+
+* auth/pkce - allow extra token request params ([#114](https://github.com/Doist/cli-core/issues/114)) ([f6922f6](https://github.com/Doist/cli-core/commit/f6922f6eeaa4c0da4b6272233758cade026151fa))
+
 ## [1.1.0](https://github.com/Doist/cli-core/compare/v1.0.1...v1.1.0) (2026-07-29)
 
 ### Features
