@@ -49,6 +49,13 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     tokenUrl: PkceLazyString
     /** Pre-registered client_id, or a function that derives one from `input.flags`. */
     clientId: PkceLazyString
+    /** Additional form-encoded parameters to include in the token request body. */
+    tokenRequestParams?: (ctx: {
+        handshake: Record<string, unknown>
+        flags: Record<string, unknown>
+    }) =>
+        | Record<string, string | number | undefined>
+        | Promise<Record<string, string | number | undefined>>
     /** How to join scopes in the authorize URL. Default `' '` (RFC 6749). Pass `','` for Todoist. */
     scopeSeparator?: string
     verifierAlphabet?: string
@@ -130,12 +137,21 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
             const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
 
+            const extraTokenParams = await (options.tokenRequestParams?.({
+                handshake: input.handshake,
+                flags,
+            }) ?? {})
             const body = new URLSearchParams({
                 grant_type: 'authorization_code',
                 code: input.code,
                 redirect_uri: input.redirectUri,
                 client_id: clientId,
                 code_verifier: verifier,
+                ...Object.fromEntries(
+                    Object.entries(extraTokenParams)
+                        .filter(([, value]) => value !== undefined)
+                        .map(([key, value]) => [key, String(value)]),
+                ),
             })
 
             const result = await postTokenEndpoint({

@@ -191,6 +191,14 @@ const provider = createPkceProvider<Account>({
     authorizeUrl: ({ handshake }) => `${handshake.baseUrl as string}/oauth/authorize`,
     tokenUrl: ({ handshake }) => `${handshake.baseUrl as string}/oauth/token`,
     clientId: ({ flags }) => flags.clientId as string,
+    // Optional: add extra form parameters to the authorization-code token
+    // request (e.g. Zendesk's `expires_in` / `refresh_token_expires_in`).
+    tokenRequestParams: async ({ handshake, flags }) => ({
+        // `handshake` carries the authorize-time state; `flags` carries any
+        // runtime CLI flags that shaped the flow.
+        expires_in: 172800,
+        refresh_token_expires_in: 7776000,
+    }),
     validate: async ({ token, handshake }) => probeUser(token, handshake.baseUrl as string),
 })
 
@@ -212,7 +220,9 @@ attachLoginCommand<Account>(auth, {
 
 `attachLoginCommand` returns the new `Command` so you can chain `.description(...)` / `.option(...)` / `.addHelpText(...)`. Any consumer-attached options land in the `flags` object passed to `resolveScopes`, `onSuccess`, and the provider hooks.
 
-The `authorizeUrl` / `tokenUrl` / `clientId` resolvers may return `string` **or** `Promise<string>` — so a consumer can resolve the base URL or client id asynchronously (reading config, prompting the user) without abandoning `createPkceProvider`. An injected `fetchImpl` is used for the token exchange **and** the refresh grant (threaded into `oauth4webapi` via its `customFetch`), so a custom transport — proxy dispatcher, decompression — applies on every OAuth call rather than being bypassed by the library's global `fetch`.
+The `authorizeUrl` / `tokenUrl` / `clientId` resolvers may return `string` **or** `Promise<string>` — so a consumer can resolve the base URL or client id asynchronously (reading config, prompting the user) without abandoning `createPkceProvider`. `tokenRequestParams` is the equivalent escape hatch for authorization-code token requests: it is optional, receives the same `handshake` + `flags` context as the other provider hooks, and may return either a plain object or a `Promise` when the extra parameters need to be resolved asynchronously. This is useful for providers that require non-standard form fields such as Zendesk's `expires_in` or `refresh_token_expires_in`.
+
+An injected `fetchImpl` is used for the token exchange **and** the refresh grant (threaded into `oauth4webapi` via its `customFetch`), so a custom transport — proxy dispatcher, decompression — applies on every OAuth call rather than being bypassed by the library's global `fetch`.
 
 #### Quick start (Dynamic Client Registration)
 
