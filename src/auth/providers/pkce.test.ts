@@ -81,6 +81,34 @@ describe('createPkceProvider', () => {
         expect(url.searchParams.get('client_id')).toBe('async-client')
     })
 
+    it('adds provider-defined token endpoint parameters (e.g. Zendesk max expiry values)', async () => {
+        const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+            const body = new URLSearchParams(init.body as string)
+            expect(body.get('expires_in')).toBe('172800')
+            expect(body.get('refresh_token_expires_in')).toBe('7776000')
+            return respond({ access_token: 'tok-1', expires_in: 3600 })
+        }) as unknown as typeof fetch
+
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'client-xyz',
+            tokenRequestParams: () => ({
+                expires_in: 172800,
+                refresh_token_expires_in: 7776000,
+            }),
+            validate,
+            fetchImpl,
+        })
+
+        await provider.exchangeCode({
+            code: 'the-code',
+            state: 's',
+            redirectUri: 'http://localhost/callback',
+            handshake: { codeVerifier: 'the-verifier', clientId: 'client-xyz' },
+        })
+    })
+
     it('exchangeCode POSTs without client_secret and surfaces token endpoint failures as AUTH_TOKEN_EXCHANGE_FAILED', async () => {
         const ok = createPkceProvider<Account>({
             authorizeUrl: 'unused',
