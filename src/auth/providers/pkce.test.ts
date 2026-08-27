@@ -109,6 +109,142 @@ describe('createPkceProvider', () => {
         })
     })
 
+    it('threads the RFC 8707 resource indicator into the authorize URL and the token request body', async () => {
+        // Client ID metadata document shape: the https URL *is* the client_id,
+        // and the resource indicator targets the token at the API's audience.
+        const clientId = 'https://cli.example.com/.well-known/oauth-client'
+        let tokenBody: URLSearchParams | undefined
+        const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+            tokenBody = new URLSearchParams(init.body as string)
+            return respond({ access_token: 'tok-1', expires_in: 3600 })
+        }) as unknown as typeof fetch
+
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId,
+            resource: 'https://api.example.com',
+            validate,
+            fetchImpl,
+        })
+
+        const authorize = await provider.authorize({
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            state: 'state-123',
+            scopes: ['read'],
+            readOnly: false,
+            flags: {},
+            handshake: {},
+        })
+        const url = new URL(authorize.authorizeUrl)
+        expect(url.searchParams.get('client_id')).toBe(clientId)
+        expect(url.searchParams.get('resource')).toBe('https://api.example.com')
+
+        await provider.exchangeCode({
+            code: 'the-code',
+            state: 'state-123',
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            handshake: authorize.handshake,
+        })
+        expect(tokenBody?.get('resource')).toBe('https://api.example.com')
+        expect(tokenBody?.get('client_id')).toBe(clientId)
+    })
+
+    it('resolves the resource indicator lazily from the handshake / flags', async () => {
+        let tokenBody: URLSearchParams | undefined
+        const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+            tokenBody = new URLSearchParams(init.body as string)
+            return respond({ access_token: 'tok-1' })
+        }) as unknown as typeof fetch
+
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'client-xyz',
+            resource: async ({ flags }) => `https://${flags.env as string}.example.com`,
+            validate,
+            fetchImpl,
+        })
+
+        const authorize = await provider.authorize({
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            state: 's',
+            scopes: [],
+            readOnly: false,
+            flags: { env: 'staging' },
+            handshake: {},
+        })
+        expect(new URL(authorize.authorizeUrl).searchParams.get('resource')).toBe(
+            'https://staging.example.com',
+        )
+
+        await provider.exchangeCode({
+            code: 'c',
+            state: 's',
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            // `runOAuthFlow` folds the runtime flags into the handshake before
+            // exchange, so the resolver sees the same view it saw at authorize.
+            handshake: { ...authorize.handshake, flags: { env: 'staging' } },
+        })
+        expect(tokenBody?.get('resource')).toBe('https://staging.example.com')
+    })
+
+    it('omits resource entirely when the option is unset', async () => {
+        let tokenBody: URLSearchParams | undefined
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'client-xyz',
+            validate,
+            fetchImpl: ((_url: RequestInfo | URL, init: RequestInit = {}) => {
+                tokenBody = new URLSearchParams(init.body as string)
+                return Promise.resolve(respond({ access_token: 'tok-1' }))
+            }) as typeof fetch,
+        })
+
+        const authorize = await provider.authorize({
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            state: 's',
+            scopes: [],
+            readOnly: false,
+            flags: {},
+            handshake: {},
+        })
+        expect(new URL(authorize.authorizeUrl).searchParams.has('resource')).toBe(false)
+
+        await provider.exchangeCode({
+            code: 'c',
+            state: 's',
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            handshake: authorize.handshake,
+        })
+        expect(tokenBody?.has('resource')).toBe(false)
+    })
+
+    it('lets tokenRequestParams override the configured resource on the token request', async () => {
+        let tokenBody: URLSearchParams | undefined
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'client-xyz',
+            resource: 'https://api.example.com',
+            tokenRequestParams: () => ({ resource: 'https://other.example.com' }),
+            validate,
+            fetchImpl: ((_url: RequestInfo | URL, init: RequestInit = {}) => {
+                tokenBody = new URLSearchParams(init.body as string)
+                return Promise.resolve(respond({ access_token: 'tok-1' }))
+            }) as typeof fetch,
+        })
+
+        await provider.exchangeCode({
+            code: 'c',
+            state: 's',
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            handshake: { codeVerifier: 'v', clientId: 'client-xyz' },
+        })
+        expect(tokenBody?.get('resource')).toBe('https://other.example.com')
+    })
+
     it('exchangeCode POSTs without client_secret and surfaces token endpoint failures as AUTH_TOKEN_EXCHANGE_FAILED', async () => {
         const ok = createPkceProvider<Account>({
             authorizeUrl: 'unused',
@@ -329,6 +465,33 @@ describe('createPkceProvider.refreshToken', () => {
         expect(result.accessToken).toBe('tok-new')
         expect(capturedUrl).toBe('https://wiki.example.com/oauth/token')
         expect(capturedClientId).toBe('async-client')
+    })
+
+    it('forwards the resource indicator on the refresh grant', async () => {
+        // Without this the rotated token comes back with the wrong audience.
+        let tokenBody: URLSearchParams | undefined
+        const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init: RequestInit = {}) => {
+            tokenBody = new URLSearchParams(init.body as string)
+            return new Response(
+                JSON.stringify({ access_token: 'tok-new', token_type: 'bearer', expires_in: 3600 }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } },
+            )
+        }) as unknown as typeof fetch
+
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'https://cli.example.com/.well-known/oauth-client',
+            resource: 'https://api.example.com',
+            validate,
+            fetchImpl,
+        })
+
+        const result = await provider.refreshToken!({ refreshToken: 'r-old', handshake: {} })
+
+        expect(result.accessToken).toBe('tok-new')
+        expect(tokenBody?.get('grant_type')).toBe('refresh_token')
+        expect(tokenBody?.get('resource')).toBe('https://api.example.com')
     })
 
     it('maps invalid_grant to AUTH_REFRESH_EXPIRED (any HTTP status — proxies remap 400/401)', async () => {

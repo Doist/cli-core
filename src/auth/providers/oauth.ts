@@ -29,6 +29,18 @@ export async function resolve(
     return typeof resolver === 'function' ? resolver({ handshake, flags }) : resolver
 }
 
+/**
+ * Resolve the optional RFC 8707 resource indicator, or `undefined` when unset.
+ * Shared by every provider that supports an audience-targeted token.
+ */
+export function resolveResource(
+    resource: OAuthLazyString | undefined,
+    handshake: Record<string, unknown>,
+    flags: Record<string, unknown>,
+): Promise<string | undefined> {
+    return resource ? resolve(resource, handshake, flags) : Promise.resolve(undefined)
+}
+
 /** Read a response body without letting a stream error escape — used for hints. */
 export async function safeReadText(response: Response): Promise<string | undefined> {
     try {

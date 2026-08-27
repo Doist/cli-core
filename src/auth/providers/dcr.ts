@@ -28,6 +28,7 @@ import {
     loadOauth4webapi,
     mapRefreshError,
     resolve,
+    resolveResource,
 } from './oauth.js'
 import type { OAuthLazyString } from './pkce.js'
 
@@ -467,15 +468,6 @@ function validateCachedClient(
         )
     }
     return cached
-}
-
-/** Resolve the optional RFC 8707 resource indicator, or `undefined` when unset. */
-function resolveResource(
-    resource: OAuthLazyString | undefined,
-    handshake: Record<string, unknown>,
-    flags: Record<string, unknown>,
-): Promise<string | undefined> {
-    return resource ? resolve(resource, handshake, flags) : Promise.resolve(undefined)
 }
 
 /** Build the handshake fields a registered (or cached) client contributes. */
