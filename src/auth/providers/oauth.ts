@@ -1,3 +1,5 @@
+import type { TokenEndpointRequestOptions } from 'oauth4webapi'
+
 import { CliError, getErrorMessage } from '../../errors.js'
 import type { AuthErrorCode } from '../errors.js'
 import type { OAuthLazyString } from './pkce.js'
@@ -27,6 +29,37 @@ export async function resolve(
     flags: Record<string, unknown>,
 ): Promise<string> {
     return typeof resolver === 'function' ? resolver({ handshake, flags }) : resolver
+}
+
+/**
+ * Resolve the optional RFC 8707 resource indicator, or `undefined` when unset.
+ * Shared by every provider that supports an audience-targeted token.
+ */
+export function resolveResource(
+    resource: OAuthLazyString | undefined,
+    handshake: Record<string, unknown>,
+    flags: Record<string, unknown>,
+): Promise<string | undefined> {
+    return resource ? resolve(resource, handshake, flags) : Promise.resolve(undefined)
+}
+
+/**
+ * Assemble the oauth4webapi token-request options shared by the
+ * `authorization_code` and `refresh_token` grants: the injected `fetchImpl`
+ * (via the `customFetch` symbol), the RFC 8707 `resource` indicator (as an
+ * `additionalParameters` body field), and an optional abort `signal`.
+ */
+export function tokenRequestOptions(
+    oauth: typeof import('oauth4webapi'),
+    fetchImpl: typeof fetch | undefined,
+    resource: string | undefined,
+    signal?: AbortSignal,
+): TokenEndpointRequestOptions {
+    const opts: TokenEndpointRequestOptions = {}
+    if (fetchImpl) opts[oauth.customFetch] = fetchImpl
+    if (resource) opts.additionalParameters = { resource }
+    if (signal) opts.signal = signal
+    return opts
 }
 
 /** Read a response body without letting a stream error escape — used for hints. */

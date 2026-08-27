@@ -1,4 +1,4 @@
-import type { AuthorizationServer, Client, TokenEndpointRequestOptions } from 'oauth4webapi'
+import type { AuthorizationServer, Client } from 'oauth4webapi'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
     AuthAccount,
@@ -18,6 +18,8 @@ import {
     mapRefreshError,
     postTokenEndpoint,
     resolve,
+    resolveResource,
+    tokenRequestOptions,
 } from './oauth.js'
 
 // Upper bound on the refresh-token POST. Kept under the refresh helper's
@@ -47,8 +49,21 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
     authorizeUrl: PkceLazyString
     /** OAuth 2.0 token endpoint. Function form supports per-flow base URLs. */
     tokenUrl: PkceLazyString
-    /** Pre-registered client_id, or a function that derives one from `input.flags`. */
+    /**
+     * Pre-registered client_id, or a function that derives one from `input.flags`.
+     * A client ID metadata document URL goes here too — an authorization server
+     * that accepts one treats the URL itself as the `client_id`, so no
+     * registration step is involved.
+     */
     clientId: PkceLazyString
+    /**
+     * RFC 8707 resource indicator. When set, it's added to the authorize URL
+     * and to the `authorization_code` and `refresh_token` token requests, so
+     * the authorization server issues a token whose audience targets this
+     * protected resource. Set it when the authorization server and the API are
+     * different origins. Function form supports per-flow resources.
+     */
+    resource?: PkceLazyString
     /** Additional form-encoded parameters to include in the token request body. */
     tokenRequestParams?: (ctx: {
         handshake: Record<string, unknown>
@@ -84,6 +99,10 @@ export type PkceProviderOptions<TAccount extends AuthAccount = AuthAccount> = {
  * `runOAuthFlow` and arrives on `AuthorizeInput.scopes`; this factory does
  * not own scope resolution.
  *
+ * Also covers a client ID metadata document client (the `client_id` is the
+ * document's https URL), which needs no registration step — set `clientId` to
+ * that URL and `resource` to the API the token is for.
+ *
  * Flows that need DCR or HTTP Basic auth on the token endpoint use
  * `createDcrProvider` (or implement the `AuthProvider` interface directly).
  */
@@ -100,10 +119,11 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 length: options.verifierLength,
             })
             const challenge = deriveChallenge(verifier)
-            // Resolve concurrently — both may be async (config read / prompt).
-            const [clientId, authorizeBaseUrl] = await Promise.all([
+            // Resolve concurrently — all three may be async (config read / prompt).
+            const [clientId, authorizeBaseUrl, resource] = await Promise.all([
                 resolve(options.clientId, input.handshake, input.flags),
                 resolve(options.authorizeUrl, input.handshake, input.flags),
+                resolveResource(options.resource, input.handshake, input.flags),
             ])
             const authorizeUrl = buildPkceAuthorizeUrl({
                 authorizeUrl: authorizeBaseUrl,
@@ -113,6 +133,7 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                 scopes: input.scopes,
                 scopeSeparator,
                 codeChallenge: challenge,
+                additionalParameters: { resource },
             })
 
             return {
@@ -135,12 +156,13 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // before calling exchange, so a `tokenUrl: ({ flags }) => ...`
             // resolver sees the same flags it saw during authorize.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const tokenUrl = await resolve(options.tokenUrl, input.handshake, flags)
-
-            const extraTokenParams = await (options.tokenRequestParams?.({
-                handshake: input.handshake,
-                flags,
-            }) ?? {})
+            // All three may be async (config read / prompt) and none depends on
+            // another, so the exchange waits on the slowest rather than the sum.
+            const [tokenUrl, resource, extraTokenParams] = await Promise.all([
+                resolve(options.tokenUrl, input.handshake, flags),
+                resolveResource(options.resource, input.handshake, flags),
+                options.tokenRequestParams?.({ handshake: input.handshake, flags }) ?? {},
+            ])
             const body = new URLSearchParams({
                 grant_type: 'authorization_code',
                 code: input.code,
@@ -152,6 +174,13 @@ export function createPkceProvider<TAccount extends AuthAccount>(
                         .filter(([, value]) => value !== undefined)
                         .map(([key, value]) => [key, String(value)]),
                 ),
+                // Applied last so a configured `resource` always matches the one
+                // sent on the authorize request. RFC 8707 §2.2 requires the two
+                // to agree, so letting `tokenRequestParams` override it here
+                // would produce a request a conformant server must reject.
+                // With `resource` unset this contributes nothing, so injecting
+                // one through `tokenRequestParams` still works.
+                ...(resource ? { resource } : {}),
             })
 
             const result = await postTokenEndpoint({
@@ -179,9 +208,10 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // Mirror `exchangeCode`: a resolver that reads `flags` sees the
             // same view during silent refresh as it did at authorize time.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const [tokenUrl, clientId] = await Promise.all([
+            const [tokenUrl, clientId, resource] = await Promise.all([
                 resolve(options.tokenUrl, input.handshake, flags),
                 resolve(options.clientId, input.handshake, flags),
+                resolveResource(options.resource, input.handshake, flags),
             ])
             const as: AuthorizationServer = { issuer: tokenUrl, token_endpoint: tokenUrl }
             const client: Client = { client_id: clientId, token_endpoint_auth_method: 'none' }
@@ -191,10 +221,14 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // fetch when present, so a custom transport (proxy dispatcher,
             // decompression) applies to the refresh grant too — oauth4webapi
             // otherwise captures the global `fetch`.
-            const requestOptions: TokenEndpointRequestOptions = {
-                signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
-                ...(options.fetchImpl ? { [oauth.customFetch]: options.fetchImpl } : {}),
-            }
+            // The `resource` indicator rides along so the rotated token keeps
+            // the audience the authorization-code grant asked for.
+            const requestOptions = tokenRequestOptions(
+                oauth,
+                options.fetchImpl,
+                resource,
+                AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+            )
             try {
                 const response = await oauth.refreshTokenGrantRequest(
                     as,
