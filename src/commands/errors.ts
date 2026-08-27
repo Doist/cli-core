@@ -4,6 +4,7 @@
  * to redeclare them in their own `TCode` union when catching.
  */
 export type CommandErrorCode =
+    | 'CONFLICTING_OPTIONS'
     | 'INVALID_TYPE'
     | 'FILE_READ_ERROR'
     | 'INVALID_FLAGS'

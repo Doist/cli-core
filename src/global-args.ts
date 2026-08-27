@@ -13,19 +13,20 @@
  * twist's `--non-interactive`) can layer their own fields over `GlobalArgs`.
  */
 
-import type { ViewOptions } from './options.js'
+import type { ListViewOptions } from './options.js'
 import { isCI } from './terminal.js'
 
-export type GlobalArgs = Required<Pick<ViewOptions, 'json' | 'ndjson'>> & {
-    quiet: boolean
-    verbose: 0 | 1 | 2 | 3 | 4
-    accessible: boolean
-    noSpinner: boolean
-    /** false = absent, true = present without path, string = path. */
-    progressJsonl: string | true | false
-    /** Account selector from `--user <ref>` / `--user=<ref>`; `undefined` when absent or valueless. */
-    user?: string
-}
+export type GlobalArgs = Required<Pick<ListViewOptions, 'json' | 'ndjson'>> &
+    Pick<ListViewOptions, 'idsOnly'> & {
+        quiet: boolean
+        verbose: 0 | 1 | 2 | 3 | 4
+        accessible: boolean
+        noSpinner: boolean
+        /** false = absent, true = present without path, string = path. */
+        progressJsonl: string | true | false
+        /** Account selector from `--user <ref>` / `--user=<ref>`; `undefined` when absent or valueless. */
+        user?: string
+    }
 
 const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
     q: 'quiet',
@@ -77,6 +78,7 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
     const args = argv ?? process.argv.slice(2)
 
     const result: GlobalArgs = {
+        idsOnly: false,
         json: false,
         ndjson: false,
         quiet: false,
@@ -91,7 +93,9 @@ export function parseGlobalArgs(argv?: string[]): GlobalArgs {
 
         if (arg === '--') break
 
-        if (arg === '--json') {
+        if (arg === '--ids-only') {
+            result.idsOnly = true
+        } else if (arg === '--json') {
             result.json = true
         } else if (arg === '--ndjson') {
             result.ndjson = true
@@ -256,7 +260,7 @@ export type SpinnerGateOptions = {
  * Build a `shouldDisableSpinner` predicate. Disables on:
  *   - env var equals `'false'`
  *   - `isCI()`
- *   - any of `--json`, `--ndjson`, `--no-spinner`, `--progress-jsonl`, `--verbose`
+ *   - any of `--json`, `--ndjson`, `--ids-only`, `--no-spinner`, `--progress-jsonl`, `--verbose`
  *   - `extraTriggers?.()` returning true
  *
  * Pair with `createSpinner({ isDisabled })` from `./spinner.js`.
@@ -288,6 +292,7 @@ export function createSpinnerGate(opts: SpinnerGateOptions): () => boolean {
         if (
             args.json ||
             args.ndjson ||
+            args.idsOnly ||
             args.noSpinner ||
             isProgressJsonlEnabled(args) ||
             args.verbose > 0

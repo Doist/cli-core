@@ -12,6 +12,7 @@ describeEmptyMachineOutput('printEmpty (contract via describeEmptyMachineOutput)
     run: async (extraArgs) => {
         printEmpty({
             options: {
+                idsOnly: extraArgs.includes('--ids-only'),
                 json: extraArgs.includes('--json'),
                 ndjson: extraArgs.includes('--ndjson'),
             },
@@ -19,6 +20,7 @@ describeEmptyMachineOutput('printEmpty (contract via describeEmptyMachineOutput)
         })
     },
     humanMessage: HUMAN_MESSAGE,
+    idsOnly: true,
 })
 
 describe('printEmpty (extras)', () => {

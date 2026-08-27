@@ -14,6 +14,7 @@ import {
 describe('parseGlobalArgs', () => {
     it('defaults every field to false/0', () => {
         expect(parseGlobalArgs([])).toEqual({
+            idsOnly: false,
             json: false,
             ndjson: false,
             quiet: false,
@@ -25,6 +26,7 @@ describe('parseGlobalArgs', () => {
     })
 
     it.each([
+        ['--ids-only', 'idsOnly', true],
         ['--json', 'json', true],
         ['--ndjson', 'ndjson', true],
         ['--quiet', 'quiet', true],
@@ -266,6 +268,7 @@ describe('createSpinnerGate', () => {
     })
 
     it.each([
+        ['--ids-only'],
         ['--json'],
         ['--ndjson'],
         ['--no-spinner'],
