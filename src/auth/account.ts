@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
-import { formatJson, formatNdjson } from '../json.js'
+import { formatJson, outputNdjson } from '../json.js'
 import { type ViewOptions, emitView } from '../options.js'
 import type {
     AccountRef,
@@ -172,7 +172,7 @@ export function attachAccountListCommand<TAccount extends AuthAccount = AuthAcco
             // produced rather than buffering a joined string. `--json` wins when
             // both flags are set. Empty list → no lines (EOF-as-end-of-stream).
             if (view.ndjson && !view.json) {
-                for (const entry of accounts) console.log(formatNdjson([toPayload(entry)]))
+                await outputNdjson(accounts.map(toPayload))
                 return
             }
             // `renderJson` is machine-mode only, so build the payload lazily —
@@ -180,7 +180,7 @@ export function attachAccountListCommand<TAccount extends AuthAccount = AuthAcco
             const payload = view.json
                 ? { accounts: accounts.map(toPayload), default: defaultRef }
                 : {}
-            emitView(view, payload, () => {
+            await emitView(view, payload, () => {
                 const ctx: AttachAccountListContext<TAccount> = {
                     accounts,
                     default: defaultRef,
@@ -224,7 +224,7 @@ export function attachAccountUseCommand<TAccount extends AuthAccount = AuthAccou
                     ? ((await options.store.list()).find((entry) => entry.isDefault)?.account.id ??
                       ref)
                     : ref
-                emitView(view, { ok: true, default: resolvedDefault }, () => [
+                await emitView(view, { ok: true, default: resolvedDefault }, () => [
                     `✓ Default account set to ${ref}`,
                 ])
             }
@@ -307,7 +307,11 @@ export function attachAccountCurrentCommand<TAccount extends AuthAccount = AuthA
                     { account: ctx.account, isDefault: ctx.isDefault, flags },
                     options.renderJson,
                 )
-                console.log(view.json ? formatJson(payload) : formatNdjson([payload]))
+                if (view.json) {
+                    console.log(formatJson(payload))
+                } else {
+                    await outputNdjson([payload])
+                }
                 return
             }
             const text = options.renderText
@@ -389,7 +393,7 @@ export function attachAccountRemoveCommand<TAccount extends AuthAccount = AuthAc
             // action convention); human runs the thunk. The guard skips the
             // silent case so `emitView`'s own `--ndjson` branch never fires.
             if (view.json || !view.ndjson) {
-                emitView(view, { ok: true, removed: cleared.account.id }, () => {
+                await emitView(view, { ok: true, removed: cleared.account.id }, () => {
                     const name = cleared.account.label ?? cleared.account.id
                     const removedLine = `✓ Removed ${name}${ctx.wasDefault ? ' (default)' : ''}`
                     const text = options.renderText ? options.renderText(ctx) : removedLine

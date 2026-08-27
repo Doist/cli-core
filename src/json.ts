@@ -1,3 +1,15 @@
+import { writeLines } from './stream.js'
+
+function stringifyNdjsonItem(item: unknown, index: number, source: string): string {
+    const line = JSON.stringify(item)
+    if (line === undefined) {
+        throw new TypeError(
+            `${source}: item at index ${index} is not JSON-serializable (got undefined, function, or symbol)`,
+        )
+    }
+    return line
+}
+
 /**
  * Pretty-print a value as JSON with 2-space indentation. Matches the canonical
  * `--json` output style used across the Doist CLIs.
@@ -25,15 +37,10 @@ export function formatJson(value: unknown): string {
  * silently emitting blank lines that would corrupt the output stream.
  */
 export function formatNdjson(items: readonly unknown[]): string {
-    return items
-        .map((item, i) => {
-            const line = JSON.stringify(item)
-            if (line === undefined) {
-                throw new TypeError(
-                    `formatNdjson: item at index ${i} is not JSON-serializable (got undefined, function, or symbol)`,
-                )
-            }
-            return line
-        })
-        .join('\n')
+    return items.map((item, index) => stringifyNdjsonItem(item, index, 'formatNdjson')).join('\n')
+}
+
+/** Write newline-delimited JSON to stdout while respecting stream backpressure. */
+export async function outputNdjson(items: Iterable<unknown>): Promise<void> {
+    await writeLines(items, (item, index) => stringifyNdjsonItem(item, index, 'outputNdjson'))
 }

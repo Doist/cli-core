@@ -1,5 +1,5 @@
 import { CliError } from './errors.js'
-import { formatJson, formatNdjson } from './json.js'
+import { formatJson, outputNdjson } from './json.js'
 
 /** Canonical output modes shared by Doist CLIs. */
 export const OUTPUT_MODES = ['human', 'json', 'ndjson', 'ids-only'] as const
@@ -53,17 +53,17 @@ export function resolveOutputMode(options: ListViewOptions): OutputMode {
  * human-mode strings (chalk colouring, conditional formatting) are never
  * built when machine output is requested.
  */
-export function emitView(
+export async function emitView(
     view: ViewOptions,
     payload: Record<string, unknown>,
     humanLines: () => ReadonlyArray<string>,
-): void {
+): Promise<void> {
     if (view.json) {
         console.log(formatJson(payload))
         return
     }
     if (view.ndjson) {
-        console.log(formatNdjson([payload]))
+        await outputNdjson([payload])
         return
     }
     for (const line of humanLines()) console.log(line)

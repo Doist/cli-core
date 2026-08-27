@@ -16,27 +16,27 @@ describe('outputIds', () => {
         vi.restoreAllMocks()
     })
 
-    it('writes IDs to stdout in one block', () => {
-        const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    it('writes IDs to stdout in one block', async () => {
+        const write = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
 
-        outputIds([{ id: 'a' }, { id: 'b' }], (item) => item.id)
+        await outputIds([{ id: 'a' }, { id: 'b' }], (item) => item.id)
 
-        expect(log).toHaveBeenCalledOnce()
-        expect(log).toHaveBeenCalledWith('a\nb')
+        expect(write).toHaveBeenCalledOnce()
+        expect(write).toHaveBeenCalledWith('a\nb\n')
     })
 
-    it('writes nothing to stdout for no results', () => {
-        const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    it('writes nothing to stdout for no results', async () => {
+        const write = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
 
-        outputIds([], (item: { id: string }) => item.id)
+        await outputIds([], (item: { id: string }) => item.id)
 
-        expect(log).not.toHaveBeenCalled()
+        expect(write).not.toHaveBeenCalled()
     })
 
-    it('writes pagination notices to stderr', () => {
+    it('writes pagination notices to stderr', async () => {
         const error = vi.spyOn(console, 'error').mockImplementation(() => {})
 
-        outputIds([], (item: { id: string }) => item.id, 'More results exist.')
+        await outputIds([], (item: { id: string }) => item.id, 'More results exist.')
 
         expect(error).toHaveBeenCalledWith('More results exist.')
     })

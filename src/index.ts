@@ -33,7 +33,7 @@ export type {
     GlobalArgsStore,
     SpinnerGateOptions,
 } from './global-args.js'
-export { formatJson, formatNdjson } from './json.js'
+export { formatJson, formatNdjson, outputNdjson } from './json.js'
 export { formatIds, outputIds } from './ids.js'
 export { emitView, OUTPUT_MODES, resolveOutputMode } from './options.js'
 export type { ListViewOptions, OutputMode, ViewOptions } from './options.js'

@@ -274,7 +274,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const channel = await getConfiguredUpdateChannel(options.configPath)
 
     if (cmd.channel) {
-        emitView(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
+        await emitView(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
         return
     }
 
@@ -314,7 +314,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const updateAvailable = !upToDate && isNewer(currentVersion, latestVersion)
 
     if (cmd.check) {
-        emitView(view, { currentVersion, latestVersion, channel, updateAvailable }, () => {
+        await emitView(view, { currentVersion, latestVersion, channel, updateAvailable }, () => {
             const channelLine = `  Channel: ${formatChannel(channel)}`
             const headline = upToDate
                 ? `${chalk.green('✓')} Already up to date (v${currentVersion})`
@@ -327,7 +327,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     }
 
     if (upToDate) {
-        emitView(view, { currentVersion, latestVersion, channel, installed: false }, () => [
+        await emitView(view, { currentVersion, latestVersion, channel, installed: false }, () => [
             `${chalk.green('✓')} Already up to date${label} (v${currentVersion})`,
         ])
         return
@@ -405,7 +405,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         via: brew ? ('brew' as const) : pm,
         ...(brew && installedVersion ? { installedVersion } : {}),
     }
-    emitView(view, summary, () => {
+    await emitView(view, summary, () => {
         const lines = [
             `${chalk.green('✓')} ${brew ? 'brew upgrade complete' : `Updated to v${latestVersion}`}${label}`,
         ]
@@ -442,7 +442,7 @@ async function runSwitch(
 
     await updateConfigOrThrow<CoreConfig>(options.configPath, { update_channel: channel })
 
-    emitView(view, { channel }, () => {
+    await emitView(view, { channel }, () => {
         if (channel === 'pre-release') {
             return [
                 `${chalk.green('✓')} Update channel set to ${formatChannel(channel)}`,

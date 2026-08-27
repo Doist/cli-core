@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
-import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
+import {
+    buildProgram,
+    installCapturedConsole,
+    installCapturedStream,
+} from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     alanGrant,
@@ -77,6 +81,7 @@ function buildRemove(
 
 describe('attachAccountListCommand', () => {
     const logSpy = installCapturedConsole()
+    const stdoutSpy = installCapturedStream()
 
     it('renders default human lines with a (default) marker only on the default entry', async () => {
         const { program } = buildList()
@@ -168,11 +173,12 @@ describe('attachAccountListCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'list', '--ndjson'])
 
-        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
-        expect(emitted).toEqual([
-            formatNdjson([{ account: alanGrant, isDefault: true }]),
-            formatNdjson([{ account: ellieSattler, isDefault: false }]),
-        ])
+        expect(stdoutSpy()).toHaveBeenCalledWith(
+            `${formatNdjson([
+                { account: alanGrant, isDefault: true },
+                { account: ellieSattler, isDefault: false },
+            ])}\n`,
+        )
     })
 
     it('shapes each --ndjson line via renderJson, matching the --json accounts entries', async () => {
@@ -196,11 +202,12 @@ describe('attachAccountListCommand', () => {
             isDefault: false,
             flags: {},
         })
-        const emitted = logSpy().mock.calls.map((call: unknown[]) => call[0])
-        expect(emitted).toEqual([
-            formatNdjson([{ name: 'Alan Grant', isDefault: true }]),
-            formatNdjson([{ name: 'Ellie Sattler', isDefault: false }]),
-        ])
+        expect(stdoutSpy()).toHaveBeenCalledWith(
+            `${formatNdjson([
+                { name: 'Alan Grant', isDefault: true },
+                { name: 'Ellie Sattler', isDefault: false },
+            ])}\n`,
+        )
     })
 
     it('prefers --json over --ndjson when both flags are passed', async () => {
@@ -426,6 +433,7 @@ describe('attachAccountUseCommand', () => {
 
 describe('attachAccountCurrentCommand', () => {
     const logSpy = installCapturedConsole()
+    const stdoutSpy = installCapturedStream()
 
     it('renders the default human line with a (default) marker for the active account', async () => {
         const { program } = buildCurrent()
@@ -491,8 +499,8 @@ describe('attachAccountCurrentCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'account', 'current', '--ndjson'])
 
-        expect(logSpy()).toHaveBeenCalledWith(
-            formatNdjson([{ account: alanGrant, isDefault: true }]),
+        expect(stdoutSpy()).toHaveBeenCalledWith(
+            `${formatNdjson([{ account: alanGrant, isDefault: true }])}\n`,
         )
     })
 

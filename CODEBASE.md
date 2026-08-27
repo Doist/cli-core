@@ -60,7 +60,8 @@ src/
 ├─ index.ts               # Root barrel (the `.` export)
 ├─ errors.ts              # CliError<TCode> + CliErrorCode aggregator + getErrorMessage
 ├─ config.ts              # XDG config I/O; CoreConfig / UpdateChannel / ConfigErrorCode
-├─ json.ts                # formatJson / formatNdjson (throw on non-serializable)
+├─ json.ts                # formatJson / formatNdjson / outputNdjson
+├─ stream.ts              # Internal backpressure-aware buffered line writer
 ├─ options.ts             # ViewOptions type + emitView (json/ndjson/human dispatch)
 ├─ empty.ts               # printEmpty (machine-aware empty-state output)
 ├─ global-args.ts         # parseGlobalArgs + spinner/accessible gate factories + stripUserFlag

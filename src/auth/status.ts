@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
-import { formatJson, formatNdjson } from '../json.js'
+import { formatJson, outputNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
 import type {
     AccountRef,
@@ -149,7 +149,7 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
         }
         if (view.ndjson) {
             const payload = options.renderJson ? options.renderJson({ account, flags }) : account
-            console.log(formatNdjson([payload]))
+            await outputNdjson([payload])
             return
         }
         const text = options.renderText({ account, view, flags })

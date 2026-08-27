@@ -79,10 +79,14 @@ function mockSpawnError(error: Error) {
 }
 
 let consoleSpy: ReturnType<typeof vi.spyOn>
+let stdoutSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
     chalk.level = 0
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    stdoutSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation((() => true) as typeof process.stdout.write)
     mockReadConfigOrThrow.mockReset().mockResolvedValue({})
     mockUpdateConfigOrThrow.mockReset().mockResolvedValue(undefined)
     mockSpawn.mockClear()
@@ -187,7 +191,11 @@ describe('update --check', () => {
     ])('emits machine envelope under %s', async (flag, parse) => {
         mockFetchOk('99.99.99')
         await createProgram().parseAsync(['node', 'td', 'update', '--check', flag])
-        expect(parse(consoleSpy.mock.calls[0][0] as string)).toEqual({
+        const output =
+            flag === '--ndjson'
+                ? stdoutSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('')
+                : String(consoleSpy.mock.calls[0][0])
+        expect(parse(output)).toEqual({
             currentVersion: '1.0.0',
             latestVersion: '99.99.99',
             channel: 'stable',

@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { formatJson, formatNdjson } from './json.js'
+import { formatJson, formatNdjson, outputNdjson } from './json.js'
 
 describe('formatJson', () => {
     it('pretty-prints objects with 2-space indentation', () => {
@@ -67,5 +67,36 @@ describe('formatNdjson', () => {
         expect(() => formatNdjson([1, undefined, 2])).toThrow(/index 1.*not JSON-serializable/)
         expect(() => formatNdjson([() => 0])).toThrow(/index 0/)
         expect(() => formatNdjson([Symbol('x')])).toThrow(/index 0/)
+    })
+})
+
+describe('outputNdjson', () => {
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    it('writes NDJSON to stdout in one block', async () => {
+        const write = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+
+        await outputNdjson([{ a: 1 }, { a: 2 }])
+
+        expect(write).toHaveBeenCalledOnce()
+        expect(write).toHaveBeenCalledWith('{"a":1}\n{"a":2}\n')
+    })
+
+    it('writes nothing for an empty iterable', async () => {
+        const write = vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+
+        await outputNdjson([])
+
+        expect(write).not.toHaveBeenCalled()
+    })
+
+    it('reports the index of a non-serializable item', async () => {
+        vi.spyOn(process.stdout, 'write').mockReturnValue(true)
+
+        await expect(outputNdjson([1, undefined, 2])).rejects.toThrow(
+            /index 1.*not JSON-serializable/,
+        )
     })
 })

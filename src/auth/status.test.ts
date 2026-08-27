@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
-import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
+import {
+    buildProgram,
+    installCapturedConsole,
+    installCapturedStream,
+} from '../test-support/cli-harness.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
@@ -44,6 +48,7 @@ function build(
 
 describe('attachStatusCommand', () => {
     const logSpy = installCapturedConsole()
+    const stdoutSpy = installCapturedStream()
 
     it('emits renderText output in plain mode', async () => {
         const { program, renderText } = build()
@@ -97,7 +102,7 @@ describe('attachStatusCommand', () => {
 
         await program.parseAsync(['node', 'cli', 'auth', 'status', '--ndjson'])
 
-        expect(logSpy()).toHaveBeenCalledWith(formatNdjson([account]))
+        expect(stdoutSpy()).toHaveBeenCalledWith(`${formatNdjson([account])}\n`)
     })
 
     it('does not invoke renderJson in human mode', async () => {
