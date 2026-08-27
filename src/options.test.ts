@@ -46,6 +46,11 @@ describe('resolveOutputMode', () => {
         [{ json: true, idsOnly: true }, 'Options --json, --ids-only are mutually exclusive.'],
         [{ ndjson: true, idsOnly: true }, 'Options --ndjson, --ids-only are mutually exclusive.'],
     ])('rejects conflicting output flags in %o', (options, message) => {
-        expect(() => resolveOutputMode(options)).toThrow(message)
+        try {
+            resolveOutputMode(options)
+            expect.fail('Expected conflicting output flags to throw')
+        } catch (error) {
+            expect(error).toMatchObject({ code: 'CONFLICTING_OPTIONS', message })
+        }
     })
 })

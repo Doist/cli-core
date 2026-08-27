@@ -1,5 +1,5 @@
 import { formatJson } from './json.js'
-import type { ListViewOptions } from './options.js'
+import { type ListViewOptions, resolveOutputMode } from './options.js'
 
 /**
  * Gate the empty-state print on the active output mode:
@@ -18,11 +18,12 @@ export function printEmpty({
     options: ListViewOptions
     message: string
 }): void {
-    if (options.json) {
+    const outputMode = resolveOutputMode(options)
+    if (outputMode === 'json') {
         console.log(formatJson([]))
         return
     }
-    if (options.ndjson || options.idsOnly) {
+    if (outputMode === 'ndjson' || outputMode === 'ids-only') {
         return
     }
     console.log(message)

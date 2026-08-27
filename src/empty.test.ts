@@ -48,8 +48,10 @@ describe('printEmpty (extras)', () => {
         writeSpy = undefined
     })
 
-    it('prefers --json over --ndjson when both flags are set', () => {
-        printEmpty({ options: { json: true, ndjson: true }, message: 'unused' })
-        expect(captured).toBe('[]\n')
+    it('rejects conflicting output modes', () => {
+        expect(() =>
+            printEmpty({ options: { json: true, ndjson: true }, message: 'unused' }),
+        ).toThrow('Options --json, --ndjson are mutually exclusive.')
+        expect(captured).toBe('')
     })
 })

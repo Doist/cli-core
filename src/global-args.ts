@@ -16,17 +16,16 @@
 import type { ListViewOptions } from './options.js'
 import { isCI } from './terminal.js'
 
-export type GlobalArgs = Required<Pick<ListViewOptions, 'json' | 'ndjson'>> &
-    Pick<ListViewOptions, 'idsOnly'> & {
-        quiet: boolean
-        verbose: 0 | 1 | 2 | 3 | 4
-        accessible: boolean
-        noSpinner: boolean
-        /** false = absent, true = present without path, string = path. */
-        progressJsonl: string | true | false
-        /** Account selector from `--user <ref>` / `--user=<ref>`; `undefined` when absent or valueless. */
-        user?: string
-    }
+export type GlobalArgs = Required<Pick<ListViewOptions, 'idsOnly' | 'json' | 'ndjson'>> & {
+    quiet: boolean
+    verbose: 0 | 1 | 2 | 3 | 4
+    accessible: boolean
+    noSpinner: boolean
+    /** false = absent, true = present without path, string = path. */
+    progressJsonl: string | true | false
+    /** Account selector from `--user <ref>` / `--user=<ref>`; `undefined` when absent or valueless. */
+    user?: string
+}
 
 const SHORT_FLAGS: Record<string, 'quiet' | 'verbose'> = {
     q: 'quiet',
