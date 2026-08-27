@@ -4,12 +4,15 @@ type EmptyOutputConfig = {
     setup: () => void | Promise<void>
     run: (extraArgs: string[]) => Promise<void>
     humanMessage: string | RegExp
+    /** Also assert the optional `--ids-only` empty-output contract. */
+    idsOnly?: boolean
 }
 
 /**
  * Asserts the standard `printEmpty` contract for a command:
  *   --json   → writes exactly `'[]\n'` to stdout
  *   --ndjson → writes nothing to stdout (no stray newline)
+ *   --ids-only → writes nothing when `idsOnly` is enabled in the config
  *   neither  → writes exactly the human message + `\n` to stdout
  *
  * Captures bytes from both `console.log` (which vitest intercepts before
@@ -55,6 +58,13 @@ export function describeEmptyMachineOutput(label: string, config: EmptyOutputCon
             await config.run(['--ndjson'])
             expect(captured).toBe('')
         })
+
+        if (config.idsOnly) {
+            it('writes nothing to stdout for --ids-only', async () => {
+                await config.run(['--ids-only'])
+                expect(captured).toBe('')
+            })
+        }
 
         it('writes exactly the human message to stdout when no machine flag is set', async () => {
             await config.run([])

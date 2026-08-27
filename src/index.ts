@@ -34,8 +34,9 @@ export type {
     SpinnerGateOptions,
 } from './global-args.js'
 export { formatJson, formatNdjson } from './json.js'
-export { emitView } from './options.js'
-export type { ViewOptions } from './options.js'
+export { formatIds, outputIds } from './ids.js'
+export { emitView, OUTPUT_MODES, resolveOutputMode } from './options.js'
+export type { ListViewOptions, OutputMode, ViewOptions } from './options.js'
 export { createSpinner } from './spinner.js'
 export type {
     LoadingSpinner,
