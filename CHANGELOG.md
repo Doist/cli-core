@@ -1,3 +1,9 @@
+## [1.4.0](https://github.com/Doist/cli-core/compare/v1.3.0...v1.4.0) (2026-08-27)
+
+### Features
+
+* add ids-only output support ([#121](https://github.com/Doist/cli-core/issues/121)) ([43eaf80](https://github.com/Doist/cli-core/commit/43eaf8050939078aaa76f9ba9b76a49f1a2c1f41))
+
 ## [1.3.0](https://github.com/Doist/cli-core/compare/v1.2.0...v1.3.0) (2026-08-27)
 
 ### Features
