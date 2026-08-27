@@ -1,3 +1,9 @@
+## [1.3.0](https://github.com/Doist/cli-core/compare/v1.2.0...v1.3.0) (2026-08-27)
+
+### Features
+
+* **auth:** support RFC 8707 resource indicators on the PKCE provider ([#120](https://github.com/Doist/cli-core/issues/120)) ([deea470](https://github.com/Doist/cli-core/commit/deea470671eb1f05688fc9ffae1bd4241358217e))
+
 ## [1.2.0](https://github.com/Doist/cli-core/compare/v1.1.0...v1.2.0) (2026-08-15)
 
 ### Features
