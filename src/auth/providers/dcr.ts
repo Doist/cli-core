@@ -1,9 +1,4 @@
-import type {
-    AuthorizationServer,
-    Client,
-    ClientAuth,
-    TokenEndpointRequestOptions,
-} from 'oauth4webapi'
+import type { AuthorizationServer, Client, ClientAuth } from 'oauth4webapi'
 
 import { getErrorMessage } from '../../errors.js'
 import type { CliError } from '../../errors.js'
@@ -29,6 +24,7 @@ import {
     mapRefreshError,
     resolve,
     resolveResource,
+    tokenRequestOptions,
 } from './oauth.js'
 import type { OAuthLazyString } from './pkce.js'
 
@@ -505,24 +501,6 @@ function selectClientAuth(
     if (!clientSecret || effectiveAuthMethod === 'none') return oauth.None()
     if (effectiveAuthMethod === 'client_secret_post') return oauth.ClientSecretPost(clientSecret)
     return clientSecretBasicRfc3986(clientSecret)
-}
-
-/**
- * Assemble the oauth4webapi token-request options: the injected `fetchImpl`
- * (via the `customFetch` symbol), the RFC 8707 `resource` indicator (as an
- * `additionalParameters` body field), and an optional abort `signal`.
- */
-function tokenRequestOptions(
-    oauth: typeof import('oauth4webapi'),
-    fetchImpl: typeof fetch | undefined,
-    resource: string | undefined,
-    signal?: AbortSignal,
-): TokenEndpointRequestOptions {
-    const opts: TokenEndpointRequestOptions = {}
-    if (fetchImpl) opts[oauth.customFetch] = fetchImpl
-    if (resource) opts.additionalParameters = { resource }
-    if (signal) opts.signal = signal
-    return opts
 }
 
 /**

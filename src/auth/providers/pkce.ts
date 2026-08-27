@@ -1,4 +1,4 @@
-import type { AuthorizationServer, Client, TokenEndpointRequestOptions } from 'oauth4webapi'
+import type { AuthorizationServer, Client } from 'oauth4webapi'
 import { deriveChallenge, generateVerifier } from '../pkce.js'
 import type {
     AuthAccount,
@@ -19,6 +19,7 @@ import {
     postTokenEndpoint,
     resolve,
     resolveResource,
+    tokenRequestOptions,
 } from './oauth.js'
 
 // Upper bound on the refresh-token POST. Kept under the refresh helper's
@@ -155,30 +156,31 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // before calling exchange, so a `tokenUrl: ({ flags }) => ...`
             // resolver sees the same flags it saw during authorize.
             const flags = (input.handshake.flags as Record<string, unknown> | undefined) ?? {}
-            const [tokenUrl, resource] = await Promise.all([
+            // All three may be async (config read / prompt) and none depends on
+            // another, so the exchange waits on the slowest rather than the sum.
+            const [tokenUrl, resource, extraTokenParams] = await Promise.all([
                 resolve(options.tokenUrl, input.handshake, flags),
                 resolveResource(options.resource, input.handshake, flags),
+                options.tokenRequestParams?.({ handshake: input.handshake, flags }) ?? {},
             ])
-
-            const extraTokenParams = await (options.tokenRequestParams?.({
-                handshake: input.handshake,
-                flags,
-            }) ?? {})
             const body = new URLSearchParams({
                 grant_type: 'authorization_code',
                 code: input.code,
                 redirect_uri: input.redirectUri,
                 client_id: clientId,
                 code_verifier: verifier,
-                // Set before the caller's extras so `tokenRequestParams` can
-                // still override it, matching the precedence that held before
-                // `resource` became a first-class option.
-                ...(resource ? { resource } : {}),
                 ...Object.fromEntries(
                     Object.entries(extraTokenParams)
                         .filter(([, value]) => value !== undefined)
                         .map(([key, value]) => [key, String(value)]),
                 ),
+                // Applied last so a configured `resource` always matches the one
+                // sent on the authorize request. RFC 8707 §2.2 requires the two
+                // to agree, so letting `tokenRequestParams` override it here
+                // would produce a request a conformant server must reject.
+                // With `resource` unset this contributes nothing, so injecting
+                // one through `tokenRequestParams` still works.
+                ...(resource ? { resource } : {}),
             })
 
             const result = await postTokenEndpoint({
@@ -219,13 +221,14 @@ export function createPkceProvider<TAccount extends AuthAccount>(
             // fetch when present, so a custom transport (proxy dispatcher,
             // decompression) applies to the refresh grant too — oauth4webapi
             // otherwise captures the global `fetch`.
-            const requestOptions: TokenEndpointRequestOptions = {
-                signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
-                // Keep the refreshed token pointed at the same audience the
-                // authorization-code grant asked for.
-                ...(resource ? { additionalParameters: { resource } } : {}),
-                ...(options.fetchImpl ? { [oauth.customFetch]: options.fetchImpl } : {}),
-            }
+            // The `resource` indicator rides along so the rotated token keeps
+            // the audience the authorization-code grant asked for.
+            const requestOptions = tokenRequestOptions(
+                oauth,
+                options.fetchImpl,
+                resource,
+                AbortSignal.timeout(REFRESH_TIMEOUT_MS),
+            )
             try {
                 const response = await oauth.refreshTokenGrantRequest(
                     as,

@@ -221,7 +221,9 @@ describe('createPkceProvider', () => {
         expect(tokenBody?.has('resource')).toBe(false)
     })
 
-    it('lets tokenRequestParams override the configured resource on the token request', async () => {
+    it('keeps a configured resource aligned with the authorize request, over tokenRequestParams', async () => {
+        // RFC 8707 §2.2: the token request's resource must match the one the
+        // authorize request carried, so the configured value can't be displaced.
         let tokenBody: URLSearchParams | undefined
         const provider = createPkceProvider<Account>({
             authorizeUrl: 'https://example.com/oauth/authorize',
@@ -242,7 +244,32 @@ describe('createPkceProvider', () => {
             redirectUri: 'http://127.0.0.1:8765/callback',
             handshake: { codeVerifier: 'v', clientId: 'client-xyz' },
         })
-        expect(tokenBody?.get('resource')).toBe('https://other.example.com')
+        expect(tokenBody?.get('resource')).toBe('https://api.example.com')
+    })
+
+    it('still lets tokenRequestParams supply a resource when the option is unset', async () => {
+        // Back-compat: injecting one by hand was the only way before `resource`
+        // became a first-class option.
+        let tokenBody: URLSearchParams | undefined
+        const provider = createPkceProvider<Account>({
+            authorizeUrl: 'https://example.com/oauth/authorize',
+            tokenUrl: 'https://example.com/oauth/token',
+            clientId: 'client-xyz',
+            tokenRequestParams: () => ({ resource: 'https://legacy.example.com' }),
+            validate,
+            fetchImpl: ((_url: RequestInfo | URL, init: RequestInit = {}) => {
+                tokenBody = new URLSearchParams(init.body as string)
+                return Promise.resolve(respond({ access_token: 'tok-1' }))
+            }) as typeof fetch,
+        })
+
+        await provider.exchangeCode({
+            code: 'c',
+            state: 's',
+            redirectUri: 'http://127.0.0.1:8765/callback',
+            handshake: { codeVerifier: 'v', clientId: 'client-xyz' },
+        })
+        expect(tokenBody?.get('resource')).toBe('https://legacy.example.com')
     })
 
     it('exchangeCode POSTs without client_secret and surfaces token endpoint failures as AUTH_TOKEN_EXCHANGE_FAILED', async () => {
