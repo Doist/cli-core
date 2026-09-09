@@ -178,7 +178,7 @@ registerUpdateCommand(program, {
 
 `distTag` replaces that channel mapping for a CLI published under a tag of its own (an invite-only CLI on `internal`, say). It installs from the pinned tag, `update switch` and `--channel` are not registered, the config file is never read, and both the human output and the machine record carry `distTag` where they would otherwise carry `channel`.
 
-Both actions read their view flags from the command and its ancestors, so `--json` works whether the consumer declares it on their root program or lets `update` own it. For the same reason, a consumer registering these commands should not declare `--check` or `--channel` on its root program.
+Both actions read `--json` / `--ndjson` from the command and its ancestors, so they work whether the consumer declares them on its root program or lets `update` own them. Nothing else is inherited: a root option that happens to be named `--check` or `--channel` has no effect on `update`.
 
 The semver helpers (`parseVersion`, `compareVersions`, `isNewer`, `getInstallTag`, `fetchLatestVersion`, `getConfiguredUpdateChannel`) are also exported for ad-hoc use outside the registered command.
 

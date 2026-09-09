@@ -300,28 +300,27 @@ type UpdateCmdOptions = {
 }
 
 /**
- * A command's own options over its ancestors'. Consumers declare `--json` /
- * `--ndjson` either on the commands registered here or on their root program,
- * and Commander parses each where it was declared, so both have to be read.
- * Locals win: a flag passed on the command itself beats a default inherited
- * from higher up.
+ * The view flags in effect, wherever they were declared. A consumer can own
+ * `--json` / `--ndjson` on its root program, and Commander then stores the
+ * value there rather than on the command it was typed after, so the ancestors
+ * have to be read too. Only these two are inherited: everything else these
+ * commands act on stays local, so a root option that happens to share a name
+ * with one of them cannot steer the command.
  */
-function mergedOptions<T>(command: Command): T {
-    return { ...command.optsWithGlobals(), ...command.opts() } as T
+function inheritedView(command: Command): ViewOptions {
+    const { json, ndjson } = command.optsWithGlobals() as ViewOptions
+    return { json, ndjson }
 }
 
 async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): Promise<void> {
-    // `--channel` isn't registered when a dist-tag is pinned, so a value here
-    // could only have come from a same-named option on the parent program.
-    const showChannel = !options.distTag && Boolean(cmd.channel)
-    if (cmd.check && showChannel) {
+    if (cmd.check && cmd.channel) {
         throw new CliError('INVALID_FLAGS', 'Specify either --check or --channel, not both.')
     }
 
     const view: ViewOptions = { json: cmd.json, ndjson: cmd.ndjson }
     const target = await resolveTarget(options)
 
-    if (showChannel && target.kind === 'channel') {
+    if (cmd.channel && target.kind === 'channel') {
         const { channel } = target
         emitView(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
         return
@@ -548,9 +547,9 @@ async function runSwitch(
  * Both subcommands accept `--json` / `--ndjson`, on the command itself or on
  * the consumer's root program; success branches emit a single record
  * (`{ currentVersion, latestVersion, channel | distTag, updateAvailable | installed }`
- * for `update`, `{ channel }` for `update switch`). Consumers registering these
- * commands should not declare `--check` or `--channel` on their root program,
- * since those names would then reach the `update` action.
+ * for `update`, `{ channel }` for `update switch`). Those two flags are the
+ * only ones read from an ancestor, so a root option sharing a name with
+ * `--check` or `--channel` has no effect here.
  *
  * ```ts
  * import { getConfigPath, createSpinner } from '@doist/cli-core'
@@ -596,7 +595,7 @@ export function registerUpdateCommand(program: Command, options: UpdateCommandOp
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async function (this: Command) {
-            await runUpdate(options, mergedOptions<UpdateCmdOptions>(this))
+            await runUpdate(options, { ...this.opts<UpdateCmdOptions>(), ...inheritedView(this) })
         })
 
     // A pinned dist-tag is the CLI's only release line; there is nothing to
@@ -611,6 +610,7 @@ export function registerUpdateCommand(program: Command, options: UpdateCommandOp
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async function (this: Command) {
-            await runSwitch(options, mergedOptions<SwitchCmdOptions>(this), program)
+            const cmd = { ...this.opts<SwitchCmdOptions>(), ...inheritedView(this) }
+            await runSwitch(options, cmd, program)
         })
 }

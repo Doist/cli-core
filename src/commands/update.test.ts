@@ -616,18 +616,30 @@ describe('update with a pinned distTag', () => {
         expect(fetch).toHaveBeenCalledWith(REGISTRY_URL)
     })
 
-    it('never reads the persisted channel', async () => {
+    it('ignores a persisted channel that would map elsewhere', async () => {
         mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
         mockFetchOk('99.99.99')
         await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check'])
         expect(fetch).toHaveBeenCalledWith(REGISTRY_URL)
-        expect(mockReadConfigOrThrow).not.toHaveBeenCalled()
     })
 
-    it('stays usable when the config holds an unrecognised update_channel', async () => {
-        mockReadConfigOrThrow.mockResolvedValue({
-            update_channel: 'canary',
-        } as Record<string, unknown>)
+    it.each([
+        [
+            'holds an unrecognised update_channel',
+            () =>
+                mockReadConfigOrThrow.mockResolvedValue({
+                    update_channel: 'canary',
+                } as Record<string, unknown>),
+        ],
+        [
+            'cannot be read at all',
+            () =>
+                mockReadConfigOrThrow.mockRejectedValue(
+                    new CliError('CONFIG_INVALID_JSON', 'Cannot read config at /fake/config.json'),
+                ),
+        ],
+    ])('updates even when the config %s', async (_, breakConfig) => {
+        breakConfig()
         mockFetchOk('99.99.99')
         await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check'])
         expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Update available'))
@@ -685,12 +697,20 @@ describe('update with a pinned distTag', () => {
 })
 
 describe('update view flags declared on the parent program', () => {
-    function createRootProgram(): Command {
+    function createRootProgram(...rootFlags: string[]): Command {
         const program = new Command()
         program.name('td').exitOverride().option('--json', 'Emit machine-readable JSON output')
+        for (const flag of rootFlags) program.option(flag, 'Consumer flag')
         registerUpdateCommand(program, BASE_OPTIONS)
         return program
     }
+
+    it.each(['--channel', '--check'])('ignores a root %s when running an update', async (flag) => {
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createRootProgram(flag).parseAsync(['node', 'td', flag, 'update'])
+        expect(mockSpawn).toHaveBeenCalled()
+    })
 
     it.each([
         ['parent-parsed: --json before update', ['node', 'td', '--json', 'update', '--check']],
