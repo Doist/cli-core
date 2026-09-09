@@ -5,6 +5,7 @@ import { CliError } from '../errors.js'
 import type { SpinnerOptions } from '../spinner.js'
 import {
     compareVersions,
+    fetchLatestVersion,
     isNewer,
     parseVersion,
     registerUpdateCommand,
@@ -210,6 +211,7 @@ describe('update install flow', () => {
         execpath: string | undefined,
         pm: string,
         args: string[],
+        distTag: string | undefined,
     ]
     const cases: SpawnCase[] = [
         [
@@ -218,6 +220,7 @@ describe('update install flow', () => {
             undefined,
             'npm',
             ['install', '-g', '@doist/todoist-cli@latest'],
+            undefined,
         ],
         [
             'stable + pnpm (via npm_execpath)',
@@ -225,6 +228,7 @@ describe('update install flow', () => {
             '/usr/local/lib/node_modules/pnpm/bin/pnpm.cjs',
             'pnpm',
             ['add', '-g', '@doist/todoist-cli@latest'],
+            undefined,
         ],
         [
             'pre-release + npm',
@@ -232,17 +236,30 @@ describe('update install flow', () => {
             undefined,
             'npm',
             ['install', '-g', '@doist/todoist-cli@next'],
+            undefined,
+        ],
+        [
+            'pinned dist-tag + npm',
+            undefined,
+            undefined,
+            'npm',
+            ['install', '-g', '@doist/todoist-cli@internal'],
+            'internal',
         ],
     ]
 
     it.each(cases)(
         'spawns the right install command (%s)',
-        async (_, channel, execpath, pm, args) => {
+        async (_, channel, execpath, pm, args, distTag) => {
             if (channel) mockReadConfigOrThrow.mockResolvedValue({ update_channel: channel })
             if (execpath) vi.stubEnv('npm_execpath', execpath)
             mockFetchOk('99.99.99')
             mockSpawnExit()
-            await createProgram().parseAsync(['node', 'td', 'update'])
+            await createProgram(distTag ? { distTag } : undefined).parseAsync([
+                'node',
+                'td',
+                'update',
+            ])
             expect(mockSpawn).toHaveBeenCalledWith(pm, args, {
                 stdio: ['ignore', 'ignore', 'pipe'],
                 shell: process.platform === 'win32',
@@ -474,6 +491,16 @@ describe('update error paths', () => {
         })
     })
 
+    it('names the pinned dist-tag in the EACCES sudo hint', async () => {
+        mockFetchOk('99.99.99')
+        mockSpawnError(Object.assign(new Error('EACCES'), { code: 'EACCES' }))
+        await expect(
+            createProgram({ distTag: 'internal' }).parseAsync(['node', 'td', 'update']),
+        ).rejects.toMatchObject({
+            hints: [expect.stringContaining('@doist/todoist-cli@internal')],
+        })
+    })
+
     it('throws UPDATE_INSTALL_FAILED on non-zero exit (stderr in hints)', async () => {
         mockFetchOk('99.99.99')
         mockSpawnExit(1, 'npm ERR! something broke')
@@ -576,6 +603,140 @@ describe('getConfiguredUpdateChannel', () => {
         await expect(
             createProgram().parseAsync(['node', 'td', 'update', '--channel']),
         ).rejects.toMatchObject({ code: 'INVALID_UPDATE_CHANNEL' })
+    })
+})
+
+describe('update with a pinned distTag', () => {
+    const PINNED = { distTag: 'internal' } as const
+    const REGISTRY_URL = 'https://registry.npmjs.org/@doist/todoist-cli/internal'
+
+    it('queries the pinned dist-tag instead of the channel mapping', async () => {
+        mockFetchOk('99.99.99')
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check'])
+        expect(fetch).toHaveBeenCalledWith(REGISTRY_URL)
+    })
+
+    it('ignores a persisted channel that would map elsewhere', async () => {
+        mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
+        mockFetchOk('99.99.99')
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check'])
+        expect(fetch).toHaveBeenCalledWith(REGISTRY_URL)
+    })
+
+    it.each([
+        [
+            'holds an unrecognised update_channel',
+            () =>
+                mockReadConfigOrThrow.mockResolvedValue({
+                    update_channel: 'canary',
+                } as Record<string, unknown>),
+        ],
+        [
+            'cannot be read at all',
+            () =>
+                mockReadConfigOrThrow.mockRejectedValue(
+                    new CliError('CONFIG_INVALID_JSON', 'Cannot read config at /fake/config.json'),
+                ),
+        ],
+    ])('updates even when the config %s', async (_, breakConfig) => {
+        breakConfig()
+        mockFetchOk('99.99.99')
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check'])
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Update available'))
+    })
+
+    it('registers neither `update switch` nor --channel', () => {
+        const update = createProgram(PINNED).commands.find((command) => command.name() === 'update')
+        expect(update?.commands).toEqual([])
+        expect(update?.options.map((option) => option.long)).toEqual([
+            '--check',
+            '--json',
+            '--ndjson',
+        ])
+    })
+
+    it('labels human output with the pinned tag', async () => {
+        mockFetchOk('99.99.99')
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check'])
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Dist-tag: internal'))
+    })
+
+    it('emits a distTag envelope under --json for --check', async () => {
+        mockFetchOk('99.99.99')
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--check', '--json'])
+        expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toEqual({
+            currentVersion: '1.0.0',
+            latestVersion: '99.99.99',
+            distTag: 'internal',
+            updateAvailable: true,
+        })
+    })
+
+    it('emits a distTag envelope under --json after installing', async () => {
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update', '--json'])
+        const payloads = consoleSpy.mock.calls.map((call: unknown[]) =>
+            JSON.parse(call[0] as string),
+        )
+        expect(payloads).toContainEqual({
+            currentVersion: '1.0.0',
+            latestVersion: '99.99.99',
+            distTag: 'internal',
+            installed: true,
+            via: 'npm',
+        })
+    })
+
+    it('shows the changelog tip after a pinned install', async () => {
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createProgram(PINNED).parseAsync(['node', 'td', 'update'])
+        expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('td changelog'))
+    })
+})
+
+describe('update view flags declared on the parent program', () => {
+    function createRootProgram(...rootFlags: string[]): Command {
+        const program = new Command()
+        program.name('td').exitOverride().option('--json', 'Emit machine-readable JSON output')
+        for (const flag of rootFlags) program.option(flag, 'Consumer flag')
+        registerUpdateCommand(program, BASE_OPTIONS)
+        return program
+    }
+
+    it.each(['--channel', '--check'])('ignores a root %s when running an update', async (flag) => {
+        mockFetchOk('99.99.99')
+        mockSpawnExit()
+        await createRootProgram(flag).parseAsync(['node', 'td', flag, 'update'])
+        expect(mockSpawn).toHaveBeenCalled()
+    })
+
+    it.each([
+        ['parent-parsed: --json before update', ['node', 'td', '--json', 'update', '--check']],
+        ['child-parsed: --json after update', ['node', 'td', 'update', '--check', '--json']],
+    ])('emits the machine envelope when %s', async (_, argv) => {
+        mockFetchOk('99.99.99')
+        await createRootProgram().parseAsync(argv)
+        expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+            latestVersion: '99.99.99',
+        })
+    })
+})
+
+describe('fetchLatestVersion', () => {
+    it.each([
+        [
+            'prefers distTag over channel',
+            { channel: 'pre-release' as const, distTag: 'internal' },
+            'internal',
+        ],
+        ['maps the channel when no distTag is given', { channel: 'pre-release' as const }, 'next'],
+        ['defaults to the stable tag', {}, 'latest'],
+    ])('%s', async (_, args, tag) => {
+        mockFetchOk('2.0.0')
+        await expect(fetchLatestVersion({ packageName: 'pkg', ...args })).resolves.toBe('2.0.0')
+        expect(fetch).toHaveBeenCalledWith(`https://registry.npmjs.org/pkg/${tag}`)
     })
 })
 

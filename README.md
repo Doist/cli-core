@@ -162,7 +162,23 @@ registerUpdateCommand(program, {
 })
 ```
 
+A CLI published under a dist-tag of its own pins it instead of choosing a channel:
+
+```ts
+registerUpdateCommand(program, {
+    packageName: '@doist/automations-cli',
+    currentVersion: packageJson.version,
+    configPath: getConfigPath('tda'),
+    distTag: 'internal',
+    withSpinner,
+})
+```
+
 `update` checks the configured channel's npm dist-tag (`stable` → `latest`, `pre-release` → `next`), compares against `currentVersion`, and shells out to `npm i -g` (or `pnpm add -g` if `npm_execpath` indicates pnpm). When the CLI was installed via Homebrew (its binary resolves into a brew `Cellar`), it runs `brew upgrade <brewFormula>` instead — set `brewFormula` on brew-distributed CLIs (the brew formula may lag the npm publish, so an upgrade can be a no-op until the formula is bumped). `update switch --stable | --pre-release` flips the persisted `update_channel` field via `updateConfig`, preserving any sibling keys. Both subcommands accept `--json` / `--ndjson`. Errors are `CliError` (`INVALID_FLAGS`, `UPDATE_CHECK_FAILED`, `UPDATE_INSTALL_FAILED`, or the canonical `CONFIG_*` codes if the config file is broken).
+
+`distTag` replaces that channel mapping for a CLI published under a tag of its own (an invite-only CLI on `internal`, say). It installs from the pinned tag, `update switch` and `--channel` are not registered, the config file is never read, and both the human output and the machine record carry `distTag` where they would otherwise carry `channel`.
+
+Both actions read `--json` / `--ndjson` from the command and its ancestors, so they work whether the consumer declares them on its root program or lets `update` own them. Nothing else is inherited: a root option that happens to be named `--check` or `--channel` has no effect on `update`.
 
 The semver helpers (`parseVersion`, `compareVersions`, `isNewer`, `getInstallTag`, `fetchLatestVersion`, `getConfiguredUpdateChannel`) are also exported for ad-hoc use outside the registered command.
 

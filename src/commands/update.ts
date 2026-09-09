@@ -24,6 +24,13 @@ export type UpdateCommandOptions = {
     /** Absolute path to the CLI's config file (use `getConfigPath(appName)`). */
     configPath: string
     /**
+     * Pin the npm dist-tag to install from, e.g. `'internal'` for a CLI
+     * published under a tag of its own rather than `latest` / `next`. Setting
+     * it makes the channel machinery inert: `update switch` and `--channel` are
+     * not registered and `update_channel` is never read.
+     */
+    distTag?: string
+    /**
      * Homebrew formula to `brew upgrade` when the CLI was installed via
      * Homebrew, e.g. `'todoist-cli'` or a tapped `'doist/tap/todoist-cli'`. Set
      * this on CLIs distributed through brew; omit for npm-only CLIs.
@@ -107,7 +114,10 @@ export function getInstallTag(channel: UpdateChannel): string {
 
 export async function fetchLatestVersion(args: {
     packageName: string
-    channel: UpdateChannel
+    /** Channel to map through `getInstallTag`. Ignored when `distTag` is set. */
+    channel?: UpdateChannel
+    /** Exact npm dist-tag to query, bypassing the channel mapping. */
+    distTag?: string
     registryUrl?: string
 }): Promise<string> {
     const base = args.registryUrl ?? DEFAULT_REGISTRY_URL
@@ -116,7 +126,8 @@ export async function fetchLatestVersion(args: {
     // metadata. The abbreviated `application/vnd.npm.install-v1+json` format
     // is rejected here with HTTP 406 — it only applies to the package-doc
     // endpoint (`/<package>`), not dist-tag resolutions.
-    const url = `${base}/${args.packageName}/${getInstallTag(args.channel)}`
+    const tag = args.distTag ?? getInstallTag(args.channel ?? 'stable')
+    const url = `${base}/${args.packageName}/${tag}`
     const response = await fetch(url)
     if (!response.ok) {
         throw new Error(`Registry request failed (HTTP ${response.status})`)
@@ -250,6 +261,29 @@ function channelLabel(channel: UpdateChannel): string {
     return channel === 'pre-release' ? ` ${chalk.magenta('(pre-release)')}` : ''
 }
 
+/** What a run installs from: a pinned dist-tag, or the configured channel. */
+type UpdateTarget =
+    | { kind: 'channel'; tag: string; channel: UpdateChannel }
+    | { kind: 'dist-tag'; tag: string; distTag: string }
+
+async function resolveTarget(options: UpdateCommandOptions): Promise<UpdateTarget> {
+    const { distTag } = options
+    if (distTag) return { kind: 'dist-tag', tag: distTag, distTag }
+    const channel = await getConfiguredUpdateChannel(options.configPath)
+    return { kind: 'channel', tag: getInstallTag(channel), channel }
+}
+
+/** The target field every machine-readable record carries. */
+function targetPayload(target: UpdateTarget): { channel: UpdateChannel } | { distTag: string } {
+    return target.kind === 'channel' ? { channel: target.channel } : { distTag: target.distTag }
+}
+
+function targetLabel(target: UpdateTarget): string {
+    return target.kind === 'channel'
+        ? channelLabel(target.channel)
+        : ` ${chalk.magenta(`(${target.distTag})`)}`
+}
+
 async function runWithSpinner<T>(
     withSpinner: WithSpinner | undefined,
     text: string,
@@ -265,21 +299,35 @@ type UpdateCmdOptions = {
     ndjson?: boolean
 }
 
+/**
+ * The view flags in effect, wherever they were declared. A consumer can own
+ * `--json` / `--ndjson` on its root program, and Commander then stores the
+ * value there rather than on the command it was typed after, so the ancestors
+ * have to be read too. Only these two are inherited: everything else these
+ * commands act on stays local, so a root option that happens to share a name
+ * with one of them cannot steer the command.
+ */
+function inheritedView(command: Command): ViewOptions {
+    const { json, ndjson } = command.optsWithGlobals() as ViewOptions
+    return { json, ndjson }
+}
+
 async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): Promise<void> {
     if (cmd.check && cmd.channel) {
         throw new CliError('INVALID_FLAGS', 'Specify either --check or --channel, not both.')
     }
 
     const view: ViewOptions = { json: cmd.json, ndjson: cmd.ndjson }
-    const channel = await getConfiguredUpdateChannel(options.configPath)
+    const target = await resolveTarget(options)
 
-    if (cmd.channel) {
+    if (cmd.channel && target.kind === 'channel') {
+        const { channel } = target
         emitView(view, { channel }, () => [`Update channel: ${formatChannel(channel)}`])
         return
     }
 
-    const tag = getInstallTag(channel)
-    const label = channelLabel(channel)
+    const { tag } = target
+    const label = targetLabel(target)
 
     // Fail fast on a guaranteed-broken install path before spending a registry
     // round-trip. `--check` never installs, so a missing formula is fine there.
@@ -300,7 +348,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
             () =>
                 fetchLatestVersion({
                     packageName: options.packageName,
-                    channel,
+                    distTag: tag,
                     registryUrl: options.registryUrl,
                 }),
         )
@@ -314,20 +362,30 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const updateAvailable = !upToDate && isNewer(currentVersion, latestVersion)
 
     if (cmd.check) {
-        emitView(view, { currentVersion, latestVersion, channel, updateAvailable }, () => {
-            const channelLine = `  Channel: ${formatChannel(channel)}`
+        const payload = { currentVersion, latestVersion, ...targetPayload(target), updateAvailable }
+        emitView(view, payload, () => {
+            const targetLine =
+                target.kind === 'channel'
+                    ? `  Channel: ${formatChannel(target.channel)}`
+                    : `  Dist-tag: ${chalk.magenta(target.distTag)}`
             const headline = upToDate
                 ? `${chalk.green('✓')} Already up to date (v${currentVersion})`
                 : updateAvailable
                   ? `Update available: ${chalk.dim(`v${currentVersion}`)} → ${chalk.green(`v${latestVersion}`)}`
                   : `Downgrade available: ${chalk.dim(`v${currentVersion}`)} → ${chalk.yellow(`v${latestVersion}`)}`
-            return [headline, channelLine]
+            return [headline, targetLine]
         })
         return
     }
 
     if (upToDate) {
-        emitView(view, { currentVersion, latestVersion, channel, installed: false }, () => [
+        const payload = {
+            currentVersion,
+            latestVersion,
+            ...targetPayload(target),
+            installed: false,
+        }
+        emitView(view, payload, () => [
             `${chalk.green('✓')} Already up to date${label} (v${currentVersion})`,
         ])
         return
@@ -400,7 +458,7 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
     const summary = {
         currentVersion,
         latestVersion,
-        channel,
+        ...targetPayload(target),
         installed,
         via: brew ? ('brew' as const) : pm,
         ...(brew && installedVersion ? { installedVersion } : {}),
@@ -409,7 +467,13 @@ async function runUpdate(options: UpdateCommandOptions, cmd: UpdateCmdOptions): 
         const lines = [
             `${chalk.green('✓')} ${brew ? 'brew upgrade complete' : `Updated to v${latestVersion}`}${label}`,
         ]
-        if (installed && channel === 'stable' && options.changelogCommandName) {
+        // A pinned dist-tag is that CLI's only release line, so it earns the
+        // tip the stable channel gets.
+        if (
+            installed &&
+            options.changelogCommandName &&
+            (target.kind === 'dist-tag' || target.channel === 'stable')
+        ) {
             lines.push(
                 `${chalk.dim('  Run')} ${chalk.cyan(options.changelogCommandName)} ${chalk.dim('to see what changed')}`,
             )
@@ -470,14 +534,22 @@ async function runSwitch(
  * `update switch` flips the persisted `update_channel` field between `'stable'`
  * and `'pre-release'`.
  *
+ * Set `distTag` for a CLI published under a tag of its own instead of
+ * `latest` / `next`. It replaces the channel mapping outright: `update switch`
+ * and `--channel` are not registered, the config file is never read, and the
+ * output carries `distTag` where it would otherwise carry `channel`.
+ *
  * Errors as `CliError` (`INVALID_FLAGS`, `INVALID_UPDATE_CHANNEL`,
  * `UPDATE_CHECK_FAILED`, `UPDATE_INSTALL_FAILED`, or the canonical `CONFIG_*`
  * codes when the config file is broken). The consumer's top-level error
  * handler is expected to format and exit.
  *
- * Both subcommands accept `--json` / `--ndjson`; success branches emit a single
- * record (`{ currentVersion, latestVersion, channel, updateAvailable | installed }`
- * for `update`, `{ channel }` for `update switch`).
+ * Both subcommands accept `--json` / `--ndjson`, on the command itself or on
+ * the consumer's root program; success branches emit a single record
+ * (`{ currentVersion, latestVersion, channel | distTag, updateAvailable | installed }`
+ * for `update`, `{ channel }` for `update switch`). Those two flags are the
+ * only ones read from an ancestor, so a root option sharing a name with
+ * `--check` or `--channel` has no effect here.
  *
  * ```ts
  * import { getConfigPath, createSpinner } from '@doist/cli-core'
@@ -494,18 +566,41 @@ async function runSwitch(
  *     withSpinner,
  * })
  * ```
+ *
+ * ```ts
+ * // A CLI published under its own dist-tag rather than `latest`.
+ * registerUpdateCommand(program, {
+ *     packageName: '@doist/automations-cli',
+ *     currentVersion: packageJson.version,
+ *     configPath: getConfigPath('tda'),
+ *     distTag: 'internal',
+ *     withSpinner,
+ * })
+ * ```
  */
 export function registerUpdateCommand(program: Command, options: UpdateCommandOptions): void {
+    const pinned = options.distTag
     const update = program
         .command('update')
-        .description('Update the CLI to the latest version for the configured channel')
+        .description(
+            pinned
+                ? `Update the CLI to the latest ${pinned} release`
+                : 'Update the CLI to the latest version for the configured channel',
+        )
         .option('--check', 'Check for updates without installing')
-        .option('--channel', 'Show the current update channel')
+    if (!pinned) {
+        update.option('--channel', 'Show the current update channel')
+    }
+    update
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
-        .action(async (cmdOptions: UpdateCmdOptions) => {
-            await runUpdate(options, cmdOptions)
+        .action(async function (this: Command) {
+            await runUpdate(options, { ...this.opts<UpdateCmdOptions>(), ...inheritedView(this) })
         })
+
+    // A pinned dist-tag is the CLI's only release line; there is nothing to
+    // switch between.
+    if (pinned) return
 
     update
         .command('switch')
@@ -515,9 +610,7 @@ export function registerUpdateCommand(program: Command, options: UpdateCommandOp
         .option('--json', 'Emit machine-readable JSON output')
         .option('--ndjson', 'Emit machine-readable NDJSON output')
         .action(async function (this: Command) {
-            // optsWithGlobals merges parent (`update`) options into the
-            // subcommand's view; without this, `--json` / `--ndjson` would land
-            // on the parent because they're declared on both.
-            await runSwitch(options, this.optsWithGlobals() as SwitchCmdOptions, program)
+            const cmd = { ...this.opts<SwitchCmdOptions>(), ...inheritedView(this) }
+            await runSwitch(options, cmd, program)
         })
 }
