@@ -1,3 +1,9 @@
+## [1.5.0](https://github.com/Doist/cli-core/compare/v1.4.0...v1.5.0) (2026-09-09)
+
+### Features
+
+* **update:** let a CLI pin the npm dist-tag it updates from ([#129](https://github.com/Doist/cli-core/issues/129)) ([0dbb394](https://github.com/Doist/cli-core/commit/0dbb3949983fbf0f1698753ab74feeb758d65f8d))
+
 ## [1.4.0](https://github.com/Doist/cli-core/compare/v1.3.0...v1.4.0) (2026-08-27)
 
 ### Features
