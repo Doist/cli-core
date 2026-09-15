@@ -86,7 +86,7 @@
         "yocto-spinner": "1.2.2"
     },
     "optionalDependencies": {
-        "@napi-rs/keyring": "1.3.0"
+        "@napi-rs/keyring": "2.0.0"
     },
     "peerDependencies": {
         "commander": ">=14",
