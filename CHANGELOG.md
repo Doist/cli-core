@@ -1,3 +1,9 @@
+## [1.6.0](https://github.com/Doist/cli-core/compare/v1.5.0...v1.6.0) (2026-09-16)
+
+### Features
+
+* **auth:** opt-in refresh before `token` / `status` print ([#135](https://github.com/Doist/cli-core/issues/135)) ([4d2e089](https://github.com/Doist/cli-core/commit/4d2e0892ba7d7cd76eabd8854043cfcc19cd46ab))
+
 ## [1.5.0](https://github.com/Doist/cli-core/compare/v1.4.0...v1.5.0) (2026-09-09)
 
 ### Features
