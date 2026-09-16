@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { isStdoutTTY } from '../terminal.js'
+import { type TokenRefreshOptions, refreshSnapshotOrNull } from './refresh-snapshot.js'
 import type { AuthAccount, TokenStore } from './types.js'
 import { attachUserFlag, extractUserRef, requireSnapshotForRef } from './user-flag.js'
 
@@ -16,6 +17,16 @@ export type AttachTokenViewCommandOptions<TAccount extends AuthAccount = AuthAcc
      * so printing the stored token here would be misleading at best.
      */
     envVarName?: string
+    /**
+     * When set, rotate an expiring access token via `refreshAccessToken`
+     * before printing, so `export TOKEN="$(cli auth token)"` hands scripts a
+     * token that is usable right now rather than whatever was last stored.
+     * Falls back to the stored token when refresh isn't possible
+     * (`AUTH_REFRESH_UNAVAILABLE`) or fails transiently while the stored
+     * token is still valid; `AUTH_REFRESH_EXPIRED` (re-login required) and a
+     * transient failure on an already-expired token propagate.
+     */
+    refresh?: TokenRefreshOptions<TAccount>
 }
 
 /**
@@ -23,7 +34,9 @@ export type AttachTokenViewCommandOptions<TAccount extends AuthAccount = AuthAcc
  * token to stdout with no envelope so the output is pipe-safe (e.g. `eval $(td
  * auth token)`). Throws `CliError('TOKEN_FROM_ENV', …)` when `envVarName` is
  * set and the env var is populated, and `CliError('NOT_AUTHENTICATED', …)`
- * when no token is stored. Returns the new `Command` for chaining.
+ * when no token is stored. With `refresh` set, an expiring token is rotated
+ * first (see `refresh` for the fallback rules). Returns the new `Command`
+ * for chaining.
  */
 export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -46,7 +59,12 @@ export function attachTokenViewCommand<TAccount extends AuthAccount = AuthAccoun
             )
         }
         const ref = extractUserRef(cmd)
-        const snapshot = await requireSnapshotForRef(options.store, ref)
+        // Refresh only after the env guard above: never hit the network for
+        // a token the command is about to refuse to print anyway.
+        const refreshed = options.refresh
+            ? await refreshSnapshotOrNull(options.store, ref, options.refresh)
+            : null
+        const snapshot = refreshed ?? (await requireSnapshotForRef(options.store, ref))
         if (!snapshot) {
             throw new CliError('NOT_AUTHENTICATED', 'Not signed in.')
         }

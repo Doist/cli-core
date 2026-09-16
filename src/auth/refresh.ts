@@ -29,10 +29,23 @@ export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
     /**
      * Forwarded to `provider.refreshToken` as its `handshake`, so consumers
      * can pass runtime context the provider's resolvers need (e.g. a
-     * `--env`-derived base URL / client id). Defaults to `{}`.
+     * `--env`-derived base URL / client id). Defaults to `{}`. A function
+     * form receives the stored account (read under the refresh lock) for
+     * per-account context such as a DCR `clientId` or a per-instance base
+     * URL that cli-core doesn't persist alongside the token bundle.
      */
-    handshake?: Record<string, unknown>
+    handshake?: RefreshHandshake<TAccount>
 }
+
+export type RefreshHandshakeContext<TAccount extends AuthAccount> = {
+    account: TAccount
+}
+
+export type RefreshHandshake<TAccount extends AuthAccount> =
+    | Record<string, unknown>
+    | ((
+          ctx: RefreshHandshakeContext<TAccount>,
+      ) => Record<string, unknown> | Promise<Record<string, unknown>>)
 
 export type RefreshAccessTokenResult<TAccount extends AuthAccount> = {
     rotated: boolean
@@ -66,7 +79,6 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
 ): Promise<RefreshAccessTokenResult<TAccount>> {
     const { store, provider, ref, force, lockPath } = options
     const skewMs = options.skewMs ?? DEFAULT_SKEW_MS
-    const handshake = options.handshake ?? {}
 
     // Refresh must both read the full bundle and persist the rotated one. A
     // store missing either capability can't participate — fail loudly rather
@@ -147,6 +159,7 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
                 { hints: ['Re-run the login command to reauthorize.'] },
             )
         }
+        const handshake = await resolveHandshake(options.handshake, current.account)
         const exchange = await refreshGrant({ refreshToken, handshake })
         const account = exchange.account ?? current.account
         const bundle = bundleFromExchange(exchange, current.bundle)
@@ -155,6 +168,14 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
     } finally {
         await releaseLock(lockPath, lockToken)
     }
+}
+
+async function resolveHandshake<TAccount extends AuthAccount>(
+    handshake: RefreshHandshake<TAccount> | undefined,
+    account: TAccount,
+): Promise<Record<string, unknown>> {
+    if (handshake === undefined) return {}
+    return typeof handshake === 'function' ? handshake({ account }) : handshake
 }
 
 function needsRefresh(bundle: TokenBundle, skewMs: number): boolean {

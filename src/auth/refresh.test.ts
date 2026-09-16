@@ -130,6 +130,38 @@ describe('refreshAccessToken', () => {
         expect(refreshSpy).not.toHaveBeenCalled()
     })
 
+    it('resolves a handshake function against the account read under the lock', async () => {
+        const { store } = fakeStore({
+            account,
+            bundle: bundle({ accessTokenExpiresAt: Date.now() + 1_000 }),
+        })
+        const { provider, refreshSpy } = fakeProvider()
+        const handshake = vi.fn(async ({ account: seen }: { account: Account }) => ({
+            clientId: `client-for-${seen.id}`,
+        }))
+
+        await refreshAccessToken({ store, provider, skewMs: 5_000, lockPath, handshake })
+
+        expect(handshake).toHaveBeenCalledWith({ account })
+        expect(refreshSpy).toHaveBeenCalledWith({
+            refreshToken: 'r_a',
+            handshake: { clientId: `client-for-${account.id}` },
+        })
+    })
+
+    it('does not invoke a handshake function when no rotation is needed', async () => {
+        const { store } = fakeStore({
+            account,
+            bundle: bundle({ accessTokenExpiresAt: Date.now() + 60_000 }),
+        })
+        const { provider } = fakeProvider()
+        const handshake = vi.fn(() => ({}))
+
+        await refreshAccessToken({ store, provider, skewMs: 5_000, lockPath, handshake })
+
+        expect(handshake).not.toHaveBeenCalled()
+    })
+
     it('force:true rotates regardless of expiry', async () => {
         const { store } = fakeStore({
             account,

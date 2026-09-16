@@ -2,6 +2,7 @@ import type { Command } from 'commander'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import type { ViewOptions } from '../options.js'
+import { type TokenRefreshOptions, refreshSnapshotOrNull } from './refresh-snapshot.js'
 import type {
     AccountRef,
     AttachContextBase,
@@ -24,7 +25,10 @@ type StatusSnapshot<TAccount extends AuthAccount> = {
 }
 
 /**
- * Resolve the auth snapshot for `status`. When the consumer supplies
+ * Resolve the auth snapshot for `status`. With `refresh` set, a proactive
+ * rotation runs first and its post-refresh bundle is the snapshot (so the
+ * expiry a consumer renders is the live one); when refresh isn't possible
+ * the stored-read path below takes over. When the consumer supplies
  * `fetchLive` (and the store implements `activeBundle`), read the bundle once
  * and derive both the access token and the bundle from it — avoiding a second
  * keyring round-trip on the hot path. Otherwise fall back to the narrow
@@ -37,7 +41,12 @@ async function resolveStatusSnapshot<TAccount extends AuthAccount>(
     store: TokenStore<TAccount>,
     ref: AccountRef | undefined,
     wantsBundle: boolean,
+    refresh: TokenRefreshOptions<TAccount> | undefined,
 ): Promise<StatusSnapshot<TAccount> | null> {
+    if (refresh) {
+        const refreshed = await refreshSnapshotOrNull(store, ref, refresh)
+        if (refreshed) return refreshed
+    }
     if (wantsBundle && store.activeBundle) {
         try {
             const snap = await store.activeBundle(ref)
@@ -100,14 +109,25 @@ export type AttachStatusCommandOptions<TAccount extends AuthAccount = AuthAccoun
      * `CliError('NOT_AUTHENTICATED', …)`.
      */
     onNotAuthenticated?(ctx: AttachContextBase): void | Promise<void>
+    /**
+     * When set, rotate an expiring access token via `refreshAccessToken`
+     * before reading, so `fetchLive` probes with — and the renderers report
+     * the expiry of — the live token rather than a stale stored one. Falls
+     * back to the stored credential when refresh isn't possible
+     * (`AUTH_REFRESH_UNAVAILABLE`) or fails transiently while the stored
+     * token is still valid; `AUTH_REFRESH_EXPIRED` (re-login required) and a
+     * transient failure on an already-expired token propagate.
+     */
+    refresh?: TokenRefreshOptions<TAccount>
 }
 
 /**
- * Attach `status` as a subcommand of `parent`. Reads the active credential
- * (preferring `store.activeBundle` when `fetchLive` is set, so the token and
- * bundle come from one read), optionally confirms via `fetchLive`, then
- * dispatches to `renderText` (human) or `renderJson` (machine). Returns the
- * new `Command` so the consumer can chain.
+ * Attach `status` as a subcommand of `parent`. Optionally refreshes first
+ * (`refresh`), reads the active credential (preferring `store.activeBundle`
+ * when `fetchLive` is set, so the token and bundle come from one read),
+ * optionally confirms via `fetchLive`, then dispatches to `renderText`
+ * (human) or `renderJson` (machine). Returns the new `Command` so the
+ * consumer can chain.
  */
 export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
     parent: Command,
@@ -125,7 +145,12 @@ export function attachStatusCommand<TAccount extends AuthAccount = AuthAccount>(
             ndjson: Boolean(ndjson),
         }
         const ref = extractUserRef(cmd)
-        const snapshot = await resolveStatusSnapshot(options.store, ref, Boolean(options.fetchLive))
+        const snapshot = await resolveStatusSnapshot(
+            options.store,
+            ref,
+            Boolean(options.fetchLive),
+            options.refresh,
+        )
         if (!snapshot) {
             if (options.onNotAuthenticated) {
                 await options.onNotAuthenticated({ view, flags })

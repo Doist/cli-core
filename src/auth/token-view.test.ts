@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
 import { buildProgram, installCapturedStream } from '../test-support/cli-harness.js'
+import { fakeRefreshProvider, installLockPath } from '../test-support/refresh-fixtures.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
+    buildTokenStore,
 } from '../testing/accounts.js'
 import { attachTokenViewCommand } from './token-view.js'
+import type { TokenBundle } from './types.js'
 
 const account = alanGrant
 
@@ -160,5 +163,145 @@ describe('attachTokenViewCommand', () => {
             code: 'ACCOUNT_NOT_FOUND',
         })
         expect(stdoutSpy()).not.toHaveBeenCalled()
+    })
+
+    describe('with refresh', () => {
+        const lockPath = installLockPath()
+
+        function buildBundleStore(bundle: TokenBundle): TokenStoreHarness<Account> {
+            return buildTokenStore<Account>({ entries: [{ account, isDefault: true, bundle }] })
+        }
+
+        const expiring = (): TokenBundle => ({
+            accessToken: 'tok-old',
+            refreshToken: 'r-old',
+            accessTokenExpiresAt: Date.now() + 1_000,
+        })
+
+        it('prints the rotated token when the stored one is expiring', async () => {
+            const { program, parent: auth } = buildProgram('auth')
+            const { store, state } = buildBundleStore(expiring())
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await program.parseAsync(['node', 'cli', 'auth', 'token'])
+
+            expect(refreshSpy).toHaveBeenCalledTimes(1)
+            expect(state.setBundleCalls).toHaveLength(1)
+            expect(stdoutSpy()).toHaveBeenCalledWith('tok_new')
+        })
+
+        it('prints the stored token without a refresh call when it is still fresh', async () => {
+            const { program, parent: auth } = buildProgram('auth')
+            const { store } = buildBundleStore({
+                ...expiring(),
+                accessTokenExpiresAt: Date.now() + 600_000,
+            })
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await program.parseAsync(['node', 'cli', 'auth', 'token'])
+
+            expect(refreshSpy).not.toHaveBeenCalled()
+            expect(stdoutSpy()).toHaveBeenCalledWith('tok-old')
+        })
+
+        it('falls back to the stored token when the credential has no refresh token', async () => {
+            const { program, parent: auth } = buildProgram('auth')
+            const { store, activeSpy } = buildBundleStore({
+                accessToken: 'tok-old',
+                accessTokenExpiresAt: Date.now(),
+            })
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await program.parseAsync(['node', 'cli', 'auth', 'token'])
+
+            expect(refreshSpy).not.toHaveBeenCalled()
+            expect(activeSpy).toHaveBeenCalledWith(undefined)
+            expect(stdoutSpy()).toHaveBeenCalledWith('tok-old')
+        })
+
+        it('surfaces AUTH_REFRESH_EXPIRED instead of printing a dead token', async () => {
+            const { program, parent: auth } = buildProgram('auth')
+            const { store } = buildBundleStore(expiring())
+            const { provider } = fakeRefreshProvider(async () => {
+                throw new CliError('AUTH_REFRESH_EXPIRED', 'invalid_grant')
+            })
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await expect(
+                program.parseAsync(['node', 'cli', 'auth', 'token']),
+            ).rejects.toMatchObject({ constructor: CliError, code: 'AUTH_REFRESH_EXPIRED' })
+            expect(stdoutSpy()).not.toHaveBeenCalled()
+        })
+
+        it('surfaces AUTH_REFRESH_TRANSIENT when the stored token has already expired', async () => {
+            const { program, parent: auth } = buildProgram('auth')
+            const { store } = buildBundleStore({
+                ...expiring(),
+                accessTokenExpiresAt: Date.now() - 1_000,
+            })
+            const { provider } = fakeRefreshProvider(async () => {
+                throw new CliError('AUTH_REFRESH_TRANSIENT', 'network down')
+            })
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await expect(
+                program.parseAsync(['node', 'cli', 'auth', 'token']),
+            ).rejects.toMatchObject({ constructor: CliError, code: 'AUTH_REFRESH_TRANSIENT' })
+            expect(stdoutSpy()).not.toHaveBeenCalled()
+        })
+
+        it('does not refresh when envVarName is set and the env var is populated', async () => {
+            vi.stubEnv('TODOIST_API_TOKEN', 'env-token')
+            const { program, parent: auth } = buildProgram('auth')
+            const { store } = buildBundleStore(expiring())
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                envVarName: 'TODOIST_API_TOKEN',
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await expect(
+                program.parseAsync(['node', 'cli', 'auth', 'token']),
+            ).rejects.toMatchObject({ constructor: CliError, code: 'TOKEN_FROM_ENV' })
+            expect(refreshSpy).not.toHaveBeenCalled()
+        })
+
+        it('threads --user into the refresh and still reports ACCOUNT_NOT_FOUND on a miss', async () => {
+            const { program, parent: auth } = buildProgram('auth')
+            const { store } = buildBundleStore(expiring())
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            attachTokenViewCommand<Account>(auth, {
+                store,
+                refresh: { provider, lockPath: lockPath() },
+            })
+
+            await expect(
+                program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'ghost']),
+            ).rejects.toMatchObject({ constructor: CliError, code: 'ACCOUNT_NOT_FOUND' })
+            expect(refreshSpy).not.toHaveBeenCalled()
+
+            await program.parseAsync(['node', 'cli', 'auth', 'token', '--user', 'alan@ingen.com'])
+            expect(refreshSpy).toHaveBeenCalledTimes(1)
+            expect(stdoutSpy()).toHaveBeenCalledWith('tok_new')
+        })
     })
 })

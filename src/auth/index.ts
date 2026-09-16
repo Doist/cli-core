@@ -42,7 +42,13 @@ export type { PersistBundleOptions } from './persist.js'
 export { createPkceProvider } from './providers/pkce.js'
 export type { OAuthLazyString, PkceLazyString, PkceProviderOptions } from './providers/pkce.js'
 export { refreshAccessToken } from './refresh.js'
-export type { RefreshAccessTokenOptions, RefreshAccessTokenResult } from './refresh.js'
+export type {
+    RefreshAccessTokenOptions,
+    RefreshAccessTokenResult,
+    RefreshHandshake,
+    RefreshHandshakeContext,
+} from './refresh.js'
+export type { TokenRefreshOptions } from './refresh-snapshot.js'
 export { createDcrProvider } from './providers/dcr.js'
 export type {
     DcrClientMetadata,
