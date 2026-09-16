@@ -4,7 +4,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
-import { fakeRefreshProvider, installLockPath } from '../test-support/refresh-fixtures.js'
+import {
+    buildBundleStore,
+    expiringBundle,
+    fakeRefreshProvider,
+    installLockPath,
+} from '../test-support/refresh-fixtures.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
@@ -13,7 +18,7 @@ import {
     buildTokenStore,
 } from '../testing/accounts.js'
 import { attachStatusCommand } from './status.js'
-import type { TokenBundle, TokenStore } from './types.js'
+import type { TokenStore } from './types.js'
 
 const account = alanGrant
 
@@ -252,18 +257,8 @@ describe('attachStatusCommand', () => {
     describe('with refresh', () => {
         const lockPath = installLockPath()
 
-        const expiring = (): TokenBundle => ({
-            accessToken: 'tok-old',
-            refreshToken: 'r-old',
-            accessTokenExpiresAt: Date.now() + 1_000,
-        })
-
-        function buildBundleStore(bundle: TokenBundle): TokenStoreHarness<Account> {
-            return buildTokenStore<Account>({ entries: [{ account, isDefault: true, bundle }] })
-        }
-
         it('hands fetchLive the post-refresh token and bundle', async () => {
-            const { store, state } = buildBundleStore(expiring())
+            const { store, state } = buildBundleStore(expiringBundle())
             const { provider, refreshSpy } = fakeRefreshProvider()
             const fetchLive = vi.fn(async (ctx: { account: Account }) => ctx.account)
             const { program } = build(
@@ -289,7 +284,7 @@ describe('attachStatusCommand', () => {
         })
 
         it('renders from the refreshed account without fetchLive', async () => {
-            const { store } = buildBundleStore(expiring())
+            const { store } = buildBundleStore(expiringBundle())
             const { provider, refreshSpy } = fakeRefreshProvider(async () => ({
                 accessToken: 'tok_new',
                 refreshToken: 'r_new',
@@ -311,7 +306,7 @@ describe('attachStatusCommand', () => {
 
         it('falls back to the stored read when the credential has no refresh token', async () => {
             const built = buildBundleStore({
-                accessToken: 'tok-old',
+                accessToken: 'tok_old',
                 accessTokenExpiresAt: Date.now(),
             })
             const { provider, refreshSpy } = fakeRefreshProvider()
@@ -326,14 +321,14 @@ describe('attachStatusCommand', () => {
             expect(refreshSpy).not.toHaveBeenCalled()
             expect(fetchLive).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    token: 'tok-old',
-                    bundle: expect.objectContaining({ accessToken: 'tok-old' }),
+                    token: 'tok_old',
+                    bundle: expect.objectContaining({ accessToken: 'tok_old' }),
                 }),
             )
         })
 
         it('surfaces AUTH_REFRESH_EXPIRED before fetchLive runs', async () => {
-            const { store } = buildBundleStore(expiring())
+            const { store } = buildBundleStore(expiringBundle())
             const { provider } = fakeRefreshProvider(async () => {
                 throw new CliError('AUTH_REFRESH_EXPIRED', 'invalid_grant')
             })

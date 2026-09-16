@@ -1,10 +1,12 @@
-import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CliError } from '../errors.js'
+import {
+    fakeRefreshProvider as fakeProvider,
+    installLockPath,
+} from '../test-support/refresh-fixtures.js'
 import {
     type TestAccount as Account,
     type TokenStoreHarness,
@@ -12,13 +14,7 @@ import {
     ianMalcolm,
 } from '../testing/accounts.js'
 import { refreshAccessToken } from './refresh.js'
-import type {
-    ActiveBundleSnapshot,
-    AuthProvider,
-    ExchangeResult,
-    TokenBundle,
-    TokenStore,
-} from './types.js'
+import type { ActiveBundleSnapshot, TokenBundle, TokenStore } from './types.js'
 
 const account = ianMalcolm
 
@@ -43,43 +39,11 @@ function fakeStore(
     })
 }
 
-function fakeProvider(
-    refreshImpl?: (input: { refreshToken: string }) => Promise<ExchangeResult<Account>>,
-): { provider: AuthProvider<Account>; refreshSpy: ReturnType<typeof vi.fn> } {
-    const refreshSpy = vi.fn(
-        refreshImpl ??
-            (async () => ({
-                accessToken: 'tok_new',
-                refreshToken: 'r_new',
-                expiresAt: Date.now() + 60_000,
-            })),
-    )
-    const provider: AuthProvider<Account> = {
-        async authorize() {
-            return { authorizeUrl: '', handshake: {} }
-        },
-        async exchangeCode() {
-            return { accessToken: '' }
-        },
-        async validateToken() {
-            return account
-        },
-        refreshToken: refreshSpy as unknown as AuthProvider<Account>['refreshToken'],
-    }
-    return { provider, refreshSpy }
-}
-
 describe('refreshAccessToken', () => {
-    let lockDir: string
+    const getLockPath = installLockPath()
     let lockPath: string
-
-    beforeEach(async () => {
-        lockDir = await mkdtemp(join(tmpdir(), 'cli-core-refresh-'))
-        lockPath = join(lockDir, 'refresh.lock')
-    })
-
-    afterEach(async () => {
-        await rm(lockDir, { recursive: true, force: true })
+    beforeEach(() => {
+        lockPath = getLockPath()
     })
 
     it('rotates the bundle when access expiry is inside the skew window', async () => {

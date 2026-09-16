@@ -21,10 +21,13 @@ export type AttachTokenViewCommandOptions<TAccount extends AuthAccount = AuthAcc
      * When set, rotate an expiring access token via `refreshAccessToken`
      * before printing, so `export TOKEN="$(cli auth token)"` hands scripts a
      * token that is usable right now rather than whatever was last stored.
-     * Falls back to the stored token when refresh isn't possible
-     * (`AUTH_REFRESH_UNAVAILABLE`) or fails transiently while the stored
-     * token is still valid; `AUTH_REFRESH_EXPIRED` (re-login required) and a
-     * transient failure on an already-expired token propagate.
+     * Static-token accounts (no refresh token) and
+     * stores without bundle support are served from the stored read exactly
+     * as before. A transient refresh failure falls back to the stored token
+     * while it is still valid; once expired it propagates, as do
+     * `AUTH_REFRESH_EXPIRED` (re-login required) and any provider-raised
+     * `AUTH_REFRESH_UNAVAILABLE` (a wiring fault such as a DCR handshake
+     * missing `clientId`).
      */
     refresh?: TokenRefreshOptions<TAccount>
 }

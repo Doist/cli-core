@@ -30,9 +30,11 @@ export type RefreshAccessTokenOptions<TAccount extends AuthAccount> = {
      * Forwarded to `provider.refreshToken` as its `handshake`, so consumers
      * can pass runtime context the provider's resolvers need (e.g. a
      * `--env`-derived base URL / client id). Defaults to `{}`. A function
-     * form receives the stored account (read under the refresh lock) for
-     * per-account context such as a DCR `clientId` or a per-instance base
-     * URL that cli-core doesn't persist alongside the token bundle.
+     * form receives the stored account, for per-account context such as a
+     * DCR `clientId` or a per-instance base URL that cli-core doesn't
+     * persist alongside the token bundle. It runs only when a rotation is
+     * due, and before the refresh lock is taken, so a slow resolver can't
+     * hold the lock long enough for another invocation to steal it.
      */
     handshake?: RefreshHandshake<TAccount>
 }
@@ -53,7 +55,7 @@ export type RefreshAccessTokenResult<TAccount extends AuthAccount> = {
     account: TAccount
 }
 
-const DEFAULT_SKEW_MS = 60_000
+export const DEFAULT_SKEW_MS = 60_000
 const LOCK_WAIT_TIMEOUT_MS = 2_000
 const LOCK_POLL_INTERVAL_MS = 50
 // A lock older than this was almost certainly left by a crashed holder — the
@@ -116,6 +118,13 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         })
     }
 
+    // Resolved before the lock: the lock is only stealable once it looks
+    // stale (LOCK_STALE_MS), a bound sized for the provider's HTTP timeout,
+    // not for arbitrary consumer code. The account-level context a resolver
+    // reads (client id, base URL) is stable across a rotation, so the
+    // pre-lock account is as good as the under-lock one.
+    const handshake = await resolveHandshake(options.handshake, snapshot.account)
+
     const lockToken = await acquireLock(lockPath)
     if (!lockToken) {
         // Holder didn't release in time. It may have rotated then crashed
@@ -159,7 +168,6 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
                 { hints: ['Re-run the login command to reauthorize.'] },
             )
         }
-        const handshake = await resolveHandshake(options.handshake, current.account)
         const exchange = await refreshGrant({ refreshToken, handshake })
         const account = exchange.account ?? current.account
         const bundle = bundleFromExchange(exchange, current.bundle)
@@ -178,10 +186,20 @@ async function resolveHandshake<TAccount extends AuthAccount>(
     return typeof handshake === 'function' ? handshake({ account }) : handshake
 }
 
-function needsRefresh(bundle: TokenBundle, skewMs: number): boolean {
+/**
+ * Proactive-refresh gate: true when the access token expires within `skewMs`.
+ * Not re-exported from the package; shared with the `token` / `status`
+ * refresh path so both sides agree on when a rotation is due.
+ */
+export function needsRefresh(bundle: TokenBundle, skewMs: number): boolean {
     // No expiry tracked → can't proactively refresh; defer to reactive 401.
     if (bundle.accessTokenExpiresAt === undefined) return false
     return bundle.accessTokenExpiresAt - Date.now() < skewMs
+}
+
+/** True once the tracked expiry has passed. An untracked expiry never counts as expired. */
+export function isAccessTokenExpired(bundle: TokenBundle): boolean {
+    return needsRefresh(bundle, 0)
 }
 
 function hasRotated(before: TokenBundle, after: TokenBundle): boolean {

@@ -1,6 +1,18 @@
 import { CliError } from '../errors.js'
-import { type RefreshAccessTokenOptions, refreshAccessToken } from './refresh.js'
-import type { AccountRef, AuthAccount, TokenBundle, TokenStore } from './types.js'
+import {
+    DEFAULT_SKEW_MS,
+    type RefreshAccessTokenOptions,
+    isAccessTokenExpired,
+    needsRefresh,
+    refreshAccessToken,
+} from './refresh.js'
+import type {
+    AccountRef,
+    ActiveBundleSnapshot,
+    AuthAccount,
+    TokenBundle,
+    TokenStore,
+} from './types.js'
 
 /**
  * Refresh wiring for the read-only attachers (`token` / `status`). Same shape
@@ -24,46 +36,58 @@ type RefreshedSnapshot<TAccount extends AuthAccount> = {
 // back to the stored token.
 
 /**
- * Run a proactive refresh and return the post-refresh snapshot, or `null` when
- * the caller should fall back to its plain stored-token read:
+ * Read the bundle, rotate it if a refresh is due, and return the resulting
+ * snapshot. Returns `null` when this path can't produce one and the caller
+ * should run its plain stored read instead: the store lacks bundle support,
+ * the provider has no `refreshToken`, or nothing matched `ref` (so the
+ * caller keeps its own `NOT_AUTHENTICATED` / `ACCOUNT_NOT_FOUND` handling).
  *
- * - `AUTH_REFRESH_UNAVAILABLE` → `null`. Nothing to refresh with (no refresh
- *   token, store without bundle support, provider without `refreshToken`, no
- *   credential). The stored-read path then yields the same result it always
- *   has, including `NOT_AUTHENTICATED` / `ACCOUNT_NOT_FOUND` on an empty store.
- * - `AUTH_REFRESH_TRANSIENT` → `null` only while the stored access token is
- *   still valid (no tracked expiry, or expiry in the future). Once it has
- *   expired the error propagates: handing a script a token that is already
- *   dead is worse than a retryable failure.
- * - `AUTH_REFRESH_EXPIRED` and everything else (`AUTH_STORE_READ_FAILED`,
- *   unexpected errors) propagate unchanged.
+ * The pre-flight here mirrors `refreshAccessToken`'s own, so that helper is
+ * only invoked when a rotation is genuinely due. Any error it then raises —
+ * including `AUTH_REFRESH_UNAVAILABLE` from the provider itself (a DCR
+ * handshake missing `clientId`, `oauth4webapi` not installed) — is a wiring
+ * fault the consumer must see, not a reason to print a possibly-dead token.
+ * The one exception is `AUTH_REFRESH_TRANSIENT` while the stored access
+ * token is still valid: the caller gets the stored snapshot and the next
+ * invocation retries. Once it has expired the transient error propagates,
+ * since a retryable failure beats handing a script a token that no longer
+ * works.
  */
 export async function refreshSnapshotOrNull<TAccount extends AuthAccount>(
     store: TokenStore<TAccount>,
     ref: AccountRef | undefined,
     refresh: TokenRefreshOptions<TAccount>,
 ): Promise<RefreshedSnapshot<TAccount> | null> {
+    if (!store.activeBundle || !store.setBundle || !refresh.provider.refreshToken) return null
+    const snapshot = await store.activeBundle(ref)
+    if (!snapshot) return null
+
+    const skewMs = refresh.skewMs ?? DEFAULT_SKEW_MS
+    if (!snapshot.bundle.refreshToken || !needsRefresh(snapshot.bundle, skewMs)) {
+        return fromBundle(snapshot)
+    }
+
     try {
         const { bundle, account } = await refreshAccessToken({ store, ref, ...refresh })
         return { token: bundle.accessToken, account, bundle }
     } catch (error) {
-        if (!(error instanceof CliError)) throw error
-        if (error.code === 'AUTH_REFRESH_UNAVAILABLE') return null
-        if (error.code === 'AUTH_REFRESH_TRANSIENT' && (await storedTokenStillValid(store, ref))) {
-            return null
+        if (
+            error instanceof CliError &&
+            error.code === 'AUTH_REFRESH_TRANSIENT' &&
+            !isAccessTokenExpired(snapshot.bundle)
+        ) {
+            return fromBundle(snapshot)
         }
         throw error
     }
 }
 
-async function storedTokenStillValid<TAccount extends AuthAccount>(
-    store: TokenStore<TAccount>,
-    ref: AccountRef | undefined,
-): Promise<boolean> {
-    // `refreshAccessToken` already proved the store implements `activeBundle`
-    // (it throws UNAVAILABLE otherwise, which never reaches here).
-    const snapshot = await store.activeBundle?.(ref)
-    if (!snapshot) return false
-    const expiresAt = snapshot.bundle.accessTokenExpiresAt
-    return expiresAt === undefined || expiresAt > Date.now()
+function fromBundle<TAccount extends AuthAccount>(
+    snapshot: ActiveBundleSnapshot<TAccount>,
+): RefreshedSnapshot<TAccount> {
+    return {
+        token: snapshot.bundle.accessToken,
+        account: snapshot.account,
+        bundle: snapshot.bundle,
+    }
 }

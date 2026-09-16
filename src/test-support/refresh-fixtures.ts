@@ -3,8 +3,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, vi } from 'vitest'
 
-import type { AuthProvider, ExchangeResult } from '../auth/types.js'
-import type { TestAccount } from '../testing/accounts.js'
+import type { AuthProvider, ExchangeResult, TokenBundle } from '../auth/types.js'
+import {
+    type TestAccount,
+    type TokenStoreHarness,
+    alanGrant,
+    buildTokenStore,
+} from '../testing/accounts.js'
 
 // Shared refresh scaffolding for the suites that exercise the opt-in `refresh`
 // path on the read-only attachers (`token` / `status`) and the fallback helper
@@ -28,10 +33,34 @@ export function installLockPath(): () => string {
     return () => lockPath
 }
 
-export const ROTATED: ExchangeResult<TestAccount> = {
+const ROTATED: ExchangeResult<TestAccount> = {
     accessToken: 'tok_new',
     refreshToken: 'r_new',
     expiresAt: Date.now() + 60_000,
+}
+
+/**
+ * Bundle inside the default 60s skew window but with plenty of wall-clock
+ * headroom, so a test that expects "still valid" can't flip on a slow CI box.
+ */
+export function expiringBundle(overrides: Partial<TokenBundle> = {}): TokenBundle {
+    return {
+        accessToken: 'tok_old',
+        refreshToken: 'r_old',
+        accessTokenExpiresAt: Date.now() + 30_000,
+        ...overrides,
+    }
+}
+
+export function expiredBundle(overrides: Partial<TokenBundle> = {}): TokenBundle {
+    return expiringBundle({ accessTokenExpiresAt: Date.now() - 30_000, ...overrides })
+}
+
+/** Single-account, bundle-capable store seeded with `bundle` for `alanGrant`. */
+export function buildBundleStore(bundle: TokenBundle): TokenStoreHarness<TestAccount> {
+    return buildTokenStore<TestAccount>({
+        entries: [{ account: alanGrant, isDefault: true, bundle }],
+    })
 }
 
 /**
@@ -51,7 +80,7 @@ export function fakeRefreshProvider(refreshImpl?: AuthProvider<TestAccount>['ref
             return { accessToken: '' }
         },
         async validateToken() {
-            throw new Error('validateToken is not exercised by refresh fixtures')
+            return alanGrant
         },
         refreshToken: refreshSpy as unknown as AuthProvider<TestAccount>['refreshToken'],
     }
