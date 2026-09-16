@@ -5,10 +5,17 @@ import { CliError } from '../errors.js'
 import { formatJson, formatNdjson } from '../json.js'
 import { buildProgram, installCapturedConsole } from '../test-support/cli-harness.js'
 import {
+    buildBundleStore,
+    expiringBundle,
+    fakeRefreshProvider,
+    installLockPath,
+} from '../test-support/refresh-fixtures.js'
+import {
     type TestAccount as Account,
     type TokenStoreHarness,
     alanGrant,
     buildSingleEntryStore,
+    buildTokenStore,
 } from '../testing/accounts.js'
 import { attachStatusCommand } from './status.js'
 import type { TokenStore } from './types.js'
@@ -245,5 +252,111 @@ describe('attachStatusCommand', () => {
         await expect(
             program.parseAsync(['node', 'cli', 'auth', 'status', '--user', 'me']),
         ).rejects.toBe(thrown)
+    })
+
+    describe('with refresh', () => {
+        const lockPath = installLockPath()
+
+        it('hands fetchLive the post-refresh token and bundle', async () => {
+            const { store, state } = buildBundleStore(expiringBundle())
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            const fetchLive = vi.fn(async (ctx: { account: Account }) => ctx.account)
+            const { program } = build(
+                { fetchLive, refresh: { provider, lockPath: lockPath() } },
+                store,
+            )
+
+            await program.parseAsync(['node', 'cli', 'auth', 'status'])
+
+            expect(refreshSpy).toHaveBeenCalledTimes(1)
+            expect(state.setBundleCalls).toHaveLength(1)
+            expect(fetchLive).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    account,
+                    token: 'tok_new',
+                    bundle: expect.objectContaining({
+                        accessToken: 'tok_new',
+                        refreshToken: 'r_new',
+                    }),
+                }),
+            )
+            expect(logSpy()).toHaveBeenCalledWith('Signed in as alan@ingen.com')
+        })
+
+        it('renders from the refreshed account without fetchLive', async () => {
+            const { store } = buildBundleStore(expiringBundle())
+            const { provider, refreshSpy } = fakeRefreshProvider(async () => ({
+                accessToken: 'tok_new',
+                refreshToken: 'r_new',
+                expiresAt: Date.now() + 60_000,
+                account: { ...account, label: 'Dr. Grant' },
+            }))
+            const { program, renderText } = build(
+                { refresh: { provider, lockPath: lockPath() } },
+                store,
+            )
+
+            await program.parseAsync(['node', 'cli', 'auth', 'status'])
+
+            expect(refreshSpy).toHaveBeenCalledTimes(1)
+            expect(renderText).toHaveBeenCalledWith(
+                expect.objectContaining({ account: { ...account, label: 'Dr. Grant' } }),
+            )
+        })
+
+        it('falls back to the stored read when the credential has no refresh token', async () => {
+            const built = buildBundleStore({
+                accessToken: 'tok_old',
+                accessTokenExpiresAt: Date.now(),
+            })
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            const fetchLive = vi.fn(async (ctx: { account: Account }) => ctx.account)
+            const { program } = build(
+                { fetchLive, refresh: { provider, lockPath: lockPath() } },
+                built.store,
+            )
+
+            await program.parseAsync(['node', 'cli', 'auth', 'status'])
+
+            expect(refreshSpy).not.toHaveBeenCalled()
+            expect(fetchLive).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    token: 'tok_old',
+                    bundle: expect.objectContaining({ accessToken: 'tok_old' }),
+                }),
+            )
+        })
+
+        it('surfaces AUTH_REFRESH_EXPIRED before fetchLive runs', async () => {
+            const { store } = buildBundleStore(expiringBundle())
+            const { provider } = fakeRefreshProvider(async () => {
+                throw new CliError('AUTH_REFRESH_EXPIRED', 'invalid_grant')
+            })
+            const fetchLive = vi.fn(async (ctx: { account: Account }) => ctx.account)
+            const { program } = build(
+                { fetchLive, refresh: { provider, lockPath: lockPath() } },
+                store,
+            )
+
+            await expect(
+                program.parseAsync(['node', 'cli', 'auth', 'status']),
+            ).rejects.toMatchObject({ constructor: CliError, code: 'AUTH_REFRESH_EXPIRED' })
+            expect(fetchLive).not.toHaveBeenCalled()
+        })
+
+        it('routes to onNotAuthenticated on an empty store instead of a refresh error', async () => {
+            const { store } = buildTokenStore<Account>({ entries: [] })
+            const { provider, refreshSpy } = fakeRefreshProvider()
+            const onNotAuthenticated = vi.fn()
+            const { program } = build(
+                { onNotAuthenticated, refresh: { provider, lockPath: lockPath() } },
+                store,
+            )
+
+            await program.parseAsync(['node', 'cli', 'auth', 'status'])
+
+            expect(refreshSpy).not.toHaveBeenCalled()
+            expect(onNotAuthenticated).toHaveBeenCalledTimes(1)
+        })
     })
 })
