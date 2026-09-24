@@ -1,6 +1,6 @@
 # cli-core
 
-Shared core utilities for the Doist CLIs (`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`). TypeScript, ESM-only, Node ≥ 20.18.1.
+Shared core utilities for the Doist CLIs (`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`, `@doist/comms-cli`). TypeScript, ESM-only, Node ≥ 24.
 
 ## Build & Run
 
@@ -24,7 +24,7 @@ npm test            # vitest run
 
 ## Module layout
 
-Each module lives at `src/<area>.ts` with a colocated `<area>.test.ts`. A module that needs sibling files (e.g. the `./commands` subpath) lives at `src/<area>/<file>.ts` with the same colocated-test rule. Public API surface is the union of every `export` re-exported through `src/index.ts` plus any sub-path entry declared in `package.json#exports` (e.g. `./commands`, `./markdown`, `./testing`). Re-exports are validated at compile time by `tsc --noEmit` — there is no parallel runtime/typed-literal pinning test for the package root, since the typechecker already catches a dropped or broken re-export and any duplicate runtime suite would be redundant churn.
+Each module lives at `src/<area>.ts` with a colocated `<area>.test.ts`. A module that needs sibling files (e.g. the `./commands` subpath) lives at `src/<area>/<file>.ts` with the same colocated-test rule. Public API surface is the union of every `export` re-exported through `src/index.ts` plus any sub-path entry declared in `package.json#exports` (e.g. `./commands`, `./extensions`, `./markdown`, `./testing`). Non-code assets that ship with the package (the extension scaffold templates) live under `templates/`, are listed in `package.json#files`, and are resolved from `import.meta.url` two levels up so the same path works from `src/` under vitest and from `dist/` when installed. Re-exports are validated at compile time by `tsc --noEmit` — there is no parallel runtime/typed-literal pinning test for the package root, since the typechecker already catches a dropped or broken re-export and any duplicate runtime suite would be redundant churn.
 
 ## README maintenance
 

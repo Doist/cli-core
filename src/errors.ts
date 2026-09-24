@@ -1,6 +1,7 @@
 import type { AuthErrorCode } from './auth/errors.js'
 import type { CommandErrorCode } from './commands/errors.js'
 import type { ConfigErrorCode } from './config.js'
+import type { ExtensionErrorCode } from './extensions/errors.js'
 
 export type ErrorType = 'error' | 'info'
 
@@ -20,7 +21,7 @@ export type CliErrorOptions = {
  * export type CliErrorCode = ConfigErrorCode | SpinnerErrorCode | …
  * ```
  */
-export type CliErrorCode = AuthErrorCode | CommandErrorCode | ConfigErrorCode
+export type CliErrorCode = AuthErrorCode | CommandErrorCode | ConfigErrorCode | ExtensionErrorCode
 
 /**
  * Generic CLI error carrying a structured code, optional hints, and a severity
