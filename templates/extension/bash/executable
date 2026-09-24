@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# A {{BIN}} extension. Everything after `{{BIN}} {{NAME}}` arrives here
+# untouched, this script owns stdout and stderr, and {{BIN}} exits with
+# whatever this script exits with.
+set -euo pipefail
+
+# How to call {{BIN}} back. {{ENV_PREFIX}}_NODE and {{ENV_PREFIX}}_PATH are set
+# by {{BIN}} and work on every platform, including Windows, where the `{{BIN}}`
+# on PATH is a .cmd shim that cannot be spawned directly. Falling back to
+# `{{BIN}}` keeps this runnable when the script is executed by hand.
+host=({{BIN}})
+if [[ -n "${{{ENV_PREFIX}}_NODE:-}" && -n "${{{ENV_PREFIX}}_PATH:-}" ]]; then
+    host=("${{{ENV_PREFIX}}_NODE}" "${{{ENV_PREFIX}}_PATH}")
+fi
+
+usage() {
+    cat <<'USAGE'
+Usage: {{BIN}} {{NAME}} [options]
+
+Options:
+  --json      Output as JSON
+  --help      Show this message
+USAGE
+}
+
+json=false
+for arg in "$@"; do
+    case "$arg" in
+        --help | -h)
+            usage
+            exit 0
+            ;;
+        --json) json=true ;;
+    esac
+done
+
+# Calling {{BIN}} for something that needs no account, to show the mechanism.
+# For real data, ask {{BIN}} rather than the API — `"${host[@]}" … --json` —
+# so authentication, account selection and output shape stay {{BIN}}'s job.
+host_version=$("${host[@]}" --version)
+
+if [[ "$json" == true ]]; then
+    printf '{"extension":"%s","hostVersion":"%s"}\n' "${{{ENV_PREFIX}}_EXTENSION_NAME:-{{NAME}}}" "$host_version"
+else
+    printf 'Hello from {{DIRNAME}}, running under {{BIN}} %s.\n' "$host_version"
+    printf 'Edit %s/{{DIRNAME}} and run it again.\n' "${{{ENV_PREFIX}}_EXTENSION_DIR:-.}"
+fi

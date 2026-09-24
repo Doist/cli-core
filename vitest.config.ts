@@ -7,5 +7,6 @@ export default defineConfig({
         globals: true,
         root: 'src',
         include: ['**/*.test.ts'],
+        restoreMocks: true,
     },
 })

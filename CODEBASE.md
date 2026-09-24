@@ -6,18 +6,19 @@
 
 ## What this project is
 
-`@doist/cli-core` is a **shared TypeScript library** for the three Doist CLIs
-(`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`). It is **not a
-binary** — it ships reusable building blocks (error type, config I/O, output
-formatters, spinner, OAuth/keyring auth runtime, Commander "attachers") that each
-CLI composes into its own `program`.
+`@doist/cli-core` is a **shared TypeScript library** for the Doist CLIs
+(`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`,
+`@doist/comms-cli`). It is **not a binary** — it ships reusable building blocks
+(error type, config I/O, output formatters, spinner, OAuth/keyring auth runtime,
+Commander "attachers", the extension system) that each CLI composes into its own
+`program`.
 
-ESM-only · Node ≥ 20.18.1 · Commander 14 (optional peer) · vitest · oxlint +
+ESM-only · Node ≥ 24 · Commander ≥ 14 (optional peer) · vitest · oxlint +
 oxfmt (no eslint/prettier) · semantic-release on merge to `main`.
 
 Heavy/optional deps are **optional peer-deps**, pulled in only by the subpath
 that needs them (`commander`, `marked`, `marked-terminal-renderer`,
-`oauth4webapi`, `open`, `@napi-rs/keyring`, `vitest`). Only `chalk` +
+`oauth4webapi`, `open`, `@napi-rs/keyring`, `vitest`, `zod`). Only `chalk` +
 `yocto-spinner` are hard runtime deps.
 
 ## Top-level layout
@@ -25,6 +26,7 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 ```
 /
 ├─ src/                   # All source. See tree below.
+├─ templates/             # Extension scaffold templates, shipped as files (see `files`)
 ├─ dist/                  # Build output (tsc). Never edit.
 ├─ AGENTS.md              # Prescriptive rules (build, code style, README upkeep)
 ├─ CODEBASE.md            # This file — descriptive map
@@ -42,13 +44,14 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 Each subpath is an independent entry point so JSON-only consumers don't pay for
 markdown/OAuth transitive installs.
 
-| Subpath                    | Provides                                                                                                                            | Optional peers needed                                   |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `.` (root)                 | `CliError`, config I/O, JSON/NDJSON + `emitView`, `printEmpty`, spinner, terminal detection, global-args parser                     | — (chalk/yocto bundled)                                 |
-| `@doist/cli-core/auth`     | OAuth runtime, the `attach*Command` registrars, providers, keyring `TokenStore`, refresh, the `TokenStore`/`AuthProvider` contracts | `commander`, `oauth4webapi`, `open`, `@napi-rs/keyring` |
-| `@doist/cli-core/commands` | `registerChangelogCommand`, `registerUpdateCommand` + semver helpers                                                                | `commander`                                             |
-| `@doist/cli-core/markdown` | `preloadMarkdown`, `renderMarkdown`                                                                                                 | `marked`, `marked-terminal-renderer`                    |
-| `@doist/cli-core/testing`  | `describeEmptyMachineOutput` (public test helper for consumers)                                                                     | `vitest`                                                |
+| Subpath                      | Provides                                                                                                                                             | Optional peers needed                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `.` (root)                   | `CliError`, config I/O, data/state dirs, JSON/NDJSON + `emitView`, `printEmpty`, spinner, terminal detection, global-args parser, command-token scan | — (chalk/yocto bundled)                                 |
+| `@doist/cli-core/auth`       | OAuth runtime, the `attach*Command` registrars, providers, keyring `TokenStore`, refresh, the `TokenStore`/`AuthProvider` contracts                  | `commander`, `oauth4webapi`, `open`, `@napi-rs/keyring` |
+| `@doist/cli-core/commands`   | `registerChangelogCommand`, `registerUpdateCommand` + semver helpers                                                                                 | `commander`                                             |
+| `@doist/cli-core/extensions` | `createExtensionManager`, `registerExtension*` registrars, `createExtension` scaffolding, doctor helpers                                             | `commander`, `zod`                                      |
+| `@doist/cli-core/markdown`   | `preloadMarkdown`, `renderMarkdown`                                                                                                                  | `marked`, `marked-terminal-renderer`                    |
+| `@doist/cli-core/testing`    | `describeEmptyMachineOutput`, `createTestProgram`, console captures, account fixtures, extension fixtures                                            | `vitest`, `commander`                                   |
 
 The public surface = every re-export through these entry barrels. `tsc --noEmit`
 validates the re-exports; there is no separate runtime pinning test (per AGENTS.md).
@@ -60,6 +63,8 @@ src/
 ├─ index.ts               # Root barrel (the `.` export)
 ├─ errors.ts              # CliError<TCode> + CliErrorCode aggregator + getErrorMessage
 ├─ config.ts              # XDG config I/O; CoreConfig / UpdateChannel / ConfigErrorCode
+├─ paths.ts               # getDataDir / getStateDir (XDG data + state, Windows LOCALAPPDATA)
+├─ command-token.ts       # findCommandToken / needsExtensionLookup (argv scan before commander)
 ├─ json.ts                # formatJson / formatNdjson (throw on non-serializable)
 ├─ options.ts             # ViewOptions type + emitView (json/ndjson/human dispatch)
 ├─ empty.ts               # printEmpty (machine-aware empty-state output)
@@ -67,17 +72,50 @@ src/
 ├─ spinner.ts             # createSpinner factory (yocto-spinner wrapper)
 ├─ terminal.ts            # isStdoutTTY / isStdinTTY / isStderrTTY / isCI
 ├─ markdown.ts            # ./markdown subpath (lazy marked + terminal renderer)
-├─ testing.ts             # ./testing subpath (describeEmptyMachineOutput)
+├─ testing/               # ./testing subpath — shipped helpers for consumers' tests
+│  ├─ accounts.ts         # TestAccount fixtures (Ingen identities) + buildTokenStore / buildSingleEntryStore
+│  ├─ console.ts          # captureConsole / captureStream
+│  ├─ empty-output.ts     # describeEmptyMachineOutput
+│  ├─ extensions.ts       # writeFixtureExtension / writeFakeGitRepo (a runnable extension on disk)
+│  └─ program.ts          # createTestProgram
 ├─ auth/                  # ./auth subpath — see below
 ├─ commands/              # ./commands subpath (changelog, update + semver helpers)
+├─ extensions/            # ./extensions subpath — see below
 └─ test-support/          # Internal test helpers — EXCLUDED from build, never shipped
-   ├─ accounts.ts         # TestAccount fixtures (Ingen identities) + buildTokenStore / buildSingleEntryStore
-   ├─ cli-harness.ts      # installConsoleLogSpy / installStdoutSpy / buildProgram
-   └─ keyring-mocks.ts    # buildKeyringMap / buildSingleSlot / buildUserRecords
+   ├─ cli-harness.ts      # installCapturedConsole / installCapturedStream / buildProgram
+   ├─ keyring-mocks.ts    # buildKeyringMap / buildSingleSlot / buildUserRecords
+   └─ refresh-fixtures.ts # shared refresh-token fixtures
 ```
 
-Every module has a colocated `<name>.test.ts` (31 test files). Subfolders
-(`auth/`, `commands/`) follow the same colocated-test rule.
+Every module has a colocated `<name>.test.ts` (55 test files). Subfolders
+(`auth/`, `commands/`, `extensions/`) follow the same colocated-test rule.
+
+## `src/extensions/` — the extension-system subpath
+
+```
+extensions/
+├─ index.ts               # ./extensions barrel
+├─ types.ts               # ExtensionManagerOptions (the whole host contract), Extension, results
+├─ manager.ts             # createExtensionManager — facade over everything below
+├─ commands.ts            # registerExtensionGroup / registerExtensionPassThrough / registerExtensionCommands
+├─ discover.ts            # Directory scan: kind inference (binary/git/local), manifests, state
+├─ dispatch.ts            # buildExtensionEnv + spawn with inherited stdio, exit-code mapping
+├─ install.ts / upgrade.ts / remove.ts   # The three lifecycle operations
+├─ create.ts              # Scaffolding from templates/extension/ (defaultTemplatesDir)
+├─ source.ts              # Naming rules (<bin>-<name>) + install-source parsing
+├─ manifest.ts / manifest-format.ts / schemas.ts / schemas-loader.ts
+│                         # Authored + installed manifests; zod lives only in schemas.ts,
+│                         # reached through loadSchemas (friendly error when zod is missing)
+├─ state.ts               # <stateDir>/extensions/<dir>.json (pins, update checks)
+├─ github.ts / git.ts / npm.ts / run.ts  # Release assets + checksums, git, npm, captured spawn
+├─ errors.ts              # ExtensionErrorCode union (folded into CliErrorCode)
+└─ version-range.ts / concurrency.ts / json-file.ts / fs-utils.ts   # Small helpers
+```
+
+Nothing in here knows which CLI it serves: the binary name, env prefix,
+directories, version, reserved names and first-party source all arrive through
+`ExtensionManagerOptions`. `templates/extension/` is shipped as real files and
+resolved from `import.meta.url` two levels up, so `src/` and `dist/` agree.
 
 ## `src/auth/` — the OAuth + token-storage subpath
 
@@ -136,39 +174,57 @@ plus optional `activeAccount` / `activeBundle` / `setBundle` (refresh + `current
 fast-path). Effective default = pinned default if present, else the sole stored
 account. `createKeyringTokenStore` is the shipped impl; CLIs may provide their own.
 
-## `src/test-support/` — internal test helpers (never shipped)
+## `src/testing/` and `src/test-support/`
 
-Excluded from `dist/` by `tsconfig.build.json` and not matched by vitest's
-`**/*.test.ts` include, so these files run as helpers, not suites.
+`src/testing/` is the shipped `./testing` subpath: what consuming CLIs import in
+their own suites.
 
 - **`accounts.ts`** — `TestAccount` type + Ingen fixtures (`alanGrant` id 1,
   `ellieSattler` 2, `ianMalcolm` 3); `buildTokenStore()` — the canonical stateful
   multi-account `TokenStore` mock (mirrors `createKeyringTokenStore`'s
   effective-default + promote-if-unpinned + slot-replacement semantics);
   `buildSingleEntryStore()` for the single-account suites; `ingenEntries()` default seed.
-- **`cli-harness.ts`** — `installConsoleLogSpy()` / `installStdoutSpy()` (own the
-  beforeEach/afterEach spy lifecycle, return a getter) + `buildProgram(name)`
-  (the `new Command().exitOverride().command(name)` scaffold).
+- **`console.ts`** — `captureConsole()` / `captureStream()` (silence + auto-restore
+  via `onTestFinished`).
+- **`program.ts`** — `createTestProgram(register)` (the `new Command().exitOverride()` scaffold).
+- **`extensions.ts`** — `writeFixtureExtension()` / `writeFakeGitRepo()`: a real
+  executable on disk that reports its argv and `<PREFIX>_*` env as JSON, because
+  the extension contract is a process boundary and can only be proven by spawning.
+
+`src/test-support/` is internal: excluded from `dist/` by `tsconfig.build.json`
+and not matched by vitest's `**/*.test.ts` include, so these files run as
+helpers, not suites.
+
+- **`cli-harness.ts`** — `installCapturedConsole()` / `installCapturedStream()` (own the
+  beforeEach/afterEach spy lifecycle, return a getter) + `buildProgram(name)`.
 - **`keyring-mocks.ts`** — `buildKeyringMap` / `buildSingleSlot` /
   `buildUserRecords` for the keyring unit suites.
+- **`refresh-fixtures.ts`** — shared fixtures for the refresh-token suites.
 
 ## Testing
 
 - **Runner:** vitest. `npm test` (one-shot), `npm run test:watch`.
 - **Location:** colocated `*.test.ts` next to the module under test.
 - **Account suites:** import fixtures + `buildTokenStore` / `buildSingleEntryStore`
-  from `test-support/accounts.js` and the spy/scaffold helpers from
+  from `testing/accounts.js` and the spy/scaffold helpers from
   `test-support/cli-harness.js` — do NOT hand-roll account objects or store mocks.
-- **Pattern:** `const logSpy = installConsoleLogSpy()` at the top of a `describe`,
+- **Pattern:** `const logSpy = installCapturedConsole()` at the top of a `describe`,
   build via `buildProgram('auth'|'account')`, drive with
   `program.parseAsync(['node','cli',…])`.
-- No `restoreMocks` in config — the helpers restore their own spies.
+- **Extension suites:** real temp dirs (`mkdtemp`, resolved through `realpath` so
+  macOS's `/var` → `/private/var` link cannot skew path assertions), a fake `npm`
+  on `PATH`, `git` where available (`describe.skipIf(!HAS_GIT)`), and a stubbed
+  `fetch` for GitHub.
+- `restoreMocks: true` in config, so a `vi.spyOn` never leaks past its test; the
+  console helpers also restore themselves.
 
 ## Build & release
 
 - **Build:** `tsc -p tsconfig.build.json` → `dist/`. Two-tsconfig setup:
   `tsconfig.json` includes tests (type-check/IDE); `tsconfig.build.json` excludes
   `*.test.ts` + `src/test-support/` so test-only code never ships.
+  `templates/` is not compiled: it is listed in `package.json#files` and read at
+  run time.
 - **Type-check:** `npm run type-check` (`tsc --noEmit`).
 - **Lint/format:** `npm run check` (`oxlint src && oxfmt --check`), `npm run fix`.
   **No ESLint, no Prettier.** `npm run check` is the gate — run before a PR.
@@ -191,5 +247,6 @@ Excluded from `dist/` by `tsconfig.build.json` and not matched by vitest's
 2. `src/index.ts` + `src/options.ts` — the root building blocks (`emitView`, `CliError`).
 3. `src/auth/types.ts` — the `TokenStore` / `AuthProvider` contracts everything is generic over.
 4. `src/auth/status.ts` — canonical attacher; `src/auth/flow.ts` — the OAuth runtime.
-5. `src/test-support/accounts.ts` — the shared test harness.
-6. `AGENTS.md` — rules you must follow.
+5. `src/testing/accounts.ts` — the shared test harness.
+6. `src/extensions/types.ts` — `ExtensionManagerOptions`, the whole host contract for extensions.
+7. `AGENTS.md` — rules you must follow.

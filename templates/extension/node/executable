@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+//
+// A {{BIN}} extension. Everything after `{{BIN}} {{NAME}}` arrives here
+// untouched, this script owns stdout and stderr, and {{BIN}} exits with
+// whatever this script exits with.
+
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const run = promisify(execFile)
+
+// Variables {{BIN}} sets for an extension, all prefixed {{ENV_PREFIX}}_.
+const env = (name) => process.env[`{{ENV_PREFIX}}_${name}`]
+
+// How to call {{BIN}} back. {{ENV_PREFIX}}_NODE and {{ENV_PREFIX}}_PATH are set
+// by {{BIN}} and work on every platform, including Windows, where the `{{BIN}}`
+// on PATH is a .cmd shim that cannot be spawned directly.
+const [command, prefix] =
+    env('NODE') && env('PATH') ? [env('NODE'), [env('PATH')]] : ['{{BIN}}', []]
+
+/**
+ * Ask {{BIN}} rather than the API: authentication, account selection and
+ * output shape stay {{BIN}}'s job, and `--json` is a contract it keeps.
+ */
+async function host(...args) {
+    const { stdout } = await run(command, [...prefix, ...args])
+    return stdout.trim()
+}
+
+const args = process.argv.slice(2)
+
+if (args.includes('--help') || args.includes('-h')) {
+    process.stdout.write(`Usage: {{BIN}} {{NAME}} [options]
+
+Options:
+  --json      Output as JSON
+  --help      Show this message
+`)
+    process.exit(0)
+}
+
+try {
+    // Something that needs no account, to show the mechanism. For real data:
+    // JSON.parse(await host('…', '--json'))
+    const hostVersion = await host('--version')
+
+    if (args.includes('--json')) {
+        console.log(
+            JSON.stringify(
+                { extension: env('EXTENSION_NAME') ?? '{{NAME}}', hostVersion },
+                null,
+                2,
+            ),
+        )
+    } else {
+        console.log(`Hello from {{DIRNAME}}, running under {{BIN}} ${hostVersion}.`)
+        console.log(`Edit ${env('EXTENSION_DIR') ?? '.'}/{{DIRNAME}} and run it again.`)
+    }
+} catch (error) {
+    // Diagnostics to stderr, non-zero exit: {{BIN}} passes both straight through.
+    process.stderr.write(`{{DIRNAME}}: ${error.message}\n`)
+    process.exitCode = 1
+}

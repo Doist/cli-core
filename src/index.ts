@@ -1,3 +1,5 @@
+export { findCommandToken, needsExtensionLookup } from './command-token.js'
+export type { CommandToken } from './command-token.js'
 export {
     BROKEN_CONFIG_STATE_TO_CODE,
     getConfigPath,
@@ -35,6 +37,7 @@ export type {
 } from './global-args.js'
 export { formatJson, formatNdjson } from './json.js'
 export { formatIds, outputIds } from './ids.js'
+export { getDataDir, getStateDir } from './paths.js'
 export { emitView, OUTPUT_MODES, resolveOutputMode } from './options.js'
 export type { ListViewOptions, OutputMode, ViewOptions } from './options.js'
 export { createSpinner } from './spinner.js'
