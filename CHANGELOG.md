@@ -1,3 +1,9 @@
+## [1.7.0](https://github.com/Doist/cli-core/compare/v1.6.0...v1.7.0) (2026-09-24)
+
+### Features
+
+* **extensions:** add the extension framework subpath ([#141](https://github.com/Doist/cli-core/issues/141)) ([b471735](https://github.com/Doist/cli-core/commit/b4717350bccdf88930cca61546b977cee3001dcb))
+
 ## [1.6.0](https://github.com/Doist/cli-core/compare/v1.5.0...v1.6.0) (2026-09-16)
 
 ### Features
