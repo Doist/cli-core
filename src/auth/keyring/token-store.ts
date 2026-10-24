@@ -19,6 +19,7 @@ import {
     createSecureStore,
     DEFAULT_ACCOUNT_FOR_USER,
     SECURE_STORE_DESCRIPTION,
+    SECURE_STORE_RETRY_HINT,
     type SecureStore,
 } from './secure-store.js'
 import { refreshAccountSlot } from './slot-naming.js'
@@ -98,7 +99,7 @@ function accessReadError(outcome: Extract<ReadAccessTokenOutcome, { ok: false }>
     const hints =
         outcome.reason === 'slot-unavailable'
             ? [
-                  'Make the system credential manager available and retry.',
+                  SECURE_STORE_RETRY_HINT,
                   'Or log in again with plaintext credential storage configured to store the credential in the config file.',
               ]
             : undefined

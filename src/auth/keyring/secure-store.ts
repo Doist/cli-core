@@ -7,6 +7,9 @@ import { getErrorMessage } from '../../errors.js'
  */
 export const SECURE_STORE_DESCRIPTION = 'system credential manager'
 
+/** Recovery hint shared by the write and read paths when the credential manager is unreachable. */
+export const SECURE_STORE_RETRY_HINT = `Make the ${SECURE_STORE_DESCRIPTION} available and retry.`
+
 /**
  * Default keyring `account` slug for a stored user. Lives here so every
  * caller that derives a per-user slot name agrees on the wire format — a

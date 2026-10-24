@@ -1,6 +1,10 @@
 import { CliError } from '../../errors.js'
 import type { AuthAccount, TokenBundle } from '../types.js'
-import { type SecureStore, SecureStoreUnavailableError } from './secure-store.js'
+import {
+    type SecureStore,
+    SECURE_STORE_RETRY_HINT,
+    SecureStoreUnavailableError,
+} from './secure-store.js'
 import type { CredentialStore, UserRecord, UserRecordStore } from './types.js'
 
 type WriteRecordOptions<TAccount extends AuthAccount> = {
@@ -200,7 +204,7 @@ function credentialStoreUnavailableError(): CliError {
         'The system credential manager could not store the credential.',
         {
             hints: [
-                'Make the system credential manager available and retry.',
+                SECURE_STORE_RETRY_HINT,
                 'Configure plaintext credential storage explicitly to store the credential in the config file.',
             ],
         },
