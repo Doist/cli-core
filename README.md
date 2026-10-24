@@ -198,9 +198,9 @@ Everything host-specific arrives through `ExtensionManagerOptions`:
 ```ts
 import { realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
-import chalk from 'chalk'
 import { getConfigPath, getDataDir, getStateDir } from '@doist/cli-core'
 import { createExtensionManager, registerExtensionCommands } from '@doist/cli-core/extensions'
+import chalk from 'chalk'
 import packageJson from '../package.json' with { type: 'json' }
 
 const APP_NAME = 'todoist-cli'

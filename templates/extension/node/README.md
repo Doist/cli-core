@@ -24,7 +24,7 @@ topic, which is how `{{BIN}} extension search` finds it.
 
 - Everything after `{{BIN}} {{NAME}}` reaches this script untouched, `--help`
   included. Global flags belong before the name: `{{BIN}} --user you@example.com
-{{NAME}}`.
+  {{NAME}}`.
 - Write data to stdout and diagnostics to stderr, and exit non-zero on
   failure. {{BIN}} exits with whatever this script exits with.
 - Do not prompt when stdin is not a TTY — {{BIN}} is non-interactive by design
