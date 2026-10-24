@@ -1,3 +1,10 @@
+## [1.7.2](https://github.com/Doist/cli-core/compare/v1.7.1...v1.7.2) (2026-10-24)
+
+### Bug Fixes
+
+* **auth:** keep plaintext credentials in plaintext across silent refresh ([#157](https://github.com/Doist/cli-core/issues/157)) ([6001b63](https://github.com/Doist/cli-core/commit/6001b63edf4265e752ec36d078396c0555443f7f)), closes [#155](https://github.com/Doist/cli-core/issues/155)
+* **auth:** require Secret Service on Linux instead of the session keyring ([#158](https://github.com/Doist/cli-core/issues/158)) ([f27add1](https://github.com/Doist/cli-core/commit/f27add16c0a6802331c17d031cc9b5d6917d9e7c)), closes [Doist/todoist-cli#577](https://github.com/Doist/todoist-cli/issues/577)
+
 ## [1.7.1](https://github.com/Doist/cli-core/compare/v1.7.0...v1.7.1) (2026-10-24)
 
 ### Bug Fixes
