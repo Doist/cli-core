@@ -1,3 +1,9 @@
+## [1.7.1](https://github.com/Doist/cli-core/compare/v1.7.0...v1.7.1) (2026-10-24)
+
+### Bug Fixes
+
+* **deps:** update dependency chalk to v6 ([#106](https://github.com/Doist/cli-core/issues/106)) ([a973bc8](https://github.com/Doist/cli-core/commit/a973bc8ece14ea316734545fdf63d0881cf3bb44))
+
 ## [1.7.0](https://github.com/Doist/cli-core/compare/v1.6.0...v1.7.0) (2026-09-24)
 
 ### Features
