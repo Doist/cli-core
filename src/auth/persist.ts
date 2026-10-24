@@ -1,5 +1,11 @@
 import { CliError, getErrorMessage } from '../errors.js'
-import type { AuthAccount, ExchangeResult, TokenBundle, TokenStore } from './types.js'
+import type {
+    AuthAccount,
+    ExchangeResult,
+    SetBundleOptions,
+    TokenBundle,
+    TokenStore,
+} from './types.js'
 
 export type PersistBundleOptions<TAccount extends AuthAccount> = {
     store: TokenStore<TAccount>
@@ -7,6 +13,8 @@ export type PersistBundleOptions<TAccount extends AuthAccount> = {
     bundle: TokenBundle
     /** Forwarded to `setBundle` when present. See `TokenStore.setBundle`. */
     promoteDefault?: boolean
+    /** Forwarded to `setBundle` when present. See `TokenStore.setBundle`. */
+    preserveStorage?: boolean
 }
 
 /**
@@ -49,15 +57,20 @@ export function bundleFromExchange<TAccount extends AuthAccount>(
 export async function persistBundle<TAccount extends AuthAccount>(
     options: PersistBundleOptions<TAccount>,
 ): Promise<void> {
-    const { store, account, bundle, promoteDefault } = options
+    const { store, account, bundle, promoteDefault, preserveStorage } = options
     try {
         if (store.setBundle) {
-            // Omit the options arg entirely when unset so presence-based
-            // handlers can distinguish "default" from explicit opt-out.
-            if (promoteDefault === undefined) {
+            // Omit the options arg (and each unset key) entirely so
+            // presence-based handlers can distinguish "default" from
+            // explicit opt-out.
+            const setOptions: SetBundleOptions = {
+                ...(promoteDefault !== undefined ? { promoteDefault } : {}),
+                ...(preserveStorage !== undefined ? { preserveStorage } : {}),
+            }
+            if (Object.keys(setOptions).length === 0) {
                 await store.setBundle(account, bundle)
             } else {
-                await store.setBundle(account, bundle, { promoteDefault })
+                await store.setBundle(account, bundle, setOptions)
             }
         } else {
             await store.set(account, bundle.accessToken)

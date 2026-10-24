@@ -605,6 +605,55 @@ describe('createKeyringTokenStore', () => {
             expect(state.defaultId).toBeNull()
         })
 
+        it('preserveStorage keeps a plaintext record in plaintext even with the keyring online', async () => {
+            const { km, store, state } = mapFixture({
+                '42': {
+                    account,
+                    fallbackToken: 'tok_old_a',
+                    fallbackRefreshToken: 'tok_old_r',
+                    hasRefreshToken: true,
+                },
+            })
+
+            await store.setBundle(account, bundle, { preserveStorage: true })
+
+            expect(km.slots.get('user-42')?.secret ?? null).toBeNull()
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret ?? null).toBeNull()
+            expect(state.records.get('42')).toMatchObject({
+                fallbackToken: 'tok_a',
+                fallbackRefreshToken: 'tok_r',
+                hasRefreshToken: true,
+            })
+            expect(store.getLastStorageResult()).toEqual({
+                storage: 'config-file',
+                warning: 'credential stored as plaintext in /tmp/fake/config.json',
+            })
+        })
+
+        it('preserveStorage keeps a keyring record on the configured policy', async () => {
+            const { km, store, state } = mapFixture({
+                '42': { account, hasRefreshToken: true },
+            })
+
+            await store.setBundle(account, bundle, { preserveStorage: true })
+
+            expect(km.slots.get('user-42')?.secret).toBe('tok_a')
+            expect(km.slots.get(refreshAccountSlot('user-42'))?.secret).toBe('tok_r')
+            expect(state.records.get('42')?.fallbackToken).toBeUndefined()
+            expect(state.records.get('42')?.fallbackRefreshToken).toBeUndefined()
+        })
+
+        it('without preserveStorage, the configured policy moves a plaintext record into the keyring', async () => {
+            const { km, store, state } = mapFixture({
+                '42': { account, fallbackToken: 'tok_old_a', hasRefreshToken: false },
+            })
+
+            await store.setBundle(account, bundle)
+
+            expect(km.slots.get('user-42')?.secret).toBe('tok_a')
+            expect(state.records.get('42')?.fallbackToken).toBeUndefined()
+        })
+
         it('set() wipes the refresh slot left behind by a prior setBundle', async () => {
             // Regression: `set(account, token)` is documented as "replacing
             // any previous entry". A later set() must leave no orphan

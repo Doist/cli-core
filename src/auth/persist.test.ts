@@ -41,7 +41,16 @@ describe('persistBundle', () => {
         expect(set).toHaveBeenCalledWith(account, 'tok_access')
     })
 
-    it('omits the options argument entirely when promoteDefault is unset', async () => {
+    it('forwards preserveStorage without an unset promoteDefault key', async () => {
+        const setBundle = vi.fn(async () => undefined)
+        const store = fakeStore({ setBundle })
+
+        await persistBundle({ store, account, bundle, preserveStorage: true })
+
+        expect(setBundle.mock.calls[0]).toEqual([account, bundle, { preserveStorage: true }])
+    })
+
+    it('omits the options argument entirely when no option is set', async () => {
         const setBundle = vi.fn(async () => undefined)
         const store = fakeStore({ setBundle })
 
