@@ -65,9 +65,9 @@ function defaultMatchAccount(account: AuthAccount, ref: AccountRef): boolean {
  * always a valid `TokenStore`.
  */
 export type StoreOverrides<TAccount extends AuthAccount> = {
-    [K in keyof TokenStore<TAccount> as undefined extends TokenStore<TAccount>[K]
-        ? K
-        : never]?: TokenStore<TAccount>[K]
+    [
+        K in keyof TokenStore<TAccount> as undefined extends TokenStore<TAccount>[K] ? K : never
+    ]?: TokenStore<TAccount>[K]
 }
 
 export type TokenStoreHarness<TAccount extends AuthAccount> = {
