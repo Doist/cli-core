@@ -91,7 +91,18 @@ function accessReadError(outcome: Extract<ReadAccessTokenOutcome, { ok: false }>
             : outcome.reason === 'slot-unavailable'
               ? `${SECURE_STORE_DESCRIPTION} unavailable; could not read stored token (${outcome.detail})`
               : `Access-slot read failed (${outcome.detail})`
-    return new CliError('AUTH_STORE_READ_FAILED', message)
+    // `slot-unavailable` includes a credential written to a backend that is
+    // not reachable from this process, such as Linux's per-session kernel
+    // keyring. Logging in again with plaintext storage is the way out when
+    // the credential manager can't be made available.
+    const hints =
+        outcome.reason === 'slot-unavailable'
+            ? [
+                  'Make the system credential manager available and retry.',
+                  'Or log in again with plaintext credential storage configured to store the credential in the config file.',
+              ]
+            : undefined
+    return new CliError('AUTH_STORE_READ_FAILED', message, { hints })
 }
 
 /**

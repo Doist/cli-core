@@ -628,7 +628,7 @@ try {
 }
 ```
 
-Every failure mode — `@napi-rs/keyring` failing to load on an arch without a prebuilt binary, libsecret not running on a headless Linux box, the Keychain prompting and the user denying — is normalised into `SecureStoreUnavailableError`. The `@napi-rs/keyring` module is dynamic-imported so a missing native binary doesn't crash module load before the error can surface.
+Every failure mode — `@napi-rs/keyring` failing to load on an arch without a prebuilt binary, libsecret not running on a headless Linux box, the Keychain prompting and the user denying — is normalised into `SecureStoreUnavailableError`. On Linux the store is pinned to the Secret Service: `@napi-rs/keyring` would otherwise fall back silently to the kernel keyutils keyring, which is in-memory and scoped to the login session, so a credential written there can't be read from another terminal, a cron job, or after a restart. A host with no Secret Service therefore reports `SecureStoreUnavailableError` and the token store's credential-store policy decides what happens next. The `@napi-rs/keyring` module is dynamic-imported so a missing native binary doesn't crash module load before the error can surface.
 
 `@napi-rs/keyring` is declared in cli-core's own `optionalDependencies`, so npm pulls it in transitively when you install `@doist/cli-core` — your consumer CLI does not need to add it explicitly. The library ships pre-built native binaries for Windows (Credential Manager), macOS (Keychain), and Linux glibc + musl (libsecret / Secret Service).
 

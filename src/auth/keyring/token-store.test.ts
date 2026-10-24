@@ -246,6 +246,20 @@ describe('createKeyringTokenStore', () => {
         await expect(store.active()).rejects.toMatchObject({ code: 'AUTH_STORE_READ_FAILED' })
     })
 
+    it('hints at plaintext storage when the credential manager is unavailable on read', async () => {
+        const keyring = buildSingleSlot()
+        keyring.getSpy.mockRejectedValueOnce(new SecureStoreUnavailableError('no secret service'))
+        const { store } = fixture({ keyring, records: { '42': { account } }, defaultId: '42' })
+
+        await expect(store.active()).rejects.toMatchObject({
+            code: 'AUTH_STORE_READ_FAILED',
+            hints: [
+                'Make the system credential manager available and retry.',
+                'Or log in again with plaintext credential storage configured to store the credential in the config file.',
+            ],
+        })
+    })
+
     it('picks the lone user when no default is set', async () => {
         const { km, store } = mapFixture({ '42': { account } })
         km.slots.set('user-42', { secret: 'tok' })
