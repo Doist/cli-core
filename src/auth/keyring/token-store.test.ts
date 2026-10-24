@@ -643,6 +643,48 @@ describe('createKeyringTokenStore', () => {
             expect(state.records.get('42')?.fallbackRefreshToken).toBeUndefined()
         })
 
+        it('preserveStorage treats a refresh-only plaintext fallback as plaintext', async () => {
+            const { km, store, state } = mapFixture({
+                '42': { account, fallbackRefreshToken: 'tok_old_r', hasRefreshToken: true },
+            })
+
+            await store.setBundle(account, bundle, { preserveStorage: true })
+
+            expect(km.slots.get('user-42')?.secret ?? null).toBeNull()
+            expect(state.records.get('42')).toMatchObject({
+                fallbackToken: 'tok_a',
+                fallbackRefreshToken: 'tok_r',
+            })
+        })
+
+        it('preserveStorage ignores an empty fallback field, matching the read side', async () => {
+            const { km, store, state } = mapFixture({
+                '42': { account, fallbackToken: '  ', hasRefreshToken: true },
+            })
+
+            await store.setBundle(account, bundle, { preserveStorage: true })
+
+            expect(km.slots.get('user-42')?.secret).toBe('tok_a')
+            expect(state.records.get('42')?.fallbackToken).toBeUndefined()
+        })
+
+        it('preserveStorage applies a non-default configured policy to a keyring record', async () => {
+            const keyring = buildSingleSlot()
+            const { store, state } = fixture({
+                keyring,
+                records: { '42': { account, hasRefreshToken: true } },
+                factoryOpts: { credentialStore: 'plaintext' },
+            })
+
+            await store.setBundle(account, bundle, { preserveStorage: true })
+
+            expect(keyring.setSpy).not.toHaveBeenCalled()
+            expect(state.records.get('42')).toMatchObject({
+                fallbackToken: 'tok_a',
+                fallbackRefreshToken: 'tok_r',
+            })
+        })
+
         it('without preserveStorage, the configured policy moves a plaintext record into the keyring', async () => {
             const { km, store, state } = mapFixture({
                 '42': { account, fallbackToken: 'tok_old_a', hasRefreshToken: false },

@@ -7,14 +7,11 @@ import type {
     TokenStore,
 } from './types.js'
 
-export type PersistBundleOptions<TAccount extends AuthAccount> = {
+/** `SetBundleOptions` fields are forwarded to `setBundle` when present. */
+export type PersistBundleOptions<TAccount extends AuthAccount> = SetBundleOptions & {
     store: TokenStore<TAccount>
     account: TAccount
     bundle: TokenBundle
-    /** Forwarded to `setBundle` when present. See `TokenStore.setBundle`. */
-    promoteDefault?: boolean
-    /** Forwarded to `setBundle` when present. See `TokenStore.setBundle`. */
-    preserveStorage?: boolean
 }
 
 /**

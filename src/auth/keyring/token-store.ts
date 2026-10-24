@@ -9,6 +9,7 @@ import type {
 } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
 import {
+    hasPlaintextCredential,
     type ReadAccessTokenOutcome,
     readAccessTokenForRecord,
     readRefreshTokenForRecord,
@@ -267,10 +268,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
      */
     async function storedCredentialStore(accountId: string): Promise<CredentialStore> {
         const existing = (await userRecords.list()).find((r) => r.account.id === accountId)
-        if (existing?.fallbackToken !== undefined || existing?.fallbackRefreshToken !== undefined) {
-            return 'plaintext'
-        }
-        return resolveCredentialStore()
+        return existing && hasPlaintextCredential(existing) ? 'plaintext' : resolveCredentialStore()
     }
 
     /**
@@ -450,8 +448,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             const fellBack =
                 accessOutcome.status === 'rejected' ||
                 refreshOutcome.status === 'rejected' ||
-                record.fallbackToken !== undefined ||
-                record.fallbackRefreshToken !== undefined
+                hasPlaintextCredential(record)
             lastClearResult = fellBack ? fallbackClear : { storage: 'secure-store' }
             return { account: record.account, wasDefault }
         },

@@ -115,7 +115,12 @@ export type TokenBundle = {
 export type SetBundleOptions = {
     /** Pin this account as the default when none is pinned yet. Login passes `true`. */
     promoteDefault?: boolean
-    /** Keep the credential in the backend that already holds it. Silent refresh passes `true`. */
+    /**
+     * Keep a credential the store holds in plaintext in plaintext, instead of
+     * applying the store's configured write policy. Credentials held in the
+     * system credential manager still follow the configured policy. Silent
+     * refresh passes `true`.
+     */
     preserveStorage?: boolean
 }
 
@@ -171,9 +176,9 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * helpers handle the fallback). Pass `promoteDefault: true` on first
      * login; omit on silent refresh so a background rotation can't re-pin
      * account selection. Pass `preserveStorage: true` on silent refresh so
-     * the rotated credential lands in whichever backend held the previous
-     * one, instead of the store's configured write policy — a user's
-     * explicit storage choice must outlive a background rotation.
+     * a credential held in plaintext stays in plaintext instead of being
+     * moved by the store's configured write policy — a user's explicit
+     * plaintext choice must outlive a background rotation.
      */
     setBundle?(account: TAccount, bundle: TokenBundle, options?: SetBundleOptions): Promise<void>
     /**
