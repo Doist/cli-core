@@ -84,7 +84,7 @@
         "oxlint": "1.88.0",
         "semantic-release": "25.0.9",
         "typescript": "7.0.2",
-        "vitest": "4.1.12",
+        "vitest": "5.0.5",
         "zod": "4.6.7"
     },
     "dependencies": {
