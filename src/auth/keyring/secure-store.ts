@@ -7,6 +7,9 @@ import { getErrorMessage } from '../../errors.js'
  */
 export const SECURE_STORE_DESCRIPTION = 'system credential manager'
 
+/** Recovery hint shared by the write and read paths when the credential manager is unreachable. */
+export const SECURE_STORE_RETRY_HINT = `Make the ${SECURE_STORE_DESCRIPTION} available and retry.`
+
 /**
  * Default keyring `account` slug for a stored user. Lives here so every
  * caller that derives a per-user slot name agrees on the wire format — a
@@ -17,8 +20,9 @@ export const DEFAULT_ACCOUNT_FOR_USER = (id: string): string => `user-${id}`
 
 /**
  * Thrown when the OS credential manager cannot be reached — missing native
- * binary for the current architecture, libsecret/D-Bus unavailable
- * (common in WSL / headless Linux / containers / CI), Keychain locked, or
+ * binary for the current architecture, no Secret Service on Linux
+ * (common in WSL / headless Linux / containers / CI; the per-session kernel
+ * keyring is deliberately not used as a substitute), Keychain locked, or
  * any other error returned by the underlying keyring backend.
  *
  * The original throwable is preserved on `cause` so platform-specific
@@ -73,7 +77,17 @@ export function createSecureStore(options: CreateSecureStoreOptions): SecureStor
             // `SecureStoreUnavailableError`.
             entryPromise = (async () => {
                 const { AsyncEntry } = await import('@napi-rs/keyring')
-                return new AsyncEntry(serviceName, account)
+                // Without the pin, Linux hosts with no Secret Service (WSL,
+                // headless boxes) silently fall back to the kernel keyutils
+                // keyring. That keyring is in-memory and scoped to the login
+                // session, so a write "succeeds" but other terminals, cron
+                // jobs, and anything after a restart can't read it back.
+                // Pinned, the constructor throws instead, which surfaces as
+                // `SecureStoreUnavailableError` and lets the caller's
+                // credential-store policy decide. Ignored on other platforms.
+                return new AsyncEntry(serviceName, account, {
+                    linux: { store: 'secret-service' },
+                })
             })()
         }
         try {

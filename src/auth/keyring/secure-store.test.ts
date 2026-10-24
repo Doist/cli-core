@@ -62,7 +62,9 @@ describe('createSecureStore', () => {
         await expect(store.setSecret('tok_abcdef')).resolves.toBeUndefined()
         await expect(store.deleteSecret()).resolves.toBe(true)
 
-        expect(keyringMocks.AsyncEntry).toHaveBeenCalledWith(SERVICE, ACCOUNT)
+        expect(keyringMocks.AsyncEntry).toHaveBeenCalledWith(SERVICE, ACCOUNT, {
+            linux: { store: 'secret-service' },
+        })
         expect(keyringMocks.entry.setPassword).toHaveBeenCalledWith('tok_abcdef')
     })
 
@@ -104,6 +106,21 @@ describe('createSecureStore', () => {
             expect((error as { cause?: unknown }).cause).toBe(cause)
         },
     )
+
+    it('surfaces a missing Secret Service (pinned constructor throws) as SecureStoreUnavailableError', async () => {
+        const cause = new Error('no secret service on the session bus')
+        keyringMocks.AsyncEntry.mockImplementationOnce(function AsyncEntry() {
+            throw cause
+        })
+
+        const { createSecureStore, SecureStoreUnavailableError } = await import('./secure-store.js')
+        const store = createSecureStore({ serviceName: SERVICE, account: ACCOUNT })
+
+        await expect(store.setSecret('x')).rejects.toBeInstanceOf(SecureStoreUnavailableError)
+        await expect(store.getSecret()).rejects.toMatchObject({ cause })
+        await expect(store.deleteSecret()).rejects.toBeInstanceOf(SecureStoreUnavailableError)
+        expect(keyringMocks.entry.setPassword).not.toHaveBeenCalled()
+    })
 
     it('memoises the AsyncEntry across calls on the same store', async () => {
         keyringMocks.entry.getPassword.mockResolvedValue('tok')
