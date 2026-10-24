@@ -111,6 +111,19 @@ export type TokenBundle = {
     refreshTokenExpiresAt?: number
 }
 
+/** Options for `TokenStore.setBundle`. */
+export type SetBundleOptions = {
+    /** Pin this account as the default when none is pinned yet. Login passes `true`. */
+    promoteDefault?: boolean
+    /**
+     * Keep a credential the store holds in plaintext in plaintext, instead of
+     * applying the store's configured write policy. Credentials held in the
+     * system credential manager still follow the configured policy. Silent
+     * refresh passes `true`.
+     */
+    preserveStorage?: boolean
+}
+
 /** Read-side snapshot returned by `activeBundle`. Mirrors `setBundle`'s write side. */
 export type ActiveBundleSnapshot<TAccount extends AuthAccount = AuthAccount> = {
     account: TAccount
@@ -162,13 +175,12 @@ export type TokenStore<TAccount extends AuthAccount = AuthAccount> = {
      * implement it get `bundle.accessToken` via `set()` instead (cli-core
      * helpers handle the fallback). Pass `promoteDefault: true` on first
      * login; omit on silent refresh so a background rotation can't re-pin
-     * account selection.
+     * account selection. Pass `preserveStorage: true` on silent refresh so
+     * a credential held in plaintext stays in plaintext instead of being
+     * moved by the store's configured write policy — a user's explicit
+     * plaintext choice must outlive a background rotation.
      */
-    setBundle?(
-        account: TAccount,
-        bundle: TokenBundle,
-        options?: { promoteDefault?: boolean },
-    ): Promise<void>
+    setBundle?(account: TAccount, bundle: TokenBundle, options?: SetBundleOptions): Promise<void>
     /**
      * Full-bundle read for refresh-capable consumers. Returns the matching
      * account + bundle, or `null` on miss. Optional on the contract — the

@@ -3,11 +3,13 @@ import type {
     AccountRef,
     ActiveBundleSnapshot,
     AuthAccount,
+    SetBundleOptions,
     TokenBundle,
     TokenStore,
 } from '../types.js'
 import { accountNotFoundError } from '../user-flag.js'
 import {
+    hasPlaintextCredential,
     type ReadAccessTokenOutcome,
     readAccessTokenForRecord,
     readRefreshTokenForRecord,
@@ -58,11 +60,7 @@ export type KeyringTokenStore<TAccount extends AuthAccount> = TokenStore<TAccoun
      * always knows how to persist refresh state. Lets cli-core helpers
      * (`persistBundle`) call it without a non-null assertion.
      */
-    setBundle(
-        account: TAccount,
-        bundle: TokenBundle,
-        options?: { promoteDefault?: boolean },
-    ): Promise<void>
+    setBundle(account: TAccount, bundle: TokenBundle, options?: SetBundleOptions): Promise<void>
     /**
      * Override `activeBundle` as required (not optional) — the keyring store
      * always knows how to read refresh state. Lets cli-core helpers
@@ -109,6 +107,10 @@ function accessReadError(outcome: Extract<ReadAccessTokenOutcome, { ok: false }>
  * keyring is online the record is written with no `fallbackToken`, so the
  * keyring read is the only path. When the keyring is offline the token is
  * parked on the record and must be reachable on every subsequent read.
+ *
+ * Silent refresh passes `preserveStorage` to `setBundle`, so a record that
+ * holds plaintext stays in plaintext across a rotation instead of being
+ * moved into the keyring by the configured policy.
  *
  * Write order is keyring first, then `userRecords.upsert`. If the upsert
  * fails after a successful keyring write, the keyring entry is rolled back
@@ -256,6 +258,20 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
     }
 
     /**
+     * Write policy that keeps an existing credential where it is. A record
+     * carrying either plaintext field stays in plaintext, whatever the
+     * configured policy says: the configured policy is the consumer's
+     * default, not the user's earlier explicit choice, and re-applying it
+     * on a background refresh would silently move the credential into a
+     * keyring that may be unreachable from the contexts the user chose
+     * plaintext for (scheduled jobs, locked machines, other sessions).
+     */
+    async function storedCredentialStore(accountId: string): Promise<CredentialStore> {
+        const existing = (await userRecords.list()).find((r) => r.account.id === accountId)
+        return existing && hasPlaintextCredential(existing) ? 'plaintext' : resolveCredentialStore()
+    }
+
+    /**
      * Best-effort default promotion shared by `set` and `setBundle`. The
      * record is already persisted, so a failure here must not surface as
      * `AUTH_STORE_WRITE_FAILED` — the user can recover by setting a
@@ -362,7 +378,9 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
         async setBundle(account, bundle, options) {
             lastStorageResult = undefined
 
-            const credentialStore = resolveCredentialStore()
+            const credentialStore = options?.preserveStorage
+                ? await storedCredentialStore(account.id)
+                : resolveCredentialStore()
             const { accessStoredSecurely, refreshStoredSecurely } =
                 await writeBundleWithKeyringFallback({
                     accessStore: secureStoreFor(account),
@@ -430,8 +448,7 @@ export function createKeyringTokenStore<TAccount extends AuthAccount>(
             const fellBack =
                 accessOutcome.status === 'rejected' ||
                 refreshOutcome.status === 'rejected' ||
-                record.fallbackToken !== undefined ||
-                record.fallbackRefreshToken !== undefined
+                hasPlaintextCredential(record)
             lastClearResult = fellBack ? fallbackClear : { storage: 'secure-store' }
             return { account: record.account, wasDefault }
         },

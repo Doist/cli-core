@@ -26,6 +26,18 @@ export type ReadRefreshTokenOutcome =
     | { ok: false; reason: 'slot-empty' | 'slot-unavailable' | 'slot-error'; detail: string }
 
 /**
+ * Whether the record holds a plaintext credential, using the same
+ * non-empty-after-trim rule as the readers below: an empty or whitespace
+ * fallback field is ignored on read, so it must not count as plaintext
+ * storage either.
+ */
+export function hasPlaintextCredential<TAccount extends AuthAccount>(
+    record: UserRecord<TAccount>,
+): boolean {
+    return Boolean(record.fallbackToken?.trim() || record.fallbackRefreshToken?.trim())
+}
+
+/**
  * `fallbackToken` first (so an offline-keyring write is preferred over a
  * stale slot), then the keyring slot. Single-source for "is this record
  * readable in the current environment" — `KeyringTokenStore.active()` and

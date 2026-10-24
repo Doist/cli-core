@@ -64,10 +64,10 @@ describe('refreshAccessToken', () => {
         expect(result.bundle.accessToken).toBe('tok_new')
         expect(refreshSpy).toHaveBeenCalledWith({ refreshToken: 'r_a', handshake: {} })
         // promoteDefault omitted (not just `false`): a silent rotation must
-        // not re-pin selection, and the helper distinguishes "absent" from
-        // "explicit opt-out" via arg count.
+        // not re-pin selection. preserveStorage keeps the rotated credential
+        // in whichever backend the user's earlier write chose.
         expect(state.setBundleCalls).toHaveLength(1)
-        expect(state.setBundleCalls[0].options).toBeUndefined()
+        expect(state.setBundleCalls[0].options).toEqual({ preserveStorage: true })
     })
 
     it.each([

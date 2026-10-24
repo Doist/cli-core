@@ -69,6 +69,7 @@ export type {
     PrepareInput,
     PrepareResult,
     RefreshInput,
+    SetBundleOptions,
     TokenBundle,
     TokenStore,
     ValidateInput,

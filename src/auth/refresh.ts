@@ -171,7 +171,7 @@ export async function refreshAccessToken<TAccount extends AuthAccount>(
         const exchange = await refreshGrant({ refreshToken, handshake })
         const account = exchange.account ?? current.account
         const bundle = bundleFromExchange(exchange, current.bundle)
-        await persistBundle({ store, account, bundle })
+        await persistBundle({ store, account, bundle, preserveStorage: true })
         return { rotated: true, bundle, account }
     } finally {
         await releaseLock(lockPath, lockToken)
