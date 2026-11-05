@@ -38,12 +38,18 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
         const changes = changedSince(root, base)
         const kinds = new Set(changes.map(classify))
         if (changes.length > 0 && !kinds.has('code')) {
+            // Docs and CI config are still formatted, and CI checks that, so the format step runs.
+            const format = steps.find((step) => step.name === 'format')
+            if (format && !(await runStep(root, format, logDirFor(root), out))) {
+                return { ok: false, recorded: false }
+            }
+            const checked = format ? 'only their formatting was checked' : 'nothing to check'
             if (kinds.has('unchecked')) {
                 const unchecked = changes.filter((path) => classify(path) === 'unchecked')
                 out(`No local check reads what changed since ${baseName}: ${unchecked.join(', ')}.`)
-                out('CI is the only check for these. Nothing recorded.')
+                out(`CI is the only check for these; ${checked}. Nothing recorded.`)
             } else {
-                out(`Only docs changed since ${baseName}: nothing to check. Nothing recorded.`)
+                out(`Only docs changed since ${baseName}: ${checked}. Nothing recorded.`)
             }
             return { ok: true, recorded: false }
         }
@@ -56,20 +62,18 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     clearVerified(root)
     const before = snapshot(root)
 
-    const logDir = join(stateDir(root), 'logs')
-    mkdirSync(logDir, { recursive: true })
-    const passed = await runSteps(root, steps, logDir, out)
+    const passed = await runSteps(root, steps, logDirFor(root), out)
     if (!passed) return { ok: false, recorded: false }
 
     const after = snapshot(root)
-    if (codeFingerprint(after) !== codeFingerprint(before)) {
+    const fingerprint = codeFingerprint(after)
+    if (fingerprint !== codeFingerprint(before)) {
         const changed = changedCodePaths(before, after)
         out(`Files changed during the run: ${changed.join(', ')}. Nothing recorded; run it again.`)
         return { ok: false, recorded: false }
     }
 
     const head = git(root, ['rev-parse', 'HEAD'])
-    const fingerprint = codeFingerprint(after)
     writeVerified(root, {
         fingerprint,
         head: head.ok ? head.stdout.trim() : 'none',
@@ -77,6 +81,12 @@ export async function runVerify(options: VerifyOptions): Promise<VerifyResult> {
     })
     out(`Verified. Recorded fingerprint ${fingerprint.slice(0, 12)}.`)
     return { ok: true, recorded: true }
+}
+
+function logDirFor(root: string): string {
+    const dir = join(stateDir(root), 'logs')
+    mkdirSync(dir, { recursive: true })
+    return dir
 }
 
 async function runSteps(

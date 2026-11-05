@@ -53,10 +53,18 @@ export const LOCAL_ONLY_ENV = [
     'FORCE_COLOR',
 ]
 
+/** Removes LOCAL_ONLY_ENV from `env`, and returns the names that were set. */
+export function removeLocalOnlyEnv(env: NodeJS.ProcessEnv): string[] {
+    const removed = LOCAL_ONLY_ENV.filter((name) => env[name] !== undefined)
+    for (const name of removed) delete env[name]
+    return removed
+}
+
 type PackageJson = {
     engines?: { node?: string }
     dependencies?: Record<string, string>
     devDependencies?: Record<string, string>
+    optionalDependencies?: Record<string, string>
 }
 type Lockfile = {
     packages?: Record<
@@ -67,6 +75,7 @@ type Lockfile = {
             devOptional?: boolean
             dependencies?: Record<string, string>
             devDependencies?: Record<string, string>
+            optionalDependencies?: Record<string, string>
         }
     >
 }
@@ -99,7 +108,7 @@ export function preflight(root: string, nodeVersion = process.versions.node): st
     // before any check runs.
     const manifest = lock.packages[''] ?? {}
     const disagree: string[] = []
-    for (const field of ['dependencies', 'devDependencies'] as const) {
+    for (const field of ['dependencies', 'devDependencies', 'optionalDependencies'] as const) {
         const wanted = pkg?.[field] ?? {}
         const locked = manifest[field] ?? {}
         for (const name of new Set([...Object.keys(wanted), ...Object.keys(locked)])) {

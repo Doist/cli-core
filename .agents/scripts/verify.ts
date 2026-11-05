@@ -3,7 +3,7 @@
 
 import { CHECKOUT_ROOT, branchBase, defaultBranchRef } from './lib/git.ts'
 import { clearVerified } from './lib/state.ts'
-import { BLIND_SPOTS, LOCAL_ONLY_ENV, preflight, VERIFY_STEPS } from './lib/steps.ts'
+import { BLIND_SPOTS, preflight, removeLocalOnlyEnv, VERIFY_STEPS } from './lib/steps.ts'
 import { runVerify } from './lib/verify.ts'
 
 const root = CHECKOUT_ROOT
@@ -15,10 +15,8 @@ if (problems.length > 0) {
     process.exit(1)
 }
 
-for (const name of LOCAL_ONLY_ENV) {
-    if (process.env[name] === undefined) continue
+for (const name of removeLocalOnlyEnv(process.env)) {
     console.log(`Ignoring ${name}: CI does not set it.`)
-    delete process.env[name]
 }
 
 const ref = defaultBranchRef(root)

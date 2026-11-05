@@ -173,6 +173,26 @@ describe('what counts as a change', () => {
         expect(await verify([pass('lint')])).toEqual({ ok: true, recorded: true })
     })
 
+    it('checks only the formatting of a docs-only change', async () => {
+        repo.write('README.md', 'changed\n')
+        const result = await verify([fail('lint'), pass('format')])
+        expect(result).toEqual({ ok: true, recorded: false })
+        expect(lines.at(-1)).toBe(
+            'Only docs changed since main: only their formatting was checked. Nothing recorded.',
+        )
+    })
+
+    it('fails a docs-only change whose formatting fails', async () => {
+        repo.write('README.md', 'changed\n')
+        expect(await verify([pass('lint'), fail('format')])).toEqual({ ok: false, recorded: false })
+        expect(lines[0]).toMatch(/^✗ format/)
+    })
+
+    it('checks the formatting of a change only CI reads', async () => {
+        repo.write('renovate.json', '{}\n')
+        expect(await verify([pass('lint'), fail('format')])).toEqual({ ok: false, recorded: false })
+    })
+
     it('has nothing to check for a docs-only change', async () => {
         repo.write('README.md', 'changed\n')
         const result = await verify([fail('lint')])

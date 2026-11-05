@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, readlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { git } from './git.ts'
+import { git, untrackedPaths } from './git.ts'
 
 /** Path → content hash for every tracked and untracked, non-ignored file. */
 export type Snapshot = Record<string, string>
@@ -86,7 +86,6 @@ export function changedPaths(before: Snapshot, after: Snapshot): string[] {
 export function changedSince(root: string, base: string): string[] {
     const diff = git(root, ['diff', '--name-only', '-z', '--no-renames', base])
     if (!diff.ok) throw new Error(`git diff failed: ${diff.stderr.trim()}`)
-    const untracked = git(root, ['ls-files', '-z', '--others', '--exclude-standard'])
-    const paths = [...diff.stdout.split('\0'), ...untracked.stdout.split('\0')].filter(Boolean)
+    const paths = [...diff.stdout.split('\0'), ...untrackedPaths(root)].filter(Boolean)
     return [...new Set(paths)].sort()
 }

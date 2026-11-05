@@ -3,20 +3,20 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { writeJson } from './state.ts'
-import { CI_EQUIVALENTS, preflight, VERIFY_STEPS } from './steps.ts'
+import { CI_EQUIVALENTS, preflight, removeLocalOnlyEnv, VERIFY_STEPS } from './steps.ts'
 import { REPO_ROOT } from './test-repo.ts'
 import { CHECKED_WORKFLOWS } from './tree.ts'
 
 const WORKFLOWS_DIR = join(REPO_ROOT, '.github/workflows')
 const readWorkflow = (name: string) => readFileSync(join(WORKFLOWS_DIR, name), 'utf8')
 
-// A line in a `run: |` script that runs a tool. The lines around them are shell guards (if, echo,
-// exit, fi).
-const TOOL_LINE = /^(npm|npx|node|gh|tsc|vitest|oxlint|oxfmt)\s/
+// Lines of a `run: |` script that only steer the shell or print. Every other line runs something.
+const SHELL_GUARD =
+    /^(if|then|else|elif|fi|for|while|do|done|case|esac|echo|printf|exit|true|false|#|:|\{|\})(\s|;|$)/
 
 /**
- * The commands a workflow runs: each one-line `run:`, and every tool line of a `run: |` script, so a
- * check added to a script cannot hide behind the command that was already there.
+ * The commands a workflow runs: each one-line `run:`, and every line of a `run: |` script that is
+ * not a shell guard, so a check added to a script cannot hide behind the command already there.
  */
 function workflowCommands(text: string): string[] {
     const commands: string[] = []
@@ -31,7 +31,8 @@ function workflowCommands(text: string): string[] {
         }
         for (const next of lines.slice(index + 1)) {
             if (next.trim() && next.search(/\S/) <= indent.length) break
-            if (TOOL_LINE.test(next.trim())) commands.push(next.trim())
+            const command = next.trim()
+            if (command && !SHELL_GUARD.test(command)) commands.push(command)
         }
     })
     return commands
@@ -58,7 +59,7 @@ describe('reading workflows', () => {
         expect(runsOnPullRequests(text)).toBe(expected)
     })
 
-    it('takes every tool line of a script, not only its last one', () => {
+    it('takes every command of a script, whatever runs it, and skips its shell guards', () => {
         const text = [
             'steps:',
             '    - run: |',
@@ -66,13 +67,15 @@ describe('reading workflows', () => {
             '              echo "skipping"',
             '              exit 0',
             '          fi',
-            '          npm run new-check',
+            '          ./scripts/extra-check.sh',
+            '          pnpm lint',
             '          gh skill publish --dry-run',
             '    - run: npm test',
             '',
         ].join('\n')
         expect(workflowCommands(text)).toEqual([
-            'npm run new-check',
+            './scripts/extra-check.sh',
+            'pnpm lint',
             'gh skill publish --dry-run',
             'npm test',
         ])
@@ -135,6 +138,19 @@ describe('verify covers CI', () => {
             if (step.after) expect(names).toContain(step.after)
             for (const other of step.waitFor ?? []) expect(names).toContain(other)
         }
+    })
+
+    it('runs the build and the tests with CI=true, as GitHub Actions does', () => {
+        for (const name of ['build', 'tests']) {
+            const step = VERIFY_STEPS.find((candidate) => candidate.name === name)
+            expect(step?.env, name).toEqual({ CI: 'true' })
+        }
+    })
+
+    it('removes the variables CI never sets, and says which it removed', () => {
+        const env: NodeJS.ProcessEnv = { GH_TOKEN: 'real-token', DISPLAY: ':0', PATH: '/bin' }
+        expect(removeLocalOnlyEnv(env)).toEqual(['GH_TOKEN', 'DISPLAY'])
+        expect(env).toEqual({ PATH: '/bin' })
     })
 
     it('starts the tests only once the build has written dist/', () => {
@@ -237,6 +253,18 @@ describe('preflight', () => {
         })
         expect(preflight(root, '24.0.0')).toEqual([
             'package.json and package-lock.json disagree: zod (package.json: 1.1.0, lockfile: 1.0.0), added (package.json: 1.0.0, lockfile: none). Run `npm install`.',
+        ])
+    })
+
+    it('names an optional dependency package.json and the lockfile disagree on', () => {
+        writeJson(join(root, 'package.json'), {
+            engines: { node: '>=24' },
+            dependencies: { zod: '1.0.0' },
+            devDependencies: { vitest: '2.0.0' },
+            optionalDependencies: { keyring: '2.0.0' },
+        })
+        expect(preflight(root, '24.0.0')).toEqual([
+            'package.json and package-lock.json disagree: keyring (package.json: 2.0.0, lockfile: none). Run `npm install`.',
         ])
     })
 

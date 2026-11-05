@@ -5,7 +5,7 @@ Shared core utilities for the Doist CLIs (`@doist/todoist-cli`, `@doist/twist-cl
 ## Definition of done
 
 - **Done means proven:** a test that failed before the change and passes after, at the module's public interface. For a refactor: tests that pin the behaviour, passing before and after. Reading code or a passing compile is not proof.
-- **Run `npm run verify` before calling a change done.** It runs every check CI runs, in about five seconds, and records the pass. It prints what it cannot see, and says when only docs changed and there is nothing to check.
+- **Run `npm run verify` before calling a change done.** It runs every check CI runs, in about five seconds, and records the pass. It prints what it cannot see, and when only docs changed it checks just their formatting.
 - **Never weaken a check to pass it.** Don't skip, delete or loosen tests, edit lint, type or test config to get green, or use `--no-verify`. If a check looks wrong, say so and stop.
 - **Report honestly:** what ran, what it showed, and what you did not verify.
 

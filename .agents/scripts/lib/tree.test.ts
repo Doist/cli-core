@@ -6,20 +6,24 @@ import { changedPaths, changedSince, classify, codeFingerprint, snapshot } from 
 
 let repo: TempRepo
 
-beforeEach(() => {
-    repo = createTempRepo()
-    repo.write('src/a.ts', 'export const a = 1\n')
-    repo.write('README.md', 'readme\n')
-    repo.write('.gitignore', 'ignored/\n')
-    repo.git(['add', '.'])
-    repo.git(['commit', '--quiet', '-m', 'initial'])
-})
-
-afterEach(() => repo.cleanup())
+// A throwaway repository for the suites that read files; classify needs none.
+function useRepo(): void {
+    beforeEach(() => {
+        repo = createTempRepo()
+        repo.write('src/a.ts', 'export const a = 1\n')
+        repo.write('README.md', 'readme\n')
+        repo.write('.gitignore', 'ignored/\n')
+        repo.git(['add', '.'])
+        repo.git(['commit', '--quiet', '-m', 'initial'])
+    })
+    afterEach(() => repo.cleanup())
+}
 
 const objectCount = () => repo.git(['count-objects', '-v']).stdout
 
 describe('snapshot', () => {
+    useRepo()
+
     it('sees an edit that keeps the size and modification time', () => {
         const before = codeFingerprint(snapshot(repo.dir))
         const file = join(repo.dir, 'src/a.ts')
@@ -60,6 +64,8 @@ describe('snapshot', () => {
 })
 
 describe('codeFingerprint', () => {
+    useRepo()
+
     it('ignores docs and files only CI reads, and nothing else', () => {
         const before = codeFingerprint(snapshot(repo.dir))
         repo.write('README.md', 'changed\n')
@@ -98,6 +104,8 @@ describe('classify', () => {
 })
 
 describe('changedSince', () => {
+    useRepo()
+
     it('lists committed, staged, unstaged and untracked changes', () => {
         const base = repo.git(['rev-parse', 'HEAD']).stdout.trim()
         repo.git(['switch', '--quiet', '-c', 'feature'])

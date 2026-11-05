@@ -39,6 +39,13 @@ export function git(root: string, args: string[], options: { input?: string } = 
     return { ok: result.status === 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
+/** Untracked files git does not ignore. An untracked nested repository is listed as `dir/`. */
+export function untrackedPaths(root: string): string[] {
+    const listed = git(root, ['ls-files', '-z', '--others', '--exclude-standard'])
+    if (!listed.ok) throw new Error(`git ls-files failed: ${listed.stderr.trim()}`)
+    return listed.stdout.split('\0').filter(Boolean)
+}
+
 /** The ref the current branch is measured against: origin's default branch, else a local one. */
 export function defaultBranchRef(root: string): string | undefined {
     const originHead = git(root, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD'])
