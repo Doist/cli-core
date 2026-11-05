@@ -98,6 +98,17 @@ export function createTempRepo(): TempRepo {
     return repo
 }
 
+/** A repo holding a copy of the end-of-turn guard and one committed source file. */
+export function createGuardRepo(): TempRepo {
+    const repo = createTempRepo()
+    repo.copyFromCheckout('.agents/scripts/guard.ts', '.agents/scripts/lib')
+    repo.write('.gitignore', '.tmp/\n')
+    repo.write('src/a.ts', 'export const a = 1\n')
+    repo.git(['add', '.'])
+    repo.git(['commit', '--quiet', '-m', 'initial'])
+    return repo
+}
+
 /** Installs the repo's lefthook hooks the way `npm install` does (the `prepare` script). */
 export function installLefthook(repo: TempRepo): void {
     const lefthook = join(REPO_ROOT, 'node_modules/lefthook/bin/index.js')

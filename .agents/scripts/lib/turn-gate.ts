@@ -5,7 +5,8 @@
 import { readdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { branchBase } from './git.ts'
-import { readJson, readVerified, stateDir, writeJson } from './state.ts'
+import { readJson, readVerified, safeName, stateDir, writeJson } from './state.ts'
+import { listSome } from './text.ts'
 import {
     changedCodePaths,
     changedPaths,
@@ -26,13 +27,10 @@ const MAX_LISTED = 5
 const STALE_TURN_MS = 7 * 24 * 60 * 60 * 1000
 
 function turnPath(root: string, sessionId: string): string {
-    return join(stateDir(root), 'turns', `${sessionId.replace(/[^\w.-]/g, '_')}.json`)
+    return join(stateDir(root), 'turns', `${safeName(sessionId)}.json`)
 }
 
-function list(paths: string[]): string {
-    const shown = paths.slice(0, MAX_LISTED).join(', ')
-    return paths.length > MAX_LISTED ? `${shown} and ${paths.length - MAX_LISTED} more` : shown
-}
+const list = (paths: string[]) => listSome(paths, MAX_LISTED)
 
 export function startTurn({ root, sessionId }: { root: string; sessionId: string }): void {
     pruneStaleTurns(root)
@@ -53,16 +51,7 @@ function pruneStaleTurns(root: string, now = Date.now()): void {
     }
 }
 
-export function endTurn({
-    root,
-    sessionId,
-    base = branchBase(root),
-}: {
-    root: string
-    sessionId: string
-    /** Where the branch left the default branch; undefined when there is none. */
-    base?: string
-}): Verdict {
+export function endTurn({ root, sessionId }: { root: string; sessionId: string }): Verdict {
     const path = turnPath(root, sessionId)
     const state = readJson<TurnState>(path)
     if (!state?.start) {
@@ -74,7 +63,7 @@ export function endTurn({
 
     const now = snapshot(root)
     const changed = changedPaths(state.start, now)
-    const code = changedCodePaths(state.start, now)
+    const code = changedCodePaths(state.start, now, changed)
     const ciOnly = changed.filter((file) => classify(file) === 'unchecked')
     const ciNote = ciOnly.length
         ? `only CI checks ${list(ciOnly)}; say so in your report`
@@ -88,6 +77,7 @@ export function endTurn({
     // The code is back to what the default branch has (an undo, a stash, a branch switch), which
     // CI already checked. verify says "only docs changed" here and records nothing, so asking for
     // it would send the agent back for nothing.
+    const base = branchBase(root)
     if (base && !changedSince(root, base).some((file) => needsChecks(root, file))) {
         return { decision: 'allow', note: ciNote }
     }

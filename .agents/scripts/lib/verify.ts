@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { createWriteStream, mkdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { cleanGitEnv, git } from './git.ts'
-import { clearVerified, readVerified, stateDir, writeVerified } from './state.ts'
+import { clearVerified, readVerified, safeName, stateDir, writeVerified } from './state.ts'
 import {
     changedSince,
     classify,
@@ -141,7 +141,7 @@ function runStep(
     logDir: string,
     out: (line: string) => void,
 ): Promise<boolean> {
-    const logPath = join(logDir, `${step.name.replace(/[^\w.-]/g, '_')}.log`)
+    const logPath = join(logDir, `${safeName(step.name)}.log`)
     const log = createWriteStream(logPath)
     const startedAt = Date.now()
     return new Promise((resolve) => {

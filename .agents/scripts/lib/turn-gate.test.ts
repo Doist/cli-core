@@ -1,4 +1,4 @@
-import { existsSync, rmSync, utimesSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { writeVerified } from './state.ts'
@@ -59,7 +59,6 @@ describe('turns that pass', () => {
     })
 
     it('keeps the pass when a deletion verify saw is then staged', () => {
-        repo.git(['switch', '--quiet', '-c', 'feature'])
         start()
         rmSync(join(repo.dir, 'src/a.ts'))
         markVerified()
@@ -101,6 +100,14 @@ describe('turns that changed code without verifying', () => {
         const second = end()
         expect(second.decision).toBe('allow')
         expect(second).toHaveProperty('note', expect.stringContaining('src/a.ts'))
+    })
+
+    it('lets the agent stop without a note once verify passes after it was sent back', () => {
+        start()
+        repo.write('src/a.ts', 'export const a = 2\n')
+        expect(end().decision).toBe('block')
+        markVerified()
+        expect(end()).toEqual({ decision: 'allow' })
     })
 
     it('sends the agent back again in the next turn', () => {
@@ -178,6 +185,14 @@ it('removes turn records older than a week when a turn starts', () => {
     start()
     expect(existsSync(old)).toBe(false)
     expect(existsSync(join(repo.dir, `.tmp/agents/turns/${session}.json`))).toBe(true)
+})
+
+it('keeps a hostile session id inside the turns folder', () => {
+    markVerified()
+    const before = readFileSync(join(repo.dir, '.tmp/agents/verified.json'), 'utf8')
+    startTurn({ root: repo.dir, sessionId: '../verified' })
+    expect(readFileSync(join(repo.dir, '.tmp/agents/verified.json'), 'utf8')).toBe(before)
+    expect(existsSync(join(repo.dir, '.tmp/agents/turns/.._verified.json'))).toBe(true)
 })
 
 it('allows the turn, and says why, without a turn-start record', () => {

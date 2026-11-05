@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { createTempRepo, type TempRepo } from './lib/test-repo.ts'
+import { createGuardRepo, type TempRepo } from './lib/test-repo.ts'
 
 // guard.ts as the agents' hooks run it: a separate node process, the hook's JSON on stdin, in a
 // throwaway repo holding a copy of .agents/scripts.
@@ -21,12 +21,7 @@ function guard(
 }
 
 beforeEach(() => {
-    repo = createTempRepo()
-    repo.copyFromCheckout('.agents/scripts/guard.ts', '.agents/scripts/lib')
-    repo.write('.gitignore', '.tmp/\n')
-    repo.write('src/a.ts', 'export const a = 1\n')
-    repo.git(['add', '.'])
-    repo.git(['commit', '--quiet', '-m', 'initial'])
+    repo = createGuardRepo()
 })
 
 afterEach(() => repo.cleanup())

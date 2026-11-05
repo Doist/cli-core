@@ -87,8 +87,12 @@ export function codeFingerprint(files: Snapshot): string {
 }
 
 /** Changed files local checks read: what verify and the turn gate both act on. */
-export function changedCodePaths(before: Snapshot, after: Snapshot): string[] {
-    return changedPaths(before, after).filter(
+export function changedCodePaths(
+    before: Snapshot,
+    after: Snapshot,
+    changed = changedPaths(before, after),
+): string[] {
+    return changed.filter(
         (path) =>
             classify(path) === 'code' ||
             (classify(path) === 'docs' && present(before, path) && !present(after, path)),
