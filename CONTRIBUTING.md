@@ -6,7 +6,7 @@
 npm install
 ```
 
-This installs dependencies and registers lefthook git hooks (pre-commit type-check + lint + format, pre-push tests).
+This installs dependencies and registers lefthook git hooks through the `prepare` script: commits and pushes to `main` are refused, pre-commit lints, formats and type-checks, pre-push runs the tests.
 
 ## Scripts
 

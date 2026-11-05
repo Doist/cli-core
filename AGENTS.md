@@ -7,13 +7,19 @@ Shared core utilities for the Doist CLIs (`@doist/todoist-cli`, `@doist/twist-cl
 ```bash
 npm run build       # compile TypeScript to dist/
 npm run dev         # watch mode
-npm run type-check  # tsc --noEmit
+npm run type-check  # tsc --noEmit for src/ and the agent tooling (.agents/scripts)
 npm run check       # oxlint + oxfmt --check
 npm run fix         # oxlint --fix + oxfmt
 npm test            # vitest run
 ```
 
 `npm run check` is the gate — run it before opening a PR. The local pre-commit hook only formats _staged_ files, so it can't catch a pre-existing off-format file (e.g. an auto-generated `CHANGELOG.md` after a release).
+
+## Git hooks and agent tooling
+
+- Commits and pushes to `main` are refused by the git hooks. Work on a branch.
+- Agent tooling lives in `.agents/scripts/`. It never ships: `package.json#files` lists only `dist`, `templates` and `CHANGELOG.md`, and a test checks the packed tarball.
+- How it all fits together: [`docs/agents.md`](docs/agents.md).
 
 ## Code style
 
