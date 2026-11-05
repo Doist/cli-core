@@ -34,8 +34,10 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 │  │                      # review-changes)
 │  ├─ checks/             # Review checks reviewers and Doistbot apply (AGENTS.md links them)
 │  └─ scripts/            # Agent tooling (verify, git hook branch guard, review
-│                         # worktree) and its tests. Never shipped (not in `files`)
+│                         # worktree, end-of-turn gate) and its tests. Never
+│                         # shipped (not in `files`)
 ├─ .claude/skills/        # Links to .agents/skills/, where Claude Code finds them
+├─ .claude/settings.json  # End-of-turn gate hooks (.codex/hooks.json for Codex)
 ├─ docs/agents.md         # How the agent tooling fits together
 ├─ AGENTS.md              # Prescriptive rules (build, code style, README upkeep)
 ├─ CODEBASE.md            # This file — descriptive map
