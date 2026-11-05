@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readVerified, stateDir, writeVerified } from './state.ts'
@@ -191,6 +191,11 @@ describe('what counts as a change', () => {
     it('checks the formatting of a change only CI reads', async () => {
         repo.write('renovate.json', '{}\n')
         expect(await verify([pass('lint'), fail('format')])).toEqual({ ok: false, recorded: false })
+    })
+
+    it('runs the checks when a doc is deleted, since the agent docs may name it', async () => {
+        rmSync(join(repo.dir, 'README.md'))
+        expect(await verify([pass('lint')])).toEqual({ ok: true, recorded: true })
     })
 
     it('has nothing to check for a docs-only change', async () => {

@@ -29,8 +29,11 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 ├─ templates/             # Extension scaffold templates, shipped as files (see `files`)
 ├─ dist/                  # Build output (tsc). Never edit.
 ├─ .agents/
+│  ├─ skills/             # Skills for agents working on this repo (verify, fix-bug,
+│  │                      # build-feature, refactor, write-tests, learn)
 │  └─ scripts/            # Agent tooling (verify, git hook branch guard) and its
 │                         # tests. Never shipped (not in `files`)
+├─ .claude/skills/        # Links to .agents/skills/, where Claude Code finds them
 ├─ docs/agents.md         # How the agent tooling fits together
 ├─ AGENTS.md              # Prescriptive rules (build, code style, README upkeep)
 ├─ CODEBASE.md            # This file — descriptive map
