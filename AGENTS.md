@@ -49,6 +49,7 @@ npm run verify      # every check CI runs (lint, format, types, build, tests)
 ## Git hooks and agent tooling
 
 - Commits and pushes to `main` are refused by the git hooks. Work on a branch.
+- When a turn changes code that `npm run verify` has not passed, the end-of-turn hook (Claude Code, Codex, Cursor) sends you back once. Run verify, or stop on purpose and say what is unverified.
 - Agent tooling lives in `.agents/scripts/`. It never ships: `package.json#files` lists only `dist`, `templates` and `CHANGELOG.md`, and a test checks the packed tarball.
 - How it all fits together: [`docs/agents.md`](docs/agents.md).
 

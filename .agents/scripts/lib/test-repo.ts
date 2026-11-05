@@ -14,14 +14,15 @@ export function isolatedEnv(overrides: Record<string, string | undefined> = {}):
     // Clears the variables git exports to hooks. Left in place, a git command in a test would
     // act on the real repository: `npm test` runs inside the pre-push hook.
     const env = cleanGitEnv()
-    // LEFTHOOK=0 may be set by the person or agent running the tests; it would turn off what the
-    // tests check.
+    // DISABLE_AGENT_GUARD and LEFTHOOK=0 may be set by the person or agent running the tests; they
+    // would turn off what the tests check.
     for (const name of [
         'GITHUB_ACTIONS',
         'LEFTHOOK',
         'LEFTHOOK_BIN',
         'LEFTHOOK_CONFIG',
         'GIT_CONFIG_PARAMETERS',
+        'DISABLE_AGENT_GUARD',
     ]) {
         delete env[name]
     }
@@ -94,6 +95,17 @@ export function createTempRepo(): TempRepo {
     if (realpathSync(toplevel) !== realpathSync(dir)) {
         throw new Error(`git resolves ${dir} to ${toplevel}; refusing to run tests there`)
     }
+    return repo
+}
+
+/** A repo holding a copy of the end-of-turn guard and one committed source file. */
+export function createGuardRepo(): TempRepo {
+    const repo = createTempRepo()
+    repo.copyFromCheckout('.agents/scripts/guard.ts', '.agents/scripts/lib')
+    repo.write('.gitignore', '.tmp/\n')
+    repo.write('src/a.ts', 'export const a = 1\n')
+    repo.git(['add', '.'])
+    repo.git(['commit', '--quiet', '-m', 'initial'])
     return repo
 }
 

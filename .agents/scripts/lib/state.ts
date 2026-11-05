@@ -8,6 +8,14 @@ export function stateDir(root: string): string {
     return join(root, '.tmp/agents')
 }
 
+/**
+ * A name made safe to use as a file name under the state directory: anything but letters, digits,
+ * `.`, `-` and `_` becomes `_`, so a hook's session id cannot point outside it.
+ */
+export function safeName(name: string): string {
+    return name.replace(/[^\w.-]/g, '_')
+}
+
 export function readJson<T>(path: string): T | undefined {
     try {
         return JSON.parse(readFileSync(path, 'utf8')) as T

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { readJson } from './state.ts'
+import { listSome } from './text.ts'
 import type { Step } from './verify.ts'
 
 const bin = (tool: string) => `node_modules/.bin/${tool}`
@@ -148,10 +149,8 @@ export function preflight(root: string, nodeVersion = process.versions.node): st
         }
     }
     if (stale.length > 0) {
-        const shown = stale.slice(0, MAX_LISTED).join(', ')
-        const more = stale.length > MAX_LISTED ? ` and ${stale.length - MAX_LISTED} more` : ''
         problems.push(
-            `node_modules does not match package-lock.json: ${shown}${more}. Run \`npm ci\`.`,
+            `node_modules does not match package-lock.json: ${listSome(stale, MAX_LISTED)}. Run \`npm ci\`.`,
         )
     }
     return problems
