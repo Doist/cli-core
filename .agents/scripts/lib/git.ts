@@ -17,6 +17,11 @@ function localGitVars(): string[] {
 
 export function cleanGitEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     const clean = { ...env }
-    for (const name of localGitVars()) delete clean[name]
+    clearGitEnv(clean)
     return clean
+}
+
+/** Removes the variables git exports to hooks from `env` itself. */
+export function clearGitEnv(env: NodeJS.ProcessEnv = process.env): void {
+    for (const name of localGitVars()) delete env[name]
 }

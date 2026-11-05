@@ -60,6 +60,8 @@ beforeAll(() => {
                 '#!/bin/sh',
                 `echo "${tool} $*" >> "${repo.dir}/.stubs/calls.log"`,
                 `[ "\${STUB_FAIL:-}" = "${tool} $*" ] && exit 1`,
+                // STUB_FIX="npx oxfmt" makes that call rewrite the files it was given, like a fix.
+                `if [ "\${STUB_FIX:-}" = "${tool} $1" ]; then for f in "$@"; do [ -f "$f" ] && echo '// fixed' >> "$f"; done; fi`,
                 'exit 0',
                 '',
             ].join('\n')
@@ -171,6 +173,20 @@ describe('pre-commit', () => {
         )
     })
 
+    // A file only the formatter touches: lefthook restages every stage_fixed job's files at the
+    // end, so on a .ts file the lint job's setting would hide the format job's.
+    it('commits what the formatter fixed, and leaves nothing unstaged', () => {
+        repo.git(['switch', '--quiet', '-c', 'feature'])
+        repo.write('docs/note.md', `note ${++edits}\n`)
+        repo.git(['add', 'docs/note.md'])
+        const result = repo.git(['commit', '--quiet', '-m', 'note'], {
+            env: { PATH: path, STUB_FIX: 'npx oxfmt' },
+        })
+        expect(result.status).toBe(0)
+        expect(repo.git(['show', 'HEAD:docs/note.md']).stdout).toContain('// fixed')
+        expect(repo.git(['status', '--porcelain', '--', 'docs']).stdout).toBe('')
+    })
+
     it('refuses a commit when the type check fails, even though it runs last', () => {
         repo.git(['switch', '--quiet', '-c', 'feature'])
         expect(commit({ STUB_FAIL: 'npm run type-check' }).status).not.toBe(0)
@@ -197,7 +213,9 @@ describe('pre-commit', () => {
         repo.git(['switch', '--quiet', '-c', 'feature'])
         const result = commit({ PATH: pathWithoutNode })
         expect(result.status).toBe(0)
-        expect(output(result)).toContain('node not found, so lint, format and the type check')
+        expect(output(result)).toContain(
+            'node or npx not found, so lint, format and the type check',
+        )
         expect(commitsOnHead()).toBe('2')
     })
 
@@ -205,7 +223,7 @@ describe('pre-commit', () => {
         repo.git(['switch', '--quiet', '-c', 'feature'])
         const result = commit({ PATH: pathLaunchersOnly })
         expect(result.status).toBe(0)
-        expect(output(result)).toContain('node not found')
+        expect(output(result)).toContain('not found, so')
     })
 
     it('still refuses a commit on main when node is not on PATH', () => {
@@ -269,13 +287,13 @@ describe('pre-push', () => {
     it('pushes without tests when npm is on PATH but node is not', () => {
         const result = push(['--dry-run', 'origin', 'feature'], { PATH: pathLaunchersOnly })
         expect(result.status).toBe(0)
-        expect(output(result)).toContain('node not found')
+        expect(output(result)).toContain('not found, so')
     })
 
     it('pushes without tests, and says so, when node is not on PATH', () => {
         const result = push(['--dry-run', 'origin', 'feature'], { PATH: pathWithoutNode })
         expect(result.status).toBe(0)
-        expect(output(result)).toContain('node not found, so the tests were skipped')
+        expect(output(result)).toContain('node or npm not found, so the tests were skipped')
     })
 
     it('lets the release workflow push to main', () => {
