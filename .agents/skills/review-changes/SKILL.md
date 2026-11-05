@@ -10,7 +10,7 @@ Reviews cost several agent runs. Run them when the owner says the change is read
 ## 1. Prepare
 
 1. `npm run verify` passes.
-2. List the untracked files (`git ls-files --others --exclude-standard`): they reach the reviewers and Doistbot's model providers. Gitignored files (`.env`, `.tmp/`) are not listed, and `npm run review:worktree` never copies them. Check every listed file for credentials, tokens and personal data; send none that holds them, and ask the owner about any file that does or that doesn't belong to the change. Never `git add -A` to tidy up.
+2. Read what the reviewers and Doistbot's model providers will receive: the diff (`git diff <base>`) and the untracked files (`git ls-files --others --exclude-standard`). Gitignored files (`.env`, `.tmp/`) are not listed, and `npm run review:worktree` never copies them. Check all of it for credentials, tokens and personal data, tracked fixtures and docs included; send nothing that holds them until the owner has removed or masked it. Ask about any file that doesn't belong to the change. Never `git add -A` to tidy up.
 3. Write the brief from [references/reviewer-brief.md](references/reviewer-brief.md): the task in the owner's words, what done means, the decisions made. Never your own opinion of the change, or your reasoning.
 
 Done when the brief is written and the tree holds only the change, with no secrets or personal data in it.
