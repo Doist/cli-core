@@ -2,6 +2,13 @@
 
 Shared core utilities for the Doist CLIs (`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`, `@doist/comms-cli`). TypeScript, ESM-only, Node ≥ 24.
 
+## Definition of done
+
+- **Done means proven:** a test that failed before the change and passes after, at the module's public interface. For a refactor: tests that pin the behaviour, passing before and after. Reading code or a passing compile is not proof.
+- **Run `npm run verify` before calling a change done.** It runs every check CI runs, in about five seconds, and records the pass. It prints what it cannot see, and when only docs changed it checks just their formatting.
+- **Never weaken a check to pass it.** Don't skip, delete or loosen tests, edit lint, type or test config to get green, or use `--no-verify`. If a check looks wrong, say so and stop.
+- **Report honestly:** what ran, what it showed, and what you did not verify.
+
 ## Build & Run
 
 ```bash
@@ -11,9 +18,10 @@ npm run type-check  # tsc --noEmit for src/ and the agent tooling (.agents/scrip
 npm run check       # oxlint + oxfmt --check
 npm run fix         # oxlint --fix + oxfmt
 npm test            # vitest run
+npm run verify      # every check CI runs (lint, format, types, build, tests)
 ```
 
-`npm run check` is the gate — run it before opening a PR. The local pre-commit hook only formats _staged_ files, so it can't catch a pre-existing off-format file (e.g. an auto-generated `CHANGELOG.md` after a release).
+`npm run verify` is the gate — run it before opening a PR. It includes `npm run check`, which reads the whole tree: the local pre-commit hook only formats _staged_ files, so it can't catch a pre-existing off-format file.
 
 ## Git hooks and agent tooling
 
