@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readVerified, stateDir, writeVerified } from './state.ts'
@@ -131,6 +131,26 @@ describe('a code change', () => {
         expect(readVerified(repo.dir)?.fingerprint).toBe(codeFingerprint(snapshot(repo.dir)))
     })
 
+    it('names a doc added during the run, which changes the fingerprint', async () => {
+        const writer = pass('tests', { args: ['-c', 'echo new > docs-added.md'] })
+        expect(await verify([pass('lint'), writer])).toEqual({ ok: false, recorded: false })
+        expect(lines.at(-1)).toContain('Files changed during the run: docs-added.md')
+    })
+
+    it('forgets an earlier pass when a doc is added, and keeps it when one is edited', async () => {
+        await verify([pass('lint')])
+        const earlier = readVerified(repo.dir)
+        repo.git(['add', '.'])
+        repo.git(['commit', '--quiet', '-m', 'code'])
+        const head = repo.git(['rev-parse', 'HEAD']).stdout.trim()
+        repo.write('README.md', 'edited\n')
+        await runVerify({ root: repo.dir, steps: [pass('lint')], base: head, out: () => {} })
+        expect(readVerified(repo.dir)).toEqual(earlier)
+        repo.write('docs/new.md', 'new\n')
+        await runVerify({ root: repo.dir, steps: [pass('lint')], base: head, out: () => {} })
+        expect(readVerified(repo.dir)).toBeUndefined()
+    })
+
     it('keeps the pass when only a file CI alone reads changes during the run', async () => {
         const editor = pass('tests', {
             args: ['-c', 'echo x > renovate.json'],
@@ -162,10 +182,11 @@ describe('what counts as a change', () => {
     })
 
     it('keeps an earlier pass when only docs changed', async () => {
-        writeVerified(repo.dir, { fingerprint: 'earlier', head: 'x', at: 'then' })
+        const fingerprint = codeFingerprint(snapshot(repo.dir))
+        writeVerified(repo.dir, { fingerprint, head: 'x', at: 'then' })
         repo.write('README.md', 'changed\n')
         await verify([pass('lint')])
-        expect(readVerified(repo.dir)?.fingerprint).toBe('earlier')
+        expect(readVerified(repo.dir)?.fingerprint).toBe(fingerprint)
     })
 
     it('runs the checks when any workflow changes, since a local test reads them all', async () => {
@@ -191,6 +212,11 @@ describe('what counts as a change', () => {
     it('checks the formatting of a change only CI reads', async () => {
         repo.write('renovate.json', '{}\n')
         expect(await verify([pass('lint'), fail('format')])).toEqual({ ok: false, recorded: false })
+    })
+
+    it('runs the checks when a doc is deleted, since the agent docs may name it', async () => {
+        rmSync(join(repo.dir, 'README.md'))
+        expect(await verify([pass('lint')])).toEqual({ ok: true, recorded: true })
     })
 
     it('has nothing to check for a docs-only change', async () => {
