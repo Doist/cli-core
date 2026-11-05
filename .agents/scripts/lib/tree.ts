@@ -93,6 +93,16 @@ export function changedCodePaths(before: Snapshot, after: Snapshot): string[] {
     )
 }
 
+/** Changed files the fingerprint covers: code, and docs added or removed. */
+export function fingerprintChanges(before: Snapshot, after: Snapshot): string[] {
+    return changedPaths(before, after).filter((path) => {
+        const kind = classify(path)
+        return (
+            kind === 'code' || (kind === 'docs' && present(before, path) !== present(after, path))
+        )
+    })
+}
+
 export function changedPaths(before: Snapshot, after: Snapshot): string[] {
     const paths = new Set([...Object.keys(before), ...Object.keys(after)])
     return [...paths].filter((path) => before[path] !== after[path]).sort()

@@ -8,6 +8,7 @@ import {
     changedSince,
     classify,
     codeFingerprint,
+    fingerprintChanges,
     snapshot,
 } from './tree.ts'
 
@@ -91,6 +92,18 @@ describe('codeFingerprint', () => {
         expect(codeFingerprint(snapshot(repo.dir))).toBe(before)
         rmSync(join(repo.dir, 'README.md'))
         expect(codeFingerprint(snapshot(repo.dir))).not.toBe(before)
+    })
+})
+
+describe('fingerprintChanges', () => {
+    useRepo()
+
+    it('names code, and docs added or deleted, but not edited docs', () => {
+        const before = snapshot(repo.dir)
+        repo.write('README.md', 'edited\n')
+        repo.write('docs/new.md', 'new\n')
+        repo.write('src/a.ts', 'export const a = 2\n')
+        expect(fingerprintChanges(before, snapshot(repo.dir))).toEqual(['docs/new.md', 'src/a.ts'])
     })
 })
 

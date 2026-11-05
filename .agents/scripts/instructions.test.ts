@@ -5,6 +5,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from '
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { git } from './lib/git.ts'
+import { readJson } from './lib/state.ts'
 import { REPO_ROOT } from './lib/test-repo.ts'
 import { AGENT_DOCS } from './lib/tree.ts'
 
@@ -12,11 +13,9 @@ const SKILLS_DIR = join(REPO_ROOT, '.agents/skills')
 const skills = readdirSync(SKILLS_DIR).filter((name) => !name.startsWith('.'))
 
 function markdownFiles(dir: string): string[] {
-    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-        const path = join(dir, entry.name)
-        if (entry.isDirectory()) return markdownFiles(path)
-        return entry.name.endsWith('.md') ? [path] : []
-    })
+    return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+        .filter((name) => name.endsWith('.md'))
+        .map((name) => join(dir, name))
 }
 
 // The same list that makes verify treat these docs as code, so a doc checked here can't be
@@ -30,11 +29,7 @@ const tracked = git(REPO_ROOT, ['ls-files', '--cached', '--others', '--exclude-s
     .stdout.split('\n')
     .filter(Boolean)
 const scripts = Object.keys(
-    (
-        JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')) as {
-            scripts: Record<string, string>
-        }
-    ).scripts,
+    readJson<{ scripts: Record<string, string> }>(join(REPO_ROOT, 'package.json'))?.scripts ?? {},
 )
 
 const ROOTED = /^(src|scripts|docs|\.agents|\.github|\.claude|\.codex|\.cursor)\//
@@ -145,20 +140,18 @@ it('lists every skill in AGENTS.md, and only those', () => {
     expect(listedUnder(text, '## Skills').toSorted()).toEqual(skills.toSorted())
 })
 
-it('names only test helpers that src/test-support/ or src/testing/ export', () => {
+it('names only test helpers that src/test-support/ or src/testing/ export', async () => {
     const skill = readFileSync(join(SKILLS_DIR, 'write-tests/SKILL.md'), 'utf8')
     const section = skill.split('## Helpers')[1]?.split('\n## ')[0] ?? ''
     const named = [...section.matchAll(/`(\w+)`/g)].map((match) => match[1] ?? '')
-    const exported = ['src/test-support', 'src/testing'].flatMap((dir) =>
+    const modules = ['src/test-support', 'src/testing'].flatMap((dir) =>
         readdirSync(join(REPO_ROOT, dir))
             .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
-            .flatMap((file) =>
-                [
-                    ...readFileSync(join(REPO_ROOT, dir, file), 'utf8').matchAll(
-                        /^export (?:async )?(?:function|const|type) (\w+)/gm,
-                    ),
-                ].map((match) => match[1]),
-            ),
+            .map((file) => join(REPO_ROOT, dir, file)),
+    )
+    // What the modules export at run time, whatever form the export takes.
+    const exported = (await Promise.all(modules.map((path) => import(path)))).flatMap((module) =>
+        Object.keys(module as object),
     )
     expect(named.length).toBeGreaterThan(5)
     expect(named.filter((name) => !exported.includes(name))).toEqual([])
