@@ -28,6 +28,10 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 ├─ src/                   # All source. See tree below.
 ├─ templates/             # Extension scaffold templates, shipped as files (see `files`)
 ├─ dist/                  # Build output (tsc). Never edit.
+├─ .agents/
+│  └─ scripts/            # Agent tooling (git hook branch guard) and its tests.
+│                         # Never shipped (not in `files`)
+├─ docs/agents.md         # How the agent tooling fits together
 ├─ AGENTS.md              # Prescriptive rules (build, code style, README upkeep)
 ├─ CODEBASE.md            # This file — descriptive map
 ├─ CLAUDE.md              # One-liner forward to AGENTS.md
@@ -35,7 +39,8 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 ├─ tsconfig.json          # Includes src + tests (type-check, IDE)
 ├─ tsconfig.build.json    # Excludes *.test.ts + test-support/ + __mocks__/ (build/dev)
 ├─ vitest.config.ts       # { globals, root: 'src', include: ['**/*.test.ts'] }
-├─ lefthook.yml           # Pre-commit: oxfmt + oxlint + type-check + test
+├─ lefthook.yml           # Git hooks: branch guard; pre-commit lint, format, types;
+│                         # pre-push tests
 └─ release.config.js      # semantic-release config
 ```
 
@@ -203,7 +208,8 @@ helpers, not suites.
 
 ## Testing
 
-- **Runner:** vitest. `npm test` (one-shot), `npm run test:watch`.
+- **Runner:** vitest. `npm test` (one-shot, including the agent tooling's tests in
+  `.agents/scripts/`), `npm run test:watch`.
 - **Location:** colocated `*.test.ts` next to the module under test.
 - **Account suites:** import fixtures + `buildTokenStore` / `buildSingleEntryStore`
   from `testing/accounts.js` and the spy/scaffold helpers from
@@ -225,11 +231,17 @@ helpers, not suites.
   `*.test.ts` + `src/test-support/` so test-only code never ships.
   `templates/` is not compiled: it is listed in `package.json#files` and read at
   run time.
-- **Type-check:** `npm run type-check` (`tsc --noEmit`).
-- **Lint/format:** `npm run check` (`oxlint src && oxfmt --check`), `npm run fix`.
+- **Type-check:** `npm run type-check` (`tsc --noEmit` for `src/`, then
+  `.agents/scripts/tsconfig.json` for the agent tooling).
+- **Lint/format:** `npm run check` (`oxlint src .agents/scripts && oxfmt --check`), `npm run fix`.
   **No ESLint, no Prettier.** `npm run check` is the gate — run before a PR.
 - **Release:** semantic-release on merge to `main`; Conventional Commits required.
   `next` is the pre-release branch.
+- **Git hooks:** lefthook, configured in `lefthook.yml` and installed by the
+  `prepare` script. `pre-commit` refuses commits on `main`, then lints and
+  formats staged files and runs the type check; `commit-msg` repeats the
+  branch rule for empty commits; `pre-push` refuses pushes to `main`, then
+  runs the tests. See `docs/agents.md`.
 
 ## Conventions (quick)
 
