@@ -29,12 +29,12 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 ├─ templates/             # Extension scaffold templates, shipped as files (see `files`)
 ├─ dist/                  # Build output (tsc). Never edit.
 ├─ .agents/
-│  └─ scripts/            # Agent tooling (git hook branch guard) and its tests.
-│                         # Never shipped (not in `files`)
+│  └─ scripts/            # Agent tooling (verify, git hook branch guard) and its
+│                         # tests. Never shipped (not in `files`)
 ├─ docs/agents.md         # How the agent tooling fits together
 ├─ AGENTS.md              # Prescriptive rules (build, code style, README upkeep)
 ├─ CODEBASE.md            # This file — descriptive map
-├─ CLAUDE.md              # One-liner forward to AGENTS.md
+├─ CLAUDE.md              # Imports AGENTS.md for Claude Code; nothing else
 ├─ README.md              # Public API docs ("What's in it" table + usage)
 ├─ tsconfig.json          # Includes src + tests (type-check, IDE)
 ├─ tsconfig.build.json    # Excludes *.test.ts + test-support/ + __mocks__/ (build/dev)
@@ -234,7 +234,10 @@ helpers, not suites.
 - **Type-check:** `npm run type-check` (`tsc --noEmit` for `src/`, then
   `.agents/scripts/tsconfig.json` for the agent tooling).
 - **Lint/format:** `npm run check` (`oxlint src .agents/scripts && oxfmt --check`), `npm run fix`.
-  **No ESLint, no Prettier.** `npm run check` is the gate — run before a PR.
+  **No ESLint, no Prettier.**
+- **Verify:** `npm run verify` — every check the pull-request workflows run, with
+  one shared build, in about five seconds (`.agents/scripts/verify.ts`). The
+  gate before a PR. Records a pass in `.tmp/agents/`.
 - **Release:** semantic-release on merge to `main`; Conventional Commits required.
   `next` is the pre-release branch.
 - **Git hooks:** lefthook, configured in `lefthook.yml` and installed by the

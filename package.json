@@ -39,6 +39,7 @@
         "fix": "oxlint src .agents/scripts --fix && oxfmt",
         "test": "vitest run --passWithNoTests",
         "test:watch": "vitest",
+        "verify": "node .agents/scripts/verify.ts",
         "prepublishOnly": "npm run build && npm test",
         "prepare": "lefthook install --reset-hooks-path"
     },

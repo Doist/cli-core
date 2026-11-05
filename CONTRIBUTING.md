@@ -16,6 +16,7 @@ This installs dependencies and registers lefthook git hooks through the `prepare
 - `npm run type-check` — typecheck without emit
 - `npm run check` — oxlint + oxfmt --check
 - `npm run fix` — oxlint --fix + oxfmt
+- `npm run verify` — every check CI runs (lint, format, types, build, tests) in about five seconds; run it before opening a PR
 
 ## Commit messages
 
