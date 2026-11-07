@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream'
-import type { MockInstance } from 'vitest'
-import { onTestFinished, vi } from 'vitest'
+import { vi } from 'vitest'
+
+import { captureSpy, type Spy } from './capture-spy.js'
 
 export type MockStdinOptions = {
     /** Make `process.stdin.isTTY` true, standing in for an interactive terminal. */
@@ -13,24 +14,27 @@ export type MockStdinOptions = {
  *
  * `process.stdin.isTTY` is `false` unless `isTTY: true` is passed, so by
  * default the stream looks like a pipe. String chunks are emitted as Buffers,
- * as a real pipe delivers them; pass `Uint8Array` chunks to control the byte
- * boundaries (e.g. a UTF-8 character split across two reads).
+ * as a real pipe delivers them, and empty input emits no chunks at all; pass
+ * `Uint8Array` chunks to control the byte boundaries (e.g. a UTF-8 character
+ * split across two reads).
  */
 export function mockStdin(
     input: string | readonly (string | Uint8Array)[],
     options: MockStdinOptions = {},
-): MockInstance {
+): Spy {
     const chunks = typeof input === 'string' ? [input] : input
-    const stream = Object.assign(Readable.from(chunks.map((chunk) => Buffer.from(chunk))), {
-        isTTY: options.isTTY ?? false,
-    })
+    // Byte mode, like a real pipe: `Readable.from` defaults to object mode,
+    // which would emit a zero-length chunk for empty input.
+    const bytes = Readable.from(
+        chunks.map((chunk) => Buffer.from(chunk)),
+        { objectMode: false },
+    )
+    const stream = Object.assign(bytes, { isTTY: options.isTTY ?? false })
     // A Readable carrying `isTTY` is all that stdin readers touch; the rest of
     // `tty.ReadStream` (raw mode, fd) has no meaning for a fake pipe.
-    const spy = vi
-        .spyOn(process, 'stdin', 'get')
-        .mockReturnValue(stream as unknown as typeof process.stdin)
-    onTestFinished(() => {
-        spy.mockRestore()
-    })
-    return spy
+    return captureSpy(() =>
+        vi
+            .spyOn(process, 'stdin', 'get')
+            .mockReturnValue(stream as unknown as typeof process.stdin),
+    )
 }

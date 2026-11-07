@@ -15,7 +15,7 @@ description: Writes or changes tests in this repository to its quality bar, with
 
 ## Helpers
 
-From `src/test-support/` (internal, never shipped): `buildProgram`, `installCapturedConsole`, `installCapturedStream`, `buildKeyringMap`, `buildSingleSlot`, `buildUserRecords`, `installLockPath`, `expiringBundle`, `expiredBundle`, `buildBundleStore`, `fakeRefreshProvider`. From `src/testing/` (the public `./testing` subpath, which the CLIs use too): `alanGrant`, `ellieSattler`, `ianMalcolm`, `buildTokenStore`, `buildSingleEntryStore`, `captureConsole`, `captureStream`, `createTestProgram`, `describeEmptyMachineOutput`, `writeFixtureExtension`, `writeFakeGitRepo`. Use them instead of hand-rolling accounts, stores or console spies. A change to a `src/testing/` helper changes the CLIs' tests too.
+From `src/test-support/` (internal, never shipped): `buildProgram`, `installCapturedConsole`, `installCapturedStream`, `buildKeyringMap`, `buildSingleSlot`, `buildUserRecords`, `installLockPath`, `expiringBundle`, `expiredBundle`, `buildBundleStore`, `fakeRefreshProvider`. From `src/testing/` (the public `./testing` subpath, which the CLIs use too): `alanGrant`, `ellieSattler`, `ianMalcolm`, `buildTokenStore`, `buildSingleEntryStore`, `captureConsole`, `captureStream`, `createTestProgram`, `mockStdin`, `describeEmptyMachineOutput`, `writeFixtureExtension`, `writeFakeGitRepo`. Use them instead of hand-rolling accounts, stores or console spies. A change to a `src/testing/` helper changes the CLIs' tests too.
 
 ## The quality bar
 

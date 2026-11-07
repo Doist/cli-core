@@ -1,4 +1,4 @@
-import { text } from 'node:stream/consumers'
+import { buffer } from 'node:stream/consumers'
 
 import { CliError } from './errors.js'
 import { isStdinTTY } from './terminal.js'
@@ -15,6 +15,8 @@ export type StdinErrorCode = 'STDIN_IS_TTY'
  *
  * The input comes back exactly as read, untrimmed and possibly empty, so each
  * command decides what empty input means (leave a field alone, or clear it).
+ * A leading byte order mark is kept, as `readFileSync(path, 'utf8')` keeps it,
+ * so piping a file and reading it from disk give the same string.
  */
 export async function readStdin(): Promise<string> {
     if (isStdinTTY()) {
@@ -24,5 +26,6 @@ export async function readStdin(): Promise<string> {
             { hints: ['Pipe the content in, e.g. `cat notes.md | …`'] },
         )
     }
-    return text(process.stdin)
+    // `text()` would decode with a default TextDecoder, which drops a leading BOM.
+    return (await buffer(process.stdin)).toString('utf8')
 }

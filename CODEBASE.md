@@ -87,6 +87,7 @@ src/
 ├─ markdown.ts            # ./markdown subpath (lazy marked + terminal renderer)
 ├─ testing/               # ./testing subpath — shipped helpers for consumers' tests
 │  ├─ accounts.ts         # TestAccount fixtures (Ingen identities) + buildTokenStore / buildSingleEntryStore
+│  ├─ capture-spy.ts      # captureSpy (internal: install a spy, restore it via onTestFinished)
 │  ├─ console.ts          # captureConsole / captureStream
 │  ├─ empty-output.ts     # describeEmptyMachineOutput
 │  ├─ extensions.ts       # writeFixtureExtension / writeFakeGitRepo (a runnable extension on disk)
@@ -198,12 +199,15 @@ their own suites.
   multi-account `TokenStore` mock (mirrors `createKeyringTokenStore`'s
   effective-default + promote-if-unpinned + slot-replacement semantics);
   `buildSingleEntryStore()` for the single-account suites; `ingenEntries()` default seed.
+- **`capture-spy.ts`** — `captureSpy(install)`: the install-then-restore-via-
+  `onTestFinished` lifecycle shared by `console.ts` and `stdin.ts`. Not re-exported
+  from the barrel.
 - **`console.ts`** — `captureConsole()` / `captureStream()` (silence + auto-restore
-  via `onTestFinished`).
+  via `captureSpy`).
 - **`program.ts`** — `createTestProgram(register)` (the `new Command().exitOverride()` scaffold).
 - **`stdin.ts`** — `mockStdin(input, { isTTY })`: swaps `process.stdin` for a
   stream of Buffer chunks (a pipe, or a terminal with `isTTY: true`) and
-  restores it via `onTestFinished`.
+  restores it via `captureSpy`; empty input emits no chunks, like an empty pipe.
 - **`extensions.ts`** — `writeFixtureExtension()` / `writeFakeGitRepo()`: a real
   executable on disk that reports its argv and `<PREFIX>_*` env as JSON, because
   the extension contract is a process boundary and can only be proven by spawning.
