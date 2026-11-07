@@ -1,3 +1,9 @@
+## [1.8.0](https://github.com/Doist/cli-core/compare/v1.7.2...v1.8.0) (2026-11-07)
+
+### Features
+
+* add readStdin and the mockStdin test helper ([#172](https://github.com/Doist/cli-core/issues/172)) ([b33174d](https://github.com/Doist/cli-core/commit/b33174d458f2a774e8277f2ae965d45c016a9ac6))
+
 ## [1.7.2](https://github.com/Doist/cli-core/compare/v1.7.1...v1.7.2) (2026-10-24)
 
 ### Bug Fixes
