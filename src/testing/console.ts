@@ -1,25 +1,9 @@
-import type { MockInstance } from 'vitest'
-import { onTestFinished, vi } from 'vitest'
+import { vi } from 'vitest'
+
+import { captureSpy, type Spy } from './capture-spy.js'
 
 type ConsoleMethod = 'log' | 'error' | 'warn' | 'info'
 type StdStream = 'stdout' | 'stderr'
-// Use vitest's `MockInstance` (not `ReturnType<typeof vi.spyOn>`, which erases
-// down to a shape whose `.mock.calls` is `any`) so consumers keep usable
-// `.mock.calls` typing — making these a true drop-in for hand-rolled spies.
-type Spy = MockInstance
-
-/**
- * Install a silencing spy and auto-restore it when the current test finishes.
- * Call inside a test or `beforeEach` — `onTestFinished` throws at `describe`
- * top-level. Returns the spy so `.mock.calls` assertions keep working.
- */
-function captureSpy(install: () => Spy): Spy {
-    const spy = install()
-    onTestFinished(() => {
-        spy.mockRestore()
-    })
-    return spy
-}
 
 // `WriteStream.write` accepts an optional trailing callback (`write(chunk, cb)`
 // or `write(chunk, encoding, cb)`) and invokes it asynchronously once the write
