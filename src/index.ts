@@ -48,4 +48,6 @@ export type {
     SpinnerKit,
     SpinnerOptions,
 } from './spinner.js'
+export { readStdin } from './stdin.js'
+export type { StdinErrorCode } from './stdin.js'
 export { isCI, isStderrTTY, isStdinTTY, isStdoutTTY } from './terminal.js'
