@@ -1,3 +1,9 @@
+## [1.9.0](https://github.com/Doist/cli-core/compare/v1.8.0...v1.9.0) (2026-11-10)
+
+### Features
+
+* add createUsageTracking for shared CLI request headers ([#176](https://github.com/Doist/cli-core/issues/176)) ([87a474c](https://github.com/Doist/cli-core/commit/87a474c647cab2eb1014141097dde040ccf28820))
+
 ## [1.8.0](https://github.com/Doist/cli-core/compare/v1.7.2...v1.8.0) (2026-11-07)
 
 ### Features
