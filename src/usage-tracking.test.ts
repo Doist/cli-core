@@ -31,6 +31,7 @@ const AGENT_ENV = [
     'GEMINI_CLI',
     'OPENCODE',
     'OPENCODE_CLIENT',
+    'REPL_ID',
 ]
 
 beforeEach(() => {
@@ -185,9 +186,6 @@ describe('createUsageTracking', () => {
             [{ GEMINI_CLI: '1' }, 'gemini'],
             [{ OPENCODE: '1' }, 'opencode'],
             [{ OPENCODE_CLIENT: 'tui' }, 'opencode'],
-            [{ COPILOT_MODEL: 'gpt-5' }, 'copilot'],
-            [{ COPILOT_ALLOW_ALL: 'true' }, 'copilot'],
-            [{ COPILOT_GITHUB_TOKEN: 'token' }, 'copilot'],
             [{ ANTIGRAVITY_AGENT: '1' }, 'other'],
             [{ AUGMENT_AGENT: '1' }, 'other'],
         ])('reports %o as %s', (env, expected) => {
@@ -232,6 +230,10 @@ describe('createUsageTracking', () => {
 
         it.each([
             [{ CURSOR_TRACE_ID: 'trace' }],
+            [{ REPL_ID: 'replit' }],
+            [{ COPILOT_MODEL: 'gpt-5' }],
+            [{ COPILOT_ALLOW_ALL: 'true' }],
+            [{ COPILOT_GITHUB_TOKEN: 'token' }],
             [{ CURSOR_EXTENSION_HOST_ROLE: 'user' }],
             [{ OPENCODE: '0' }],
         ])('does not count %o as an agent', (env) => {

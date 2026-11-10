@@ -87,10 +87,12 @@ const AGENT_NAME_PREFIXES: ReadonlyArray<readonly [prefix: string, agent: CliAge
 ]
 
 // The variables each agent sets on the commands it runs, as
-// `@vercel/detect-agent` reads them. `CURSOR_TRACE_ID` is left out: sources
-// disagree on whether Cursor sets it only for agent runs or in every one of
-// its terminals, where it would count a person as an agent. `REPL_ID` is left
-// out for the same reason: Replit sets it in every workspace shell.
+// `@vercel/detect-agent` reads them, less those a person's own shell can
+// carry, which would count them as an agent: `CURSOR_TRACE_ID` (sources
+// disagree on whether Cursor sets it outside agent runs), `REPL_ID` (set in
+// every Replit shell) and Copilot's `COPILOT_MODEL`, `COPILOT_ALLOW_ALL` and
+// `COPILOT_GITHUB_TOKEN` (settings a person exports to configure Copilot CLI).
+// Copilot is recognised only when it names itself in `AI_AGENT`.
 const AGENT_MARKERS: ReadonlyArray<
     readonly [agent: CliAgent, isSet: (env: NodeJS.ProcessEnv) => boolean]
 > = [
@@ -102,16 +104,13 @@ const AGENT_MARKERS: ReadonlyArray<
     ['codex', (env) => Boolean(env.CODEX_SANDBOX || env.CODEX_CI || env.CODEX_THREAD_ID)],
     ['opencode', (env) => env.OPENCODE === '1' || Boolean(env.OPENCODE_CLIENT)],
     ['claude-code', (env) => Boolean(env.CLAUDECODE || env.CLAUDE_CODE)],
-    [
-        'copilot',
-        (env) => Boolean(env.COPILOT_MODEL || env.COPILOT_ALLOW_ALL || env.COPILOT_GITHUB_TOKEN),
-    ],
     ['other', (env) => Boolean(env.ANTIGRAVITY_AGENT || env.AUGMENT_AGENT)],
 ]
 
 // An agent that names itself in `AI_AGENT` wins. One we don't know defers to
 // the specific markers, which say more than `other` does.
-function detectAgent(env: NodeJS.ProcessEnv = process.env): CliAgent {
+function detectAgent(): CliAgent {
+    const env = process.env
     const declared = env.AI_AGENT?.trim().toLowerCase()
     if (declared) {
         const match = AGENT_NAME_PREFIXES.find(([prefix]) => declared.startsWith(prefix))
