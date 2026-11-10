@@ -56,14 +56,14 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 Each subpath is an independent entry point so JSON-only consumers don't pay for
 markdown/OAuth transitive installs.
 
-| Subpath                      | Provides                                                                                                                                                           | Optional peers needed                                   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `.` (root)                   | `CliError`, config I/O, data/state dirs, JSON/NDJSON + `emitView`, `printEmpty`, spinner, stdin reader, terminal detection, global-args parser, command-token scan | — (chalk/yocto bundled)                                 |
-| `@doist/cli-core/auth`       | OAuth runtime, the `attach*Command` registrars, providers, keyring `TokenStore`, refresh, the `TokenStore`/`AuthProvider` contracts                                | `commander`, `oauth4webapi`, `open`, `@napi-rs/keyring` |
-| `@doist/cli-core/commands`   | `registerChangelogCommand`, `registerUpdateCommand` + semver helpers                                                                                               | `commander`                                             |
-| `@doist/cli-core/extensions` | `createExtensionManager`, `registerExtension*` registrars, `createExtension` scaffolding, doctor helpers                                                           | `commander`, `zod`                                      |
-| `@doist/cli-core/markdown`   | `preloadMarkdown`, `renderMarkdown`                                                                                                                                | `marked`, `marked-terminal-renderer`                    |
-| `@doist/cli-core/testing`    | `describeEmptyMachineOutput`, `createTestProgram`, console captures, `mockStdin`, account fixtures, extension fixtures                                             | `vitest`, `commander`                                   |
+| Subpath                      | Provides                                                                                                                                                                                   | Optional peers needed                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `.` (root)                   | `CliError`, config I/O, data/state dirs, JSON/NDJSON + `emitView`, `printEmpty`, spinner, stdin reader, terminal detection, global-args parser, command-token scan, usage-tracking headers | — (chalk/yocto bundled)                                 |
+| `@doist/cli-core/auth`       | OAuth runtime, the `attach*Command` registrars, providers, keyring `TokenStore`, refresh, the `TokenStore`/`AuthProvider` contracts                                                        | `commander`, `oauth4webapi`, `open`, `@napi-rs/keyring` |
+| `@doist/cli-core/commands`   | `registerChangelogCommand`, `registerUpdateCommand` + semver helpers                                                                                                                       | `commander`                                             |
+| `@doist/cli-core/extensions` | `createExtensionManager`, `registerExtension*` registrars, `createExtension` scaffolding, doctor helpers                                                                                   | `commander`, `zod`                                      |
+| `@doist/cli-core/markdown`   | `preloadMarkdown`, `renderMarkdown`                                                                                                                                                        | `marked`, `marked-terminal-renderer`                    |
+| `@doist/cli-core/testing`    | `describeEmptyMachineOutput`, `createTestProgram`, console captures, `mockStdin`, account fixtures, extension fixtures                                                                     | `vitest`, `commander`                                   |
 
 The public surface = every re-export through these entry barrels. `tsc --noEmit`
 validates the re-exports; there is no separate runtime pinning test (per AGENTS.md).
@@ -84,6 +84,7 @@ src/
 ├─ spinner.ts             # createSpinner factory (yocto-spinner wrapper)
 ├─ stdin.ts               # readStdin (piped input for --stdin; STDIN_IS_TTY on a terminal)
 ├─ terminal.ts            # isStdoutTTY / isStdinTTY / isStderrTTY / isCI
+├─ usage-tracking.ts      # createUsageTracking (CLI attribution headers for API requests)
 ├─ markdown.ts            # ./markdown subpath (lazy marked + terminal renderer)
 ├─ testing/               # ./testing subpath — shipped helpers for consumers' tests
 │  ├─ accounts.ts         # TestAccount fixtures (Ingen identities) + buildTokenStore / buildSingleEntryStore
