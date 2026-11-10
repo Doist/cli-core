@@ -6,7 +6,9 @@
  * the requests of one CLI run, and name the command that made them. No
  * identifying data is sent: the request and session IDs are random UUIDs, and
  * the session ID lives only as long as its tracker. A CLI creates one tracker
- * per process, so the session ID groups the requests of one run.
+ * per process, so the session ID groups the requests of one run. `cli-agent`
+ * names the AI coding agent running the CLI, or `none`, so a backend can tell
+ * agent use from a person at a terminal.
  *
  * `request-id` is separate from the `X-Request-Id` the Doist SDKs send on some
  * writes. That one is an idempotency key the caller controls, so it is absent
@@ -60,6 +62,66 @@ export type UsageTracking = {
 
 const UNKNOWN_COMMAND = 'unknown'
 
+type CliAgent =
+    | 'claude-code'
+    | 'codex'
+    | 'cursor'
+    | 'gemini'
+    | 'copilot'
+    | 'opencode'
+    | 'other'
+    | 'none'
+
+// `AI_AGENT` is a convention agents set to name themselves. Values carry more
+// than the name (Claude Code sets `claude-code_<version>_agent`), so only a
+// known prefix maps to a label and everything else stays a fixed `other`,
+// keeping the header low-cardinality.
+const AGENT_NAME_PREFIXES: ReadonlyArray<readonly [prefix: string, agent: CliAgent]> = [
+    ['claude', 'claude-code'],
+    ['codex', 'codex'],
+    ['cursor', 'cursor'],
+    ['gemini', 'gemini'],
+    ['github-copilot', 'copilot'],
+    ['copilot', 'copilot'],
+    ['opencode', 'opencode'],
+]
+
+// The variables each agent sets on the commands it runs, as
+// `@vercel/detect-agent` reads them. `CURSOR_TRACE_ID` is left out: sources
+// disagree on whether Cursor sets it only for agent runs or in every one of
+// its terminals, where it would count a person as an agent. `REPL_ID` is left
+// out for the same reason: Replit sets it in every workspace shell.
+const AGENT_MARKERS: ReadonlyArray<
+    readonly [agent: CliAgent, isSet: (env: NodeJS.ProcessEnv) => boolean]
+> = [
+    [
+        'cursor',
+        (env) => Boolean(env.CURSOR_AGENT) || env.CURSOR_EXTENSION_HOST_ROLE === 'agent-exec',
+    ],
+    ['gemini', (env) => Boolean(env.GEMINI_CLI)],
+    ['codex', (env) => Boolean(env.CODEX_SANDBOX || env.CODEX_CI || env.CODEX_THREAD_ID)],
+    ['opencode', (env) => env.OPENCODE === '1' || Boolean(env.OPENCODE_CLIENT)],
+    ['claude-code', (env) => Boolean(env.CLAUDECODE || env.CLAUDE_CODE)],
+    [
+        'copilot',
+        (env) => Boolean(env.COPILOT_MODEL || env.COPILOT_ALLOW_ALL || env.COPILOT_GITHUB_TOKEN),
+    ],
+    ['other', (env) => Boolean(env.ANTIGRAVITY_AGENT || env.AUGMENT_AGENT)],
+]
+
+// An agent that names itself in `AI_AGENT` wins. One we don't know defers to
+// the specific markers, which say more than `other` does.
+function detectAgent(env: NodeJS.ProcessEnv = process.env): CliAgent {
+    const declared = env.AI_AGENT?.trim().toLowerCase()
+    if (declared) {
+        const match = AGENT_NAME_PREFIXES.find(([prefix]) => declared.startsWith(prefix))
+        if (match) return match[1]
+    }
+    const marked = AGENT_MARKERS.find(([, isSet]) => isSet(env))
+    if (marked) return marked[0]
+    return declared ? 'other' : 'none'
+}
+
 function getDoistOs(): 'macos' | 'linux' | 'windows' | 'unknown' {
     switch (process.platform) {
         case 'darwin':
@@ -98,6 +160,7 @@ function labelCommand(command: CommandLike | string): string {
 export function createUsageTracking(options: UsageTrackingOptions): UsageTracking {
     const userAgent = `${options.cliName}/${options.version}`
     const sessionId = randomUUID()
+    const agent = detectAgent()
     let activeCommand: string | undefined
 
     function headers(headersOptions: UsageHeadersOptions = {}): Record<string, string> {
@@ -113,6 +176,7 @@ export function createUsageTracking(options: UsageTrackingOptions): UsageTrackin
             'request-id': randomUUID(),
             'session-id': sessionId,
             'cli-command': command || UNKNOWN_COMMAND,
+            'cli-agent': agent,
         }
     }
 
