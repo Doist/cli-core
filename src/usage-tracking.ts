@@ -5,7 +5,8 @@
  * apart, see which version and OS it came from, pick out one request, group
  * the requests of one CLI run, and name the command that made them. No
  * identifying data is sent: the request and session IDs are random UUIDs, and
- * the session ID lives only as long as the process.
+ * the session ID lives only as long as its tracker. A CLI creates one tracker
+ * per process, so the session ID groups the requests of one run.
  *
  * `request-id` is separate from the `X-Request-Id` the Doist SDKs send on some
  * writes. That one is an idempotency key the caller controls, so it is absent
@@ -14,7 +15,15 @@
 
 import { randomUUID } from 'node:crypto'
 
-import type { Command } from 'commander'
+/**
+ * The part of a Commander `Command` that labelling reads. Structural, so the
+ * root entry keeps working, types included, without the optional `commander`
+ * peer; a real `Command` satisfies it as is.
+ */
+export type CommandLike = {
+    name(): string
+    readonly parent: CommandLike | null
+}
 
 export type UsageTrackingOptions = {
     /** Product name sent in the `User-Agent`, for example `todoist-cli`. */
@@ -38,7 +47,7 @@ export type UsageTracking = {
      * below the program, so `td task add` becomes `task:add`. A string is
      * taken as the label itself. `undefined` clears it.
      */
-    setCommand(command: Command | string | undefined): void
+    setCommand(command: CommandLike | string | undefined): void
     /** The usage headers for one request, with a fresh `request-id` each call. */
     headers(options?: UsageHeadersOptions): Record<string, string>
     /**
@@ -70,18 +79,22 @@ function normaliseLabel(label: string): string {
     return label.trim().toLowerCase().replace(/\s+/g, ':')
 }
 
-function labelCommand(command: Command | string): string {
+function labelCommand(command: CommandLike | string): string {
     if (typeof command === 'string') return normaliseLabel(command)
 
     const names: string[] = []
     // The root program has no parent and its name is the binary, which every
     // request from this CLI shares, so it stays out of the label.
-    for (let current: Command | null = command; current?.parent; current = current.parent) {
+    for (let current: CommandLike | null = command; current?.parent; current = current.parent) {
         names.unshift(current.name())
     }
     return normaliseLabel(names.join(' '))
 }
 
+/**
+ * Creates a tracker with its own session ID. Create one per process and share
+ * it, so every request of a CLI run carries the same session ID.
+ */
 export function createUsageTracking(options: UsageTrackingOptions): UsageTracking {
     const userAgent = `${options.cliName}/${options.version}`
     const sessionId = randomUUID()

@@ -52,4 +52,9 @@ export { readStdin } from './stdin.js'
 export type { StdinErrorCode } from './stdin.js'
 export { isCI, isStderrTTY, isStdinTTY, isStdoutTTY } from './terminal.js'
 export { createUsageTracking } from './usage-tracking.js'
-export type { UsageHeadersOptions, UsageTracking, UsageTrackingOptions } from './usage-tracking.js'
+export type {
+    CommandLike,
+    UsageHeadersOptions,
+    UsageTracking,
+    UsageTrackingOptions,
+} from './usage-tracking.js'

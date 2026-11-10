@@ -101,6 +101,15 @@ describe('createUsageTracking', () => {
             expect(usage.headers()['cli-command']).toBe(label)
         })
 
+        it('labels a command that only has a name and a parent, without Commander', () => {
+            const usage = createTracking()
+            const program = { name: () => 'example', parent: null }
+            const group = { name: () => 'task', parent: program }
+            usage.setCommand({ name: () => 'add', parent: group })
+
+            expect(usage.headers()['cli-command']).toBe('task:add')
+        })
+
         it('replaces the previous command, as a routed command does', () => {
             const usage = createTracking()
             usage.setCommand('view')
