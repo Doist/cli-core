@@ -1,3 +1,9 @@
+## [1.10.0](https://github.com/Doist/cli-core/compare/v1.9.0...v1.10.0) (2026-11-10)
+
+### Features
+
+* send the AI coding agent running the CLI as cli-agent ([#177](https://github.com/Doist/cli-core/issues/177)) ([64c6168](https://github.com/Doist/cli-core/commit/64c6168998db7c8b59946ba9969cf72df0209440))
+
 ## [1.9.0](https://github.com/Doist/cli-core/compare/v1.8.0...v1.9.0) (2026-11-10)
 
 ### Features
