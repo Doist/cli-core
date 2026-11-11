@@ -10,7 +10,7 @@ TypeScript, ESM-only, Node ≥ 24, npm ≥ 11.
 npm install @todoist/cli-core
 ```
 
-Previously published as `@doist/cli-core`.
+Previously published as `@doist/cli-core`, which no longer receives updates. To switch, replace `@doist/cli-core` with `@todoist/cli-core` in your dependencies and imports.
 
 ## What's in it
 
