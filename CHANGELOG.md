@@ -1,3 +1,9 @@
+## [1.10.2](https://github.com/todoist/cli-core/compare/v1.10.1...v1.10.2) (2026-11-11)
+
+### Bug Fixes
+
+* publish as @todoist/cli-core ([#179](https://github.com/todoist/cli-core/issues/179)) ([e876691](https://github.com/todoist/cli-core/commit/e876691cc5eea9ec569ee304dfdcb179f4c7e7a5))
+
 ## [1.10.1](https://github.com/todoist/cli-core/compare/v1.10.0...v1.10.1) (2026-11-11)
 
 ### Bug Fixes
