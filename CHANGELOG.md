@@ -1,3 +1,14 @@
+## [2.0.0](https://github.com/todoist/cli-core/compare/v1.10.2...v2.0.0) (2026-11-11)
+
+### ⚠ BREAKING CHANGES
+
+* the package is now published as @todoist/cli-core; replace
+@doist/cli-core with @todoist/cli-core in dependencies and imports.
+
+### Features
+
+* release @todoist/cli-core as a new major version ([#180](https://github.com/todoist/cli-core/issues/180)) ([5cf64e7](https://github.com/todoist/cli-core/commit/5cf64e7c191f32435f148a35800b053b4cc082d9))
+
 ## [1.10.2](https://github.com/todoist/cli-core/compare/v1.10.1...v1.10.2) (2026-11-11)
 
 ### Bug Fixes
