@@ -1,3 +1,9 @@
+## [1.10.1](https://github.com/todoist/cli-core/compare/v1.10.0...v1.10.1) (2026-11-11)
+
+### Bug Fixes
+
+* **ci:** use the todoist GitHub org after the rename ([#178](https://github.com/todoist/cli-core/issues/178)) ([d1126cf](https://github.com/todoist/cli-core/commit/d1126cffa3e26ecebf45e707d6f5201076fe3d6e))
+
 ## [1.10.0](https://github.com/Doist/cli-core/compare/v1.9.0...v1.10.0) (2026-11-10)
 
 ### Features
