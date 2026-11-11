@@ -31,7 +31,7 @@ export function authoredManifestFileName(binName: string): string {
 }
 
 /**
- * Accepts `goals`, `td-goals` or `Doist/td-goals` and returns the command
+ * Accepts `goals`, `td-goals` or `todoist/td-goals` and returns the command
  * name. Used by `remove`, `upgrade` and `exec`, which all take a loose ref.
  */
 export function normalizeSelector(binName: string, selector: string): string {

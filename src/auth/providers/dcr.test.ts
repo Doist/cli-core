@@ -57,7 +57,7 @@ describe('createDcrProvider', () => {
             tokenUrl: TOKEN_URL,
             clientMetadata: {
                 clientName: 'Twist CLI',
-                clientUri: 'https://github.com/doist/twist-cli',
+                clientUri: 'https://github.com/todoist/twist-cli',
                 logoUri: 'https://example.com/logo.png',
                 applicationType: 'native',
             },
@@ -71,7 +71,7 @@ describe('createDcrProvider', () => {
         const regBody = JSON.parse(calls[0].init.body as string) as Record<string, unknown>
         expect(regBody).toMatchObject({
             client_name: 'Twist CLI',
-            client_uri: 'https://github.com/doist/twist-cli',
+            client_uri: 'https://github.com/todoist/twist-cli',
             logo_uri: 'https://example.com/logo.png',
             application_type: 'native',
             redirect_uris: [REDIRECT_URI],

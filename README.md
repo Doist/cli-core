@@ -1,6 +1,6 @@
 # @doist/cli-core
 
-Shared core utilities for Doist CLI projects ([todoist-cli](https://github.com/Doist/todoist-cli), [twist-cli](https://github.com/Doist/twist-cli), [outline-cli](https://github.com/Doist/outline-cli), [comms-cli](https://github.com/Doist/comms-cli)).
+Shared core utilities for Doist CLI projects ([todoist-cli](https://github.com/todoist/todoist-cli), [twist-cli](https://github.com/todoist/twist-cli), [outline-cli](https://github.com/todoist/outline-cli), [comms-cli](https://github.com/todoist/comms-cli)).
 
 TypeScript, ESM-only, Node ≥ 24, npm ≥ 11.
 
@@ -161,7 +161,7 @@ import packageJson from '../package.json' with { type: 'json' }
 
 registerChangelogCommand(program, {
     path: join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'CHANGELOG.md'),
-    repoUrl: 'https://github.com/Doist/todoist-cli',
+    repoUrl: 'https://github.com/todoist/todoist-cli',
     version: packageJson.version,
 })
 ```
@@ -245,7 +245,7 @@ function buildExtensionManager(program: Command) {
         configDir: dirname(getConfigPath(APP_NAME)),
         hostPath: realpathSync(process.argv[1] ?? ''),
         reservedNames: () => reserved,
-        officialSource: { host: 'github.com', owner: 'Doist' },
+        officialSource: { host: 'github.com', owner: 'todoist' },
         officialLabel: 'Todoist',
         // Kept away from npm lifecycle scripts when an extension's
         // dependencies are installed, on top of GH_TOKEN and GITHUB_TOKEN.

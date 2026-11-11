@@ -170,7 +170,7 @@ export function parseChangelog(
  *
  * registerChangelogCommand(program, {
  *     path: join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'CHANGELOG.md'),
- *     repoUrl: 'https://github.com/Doist/todoist-cli',
+ *     repoUrl: 'https://github.com/todoist/todoist-cli',
  *     version: packageJson.version,
  * })
  * ```

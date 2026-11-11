@@ -19,37 +19,37 @@ const FIXTURE = `# Changelog
 
 All notable changes to this project will be documented in this file.
 
-## [1.2.0](https://github.com/Doist/x/compare/v1.1.0...v1.2.0) (2025-01-02)
+## [1.2.0](https://github.com/todoist/x/compare/v1.1.0...v1.2.0) (2025-01-02)
 
 ### Features
 
-* add cool feature ([abc1234](https://github.com/Doist/x/commit/abc1234))
+* add cool feature ([abc1234](https://github.com/todoist/x/commit/abc1234))
 * **task:** another thing
 
 ### Bug Fixes
 
-* fix wobble [#42](https://github.com/Doist/x/issues/42)
+* fix wobble [#42](https://github.com/todoist/x/issues/42)
 
-## [1.1.0](https://github.com/Doist/x/compare/v1.0.0...v1.1.0) (2025-01-01)
+## [1.1.0](https://github.com/todoist/x/compare/v1.0.0...v1.1.0) (2025-01-01)
 
 ### Features
 
 * **deps:** bump foo from 1 to 2
 
-## [1.0.0](https://github.com/Doist/x/releases/tag/v1.0.0) (2024-12-31)
+## [1.0.0](https://github.com/todoist/x/releases/tag/v1.0.0) (2024-12-31)
 
 ### Features
 
 * initial release
 `
 
-const FIXTURE_FLEX = `# [2.0.0](https://github.com/Doist/x/compare/v1.0.0...v2.0.0) (2025-02-01)
+const FIXTURE_FLEX = `# [2.0.0](https://github.com/todoist/x/compare/v1.0.0...v2.0.0) (2025-02-01)
 
 ### Features
 
 * breaking change
 
-## [1.0.0](https://github.com/Doist/x/releases/tag/v1.0.0) (2024-12-31)
+## [1.0.0](https://github.com/todoist/x/releases/tag/v1.0.0) (2024-12-31)
 
 ### Features
 
@@ -58,7 +58,7 @@ const FIXTURE_FLEX = `# [2.0.0](https://github.com/Doist/x/compare/v1.0.0...v2.0
 
 const REQUIRED = {
     path: '/fake/CHANGELOG.md',
-    repoUrl: 'https://github.com/Doist/x',
+    repoUrl: 'https://github.com/todoist/x',
     version: '1.2.0',
 }
 
@@ -207,7 +207,7 @@ describe('registerChangelogCommand', () => {
         expect(all).toContain('1.2.0')
         expect(all).toContain('Features')
         expect(all).toContain(
-            'View full changelog: https://github.com/Doist/x/blob/v1.2.0/CHANGELOG.md',
+            'View full changelog: https://github.com/todoist/x/blob/v1.2.0/CHANGELOG.md',
         )
         logSpy.mockRestore()
     })
