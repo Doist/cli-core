@@ -11,7 +11,7 @@ import type {
 import { accountNotFoundError } from '../auth/user-flag.js'
 
 // Shared account fixtures + a canonical in-memory `TokenStore` mock for auth
-// test suites, shipped via the `@doist/cli-core/testing` subpath so consuming
+// test suites, shipped via the `@todoist/cli-core/testing` subpath so consuming
 // CLIs can reuse them instead of hand-rolling store mocks.
 //
 // The mock mirrors `createKeyringTokenStore`'s default-selection rules so tests

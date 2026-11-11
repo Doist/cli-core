@@ -20,7 +20,7 @@ export function loadSchemas(): Promise<Schemas> {
         loaded = undefined
         if (isModuleNotFound(error)) {
             throw new Error(
-                "@doist/cli-core/extensions requires 'zod' as a peer dependency. Install it with: npm install zod",
+                "@todoist/cli-core/extensions requires 'zod' as a peer dependency. Install it with: npm install zod",
                 { cause: error },
             )
         }

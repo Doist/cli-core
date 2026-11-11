@@ -8,7 +8,7 @@ const pkg = JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) 
     exports?: Record<string, { types?: string; import?: string }>
 }
 
-describe('@doist/cli-core/testing subpath wiring', () => {
+describe('@todoist/cli-core/testing subpath wiring', () => {
     it('declares ./testing in package.json exports with import + types', () => {
         const entry = pkg.exports?.['./testing']
         expect(entry).toBeDefined()

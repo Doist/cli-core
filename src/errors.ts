@@ -38,7 +38,7 @@ export type CliErrorCode =
  * constrain codes per CLI; the cli-core codes are always allowed alongside.
  *
  * ```ts
- * import { CliError } from '@doist/cli-core'
+ * import { CliError } from '@todoist/cli-core'
  * type Code = 'AUTH_FAILED' | 'NOT_FOUND' | (string & {})
  * throw new CliError<Code>('AUTH_FAILED', 'Token rejected', {
  *     hints: ['Run td auth login'],

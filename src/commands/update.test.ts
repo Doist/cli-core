@@ -37,7 +37,7 @@ const mockReadConfigOrThrow = vi.mocked(config.readConfigOrThrow)
 const mockUpdateConfigOrThrow = vi.mocked(config.updateConfigOrThrow)
 
 const BASE_OPTIONS: UpdateCommandOptions = {
-    packageName: '@doist/todoist-cli',
+    packageName: '@todoist/cli',
     currentVersion: '1.0.0',
     configPath: '/fake/config.json',
     changelogCommandName: 'td changelog',
@@ -200,7 +200,7 @@ describe('update --check', () => {
         mockReadConfigOrThrow.mockResolvedValue({ update_channel: 'pre-release' })
         mockFetchOk('1.36.0-next.1')
         await createProgram().parseAsync(['node', 'td', 'update', '--check'])
-        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@doist/todoist-cli/next')
+        expect(fetch).toHaveBeenCalledWith('https://registry.npmjs.org/@todoist/cli/next')
     })
 })
 
@@ -219,7 +219,7 @@ describe('update install flow', () => {
             undefined,
             undefined,
             'npm',
-            ['install', '-g', '@doist/todoist-cli@latest'],
+            ['install', '-g', '@todoist/cli@latest'],
             undefined,
         ],
         [
@@ -227,7 +227,7 @@ describe('update install flow', () => {
             undefined,
             '/usr/local/lib/node_modules/pnpm/bin/pnpm.cjs',
             'pnpm',
-            ['add', '-g', '@doist/todoist-cli@latest'],
+            ['add', '-g', '@todoist/cli@latest'],
             undefined,
         ],
         [
@@ -235,7 +235,7 @@ describe('update install flow', () => {
             'pre-release',
             undefined,
             'npm',
-            ['install', '-g', '@doist/todoist-cli@next'],
+            ['install', '-g', '@todoist/cli@next'],
             undefined,
         ],
         [
@@ -243,7 +243,7 @@ describe('update install flow', () => {
             undefined,
             undefined,
             'npm',
-            ['install', '-g', '@doist/todoist-cli@internal'],
+            ['install', '-g', '@todoist/cli@internal'],
             'internal',
         ],
     ]
@@ -423,14 +423,10 @@ describe('update brew install flow', () => {
         mockFetchOk('99.99.99')
         mockSpawnExit()
         await createProgram({ brewFormula: FORMULA }).parseAsync(['node', 'td', 'update'])
-        expect(mockSpawn).toHaveBeenCalledWith(
-            'npm',
-            ['install', '-g', '@doist/todoist-cli@latest'],
-            {
-                stdio: ['ignore', 'ignore', 'pipe'],
-                shell: false,
-            },
-        )
+        expect(mockSpawn).toHaveBeenCalledWith('npm', ['install', '-g', '@todoist/cli@latest'], {
+            stdio: ['ignore', 'ignore', 'pipe'],
+            shell: false,
+        })
         expect(mockSpawn).not.toHaveBeenCalledWith('brew', expect.anything(), expect.anything())
     })
 
@@ -497,7 +493,7 @@ describe('update error paths', () => {
         await expect(
             createProgram({ distTag: 'internal' }).parseAsync(['node', 'td', 'update']),
         ).rejects.toMatchObject({
-            hints: [expect.stringContaining('@doist/todoist-cli@internal')],
+            hints: [expect.stringContaining('@todoist/cli@internal')],
         })
     })
 
@@ -608,7 +604,7 @@ describe('getConfiguredUpdateChannel', () => {
 
 describe('update with a pinned distTag', () => {
     const PINNED = { distTag: 'internal' } as const
-    const REGISTRY_URL = 'https://registry.npmjs.org/@doist/todoist-cli/internal'
+    const REGISTRY_URL = 'https://registry.npmjs.org/@todoist/cli/internal'
 
     it('queries the pinned dist-tag instead of the channel mapping', async () => {
         mockFetchOk('99.99.99')

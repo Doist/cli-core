@@ -1,6 +1,6 @@
 # cli-core
 
-Shared core utilities for the Doist CLIs (`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`, `@doist/comms-cli`). TypeScript, ESM-only, Node ≥ 24.
+Shared core utilities for the Doist CLIs (`@todoist/cli`, `@todoist/twist-cli`, `@todoist/outline-cli`, `@todoist/comms-cli`). TypeScript, ESM-only, Node ≥ 24.
 
 ## Definition of done
 
