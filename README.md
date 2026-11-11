@@ -1,4 +1,4 @@
-# @doist/cli-core
+# @todoist/cli-core
 
 Shared core utilities for Doist CLI projects ([todoist-cli](https://github.com/todoist/todoist-cli), [twist-cli](https://github.com/todoist/twist-cli), [outline-cli](https://github.com/todoist/outline-cli), [comms-cli](https://github.com/todoist/comms-cli)).
 
@@ -7,8 +7,10 @@ TypeScript, ESM-only, Node ≥ 24, npm ≥ 11.
 ## Install
 
 ```bash
-npm install @doist/cli-core
+npm install @todoist/cli-core
 ```
+
+Previously published as `@doist/cli-core`.
 
 ## What's in it
 
@@ -38,7 +40,7 @@ npm install @doist/cli-core
 ### Global args + spinner gate
 
 ```ts
-import { createGlobalArgsStore, createSpinnerGate, createSpinner } from '@doist/cli-core'
+import { createGlobalArgsStore, createSpinnerGate, createSpinner } from '@todoist/cli-core'
 
 const store = createGlobalArgsStore()
 export const isJsonMode = () => store.get().json
@@ -53,7 +55,7 @@ const { withSpinner } = createSpinner({ isDisabled: shouldDisableSpinner })
 ### Empty-state print
 
 ```ts
-import { printEmpty } from '@doist/cli-core'
+import { printEmpty } from '@todoist/cli-core'
 
 if (tasks.length === 0) {
     printEmpty({ options, message: 'No tasks found.' })
@@ -66,7 +68,7 @@ if (tasks.length === 0) {
 `readStdin` backs a command's `--stdin` flag. When nothing is piped in (stdin is a terminal) it throws `STDIN_IS_TTY` instead of waiting for an EOF that never comes. It returns the input untrimmed, so the command decides what empty input means.
 
 ```ts
-import { CliError, readStdin } from '@doist/cli-core'
+import { CliError, readStdin } from '@todoist/cli-core'
 
 if (options.stdin && options.description !== undefined) {
     throw new CliError('CONFLICTING_OPTIONS', 'Cannot use both --description and --stdin')
@@ -74,7 +76,7 @@ if (options.stdin && options.description !== undefined) {
 const description = options.stdin ? await readStdin() : options.description
 ```
 
-In tests, `mockStdin` from `@doist/cli-core/testing` stands in for the pipe:
+In tests, `mockStdin` from `@todoist/cli-core/testing` stands in for the pipe:
 
 ```ts
 mockStdin('# Notes\n\nBody.\n') // or mockStdin('', { isTTY: true }) for a terminal
@@ -85,13 +87,13 @@ mockStdin('# Notes\n\nBody.\n') // or mockStdin('', { isTTY: true }) for a termi
 Reuse the shared vitest scaffolding instead of hand-rolling it per CLI:
 
 ```ts
-import { attachStatusCommand } from '@doist/cli-core/auth'
+import { attachStatusCommand } from '@todoist/cli-core/auth'
 import {
     alanGrant,
     buildSingleEntryStore,
     captureConsole,
     createTestProgram,
-} from '@doist/cli-core/testing'
+} from '@todoist/cli-core/testing'
 
 it('greets the active account', async () => {
     const logSpy = captureConsole() // silences console.log, auto-restores
@@ -109,7 +111,7 @@ differently from the default id/email/label rule, pass `matchAccount` so the moc
 like production:
 
 ```ts
-import { buildTokenStore } from '@doist/cli-core/testing'
+import { buildTokenStore } from '@todoist/cli-core/testing'
 import { matchTwistAccount } from './lib/auth-provider.js'
 
 const { store } = buildTokenStore<TwistAccount>({
@@ -118,7 +120,7 @@ const { store } = buildTokenStore<TwistAccount>({
 })
 ```
 
-The whole `@doist/cli-core/testing` entrypoint links `commander` (the barrel re-exports
+The whole `@todoist/cli-core/testing` entrypoint links `commander` (the barrel re-exports
 `createTestProgram`) and `vitest` at import time, so install both — consuming CLIs already have them —
 and only import this subpath from test files.
 
@@ -133,7 +135,7 @@ npm install marked marked-terminal-renderer
 Then:
 
 ```ts
-import { preloadMarkdown, renderMarkdown } from '@doist/cli-core/markdown'
+import { preloadMarkdown, renderMarkdown } from '@todoist/cli-core/markdown'
 
 if (!options.json && !options.raw) {
     await preloadMarkdown()
@@ -156,7 +158,7 @@ Then wire `<cli> changelog` in one call:
 ```ts
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerChangelogCommand } from '@doist/cli-core/commands'
+import { registerChangelogCommand } from '@todoist/cli-core/commands'
 import packageJson from '../package.json' with { type: 'json' }
 
 registerChangelogCommand(program, {
@@ -171,13 +173,13 @@ The helper throws `CliError` (`INVALID_TYPE` for a bad `--count`, `FILE_READ_ERR
 Wire `<cli> update` and `<cli> update switch` similarly:
 
 ```ts
-import { createSpinner, getConfigPath } from '@doist/cli-core'
-import { registerUpdateCommand } from '@doist/cli-core/commands'
+import { createSpinner, getConfigPath } from '@todoist/cli-core'
+import { registerUpdateCommand } from '@todoist/cli-core/commands'
 import packageJson from '../package.json' with { type: 'json' }
 
 const { withSpinner } = createSpinner()
 registerUpdateCommand(program, {
-    packageName: '@doist/todoist-cli',
+    packageName: '@todoist/cli',
     currentVersion: packageJson.version,
     configPath: getConfigPath('todoist-cli'),
     changelogCommandName: 'td changelog',
@@ -190,7 +192,7 @@ A CLI published under a dist-tag of its own pins it instead of choosing a channe
 
 ```ts
 registerUpdateCommand(program, {
-    packageName: '@doist/automations-cli',
+    packageName: '@todoist/automations-cli',
     currentVersion: packageJson.version,
     configPath: getConfigPath('tda'),
     distTag: 'internal',
@@ -219,8 +221,8 @@ Everything host-specific arrives through `ExtensionManagerOptions`:
 ```ts
 import { realpathSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { getConfigPath, getDataDir, getStateDir } from '@doist/cli-core'
-import { createExtensionManager, registerExtensionCommands } from '@doist/cli-core/extensions'
+import { getConfigPath, getDataDir, getStateDir } from '@todoist/cli-core'
+import { createExtensionManager, registerExtensionCommands } from '@todoist/cli-core/extensions'
 import chalk from 'chalk'
 import packageJson from '../package.json' with { type: 'json' }
 
@@ -263,8 +265,8 @@ registerExtensionCommands(program, buildExtensionManager(program))
 A CLI that lazy-loads its commands usually wants the two halves separately. `registerExtensionGroup` is the `extension` group, loaded only for `<bin> extension …`. `registerExtensionPassThrough` discovers what is installed and registers the pass-through commands; it is needed whenever the command token is not a built-in, which is what `--help`, completion and the unknown-command hint all rely on. The host then dispatches before commander parses, so everything after the extension's name reaches it exactly as typed:
 
 ```ts
-import { findCommandToken, needsExtensionLookup } from '@doist/cli-core'
-import { registerExtensionPassThrough } from '@doist/cli-core/extensions'
+import { findCommandToken, needsExtensionLookup } from '@todoist/cli-core'
+import { registerExtensionPassThrough } from '@todoist/cli-core/extensions'
 
 const rawArgs = process.argv.slice(2)
 const { token, index } = findCommandToken(rawArgs)
@@ -296,7 +298,7 @@ The environment an extension receives is the contract extension authors write ag
 
 Manifests and the per-extension state file are validated with `zod`, loaded lazily so it never sits on the `--version` path. A host that has not installed it gets a `CliError`-style message naming the fix the first time a manifest is read. Every failure is a `CliError` with an `ExtensionErrorCode` (`EXTENSION_NOT_FOUND`, `EXTENSION_NAME_RESERVED`, `EXTENSION_CHECKSUM_MISMATCH`, `EXTENSION_NPM_MISSING`, …), all folded into `CliErrorCode`.
 
-For tests, `@doist/cli-core/testing` exports `writeFixtureExtension` and `writeFakeGitRepo`, which put a runnable extension on disk that reports its arguments and `<PREFIX>_*` environment as JSON.
+For tests, `@todoist/cli-core/testing` exports `writeFixtureExtension` and `writeFakeGitRepo`, which put a runnable extension on disk that reports its arguments and `<PREFIX>_*` environment as JSON.
 
 ### Auth (optional subpath)
 
@@ -313,8 +315,8 @@ npm install commander open
 #### Quick start (PKCE)
 
 ```ts
-import { attachLoginCommand, createPkceProvider } from '@doist/cli-core/auth'
-import type { TokenStore } from '@doist/cli-core/auth'
+import { attachLoginCommand, createPkceProvider } from '@todoist/cli-core/auth'
+import type { TokenStore } from '@todoist/cli-core/auth'
 
 type Account = { id: string; label?: string; email: string }
 
@@ -382,7 +384,7 @@ The document you host must declare `redirect_uris` that cover the local callback
 For providers that issue per-install `client_id` / `client_secret` via [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591). `createDcrProvider` registers in `prepare()`, then drives the standard PKCE authorize / token-exchange dance against the resulting client and (optionally) refreshes it later. Registration, token exchange, and refresh run through [`oauth4webapi`](https://github.com/panva/oauth4webapi) (the same optional peer dep PKCE refresh uses — `npm install oauth4webapi`), so endpoints must be HTTPS and the registration endpoint must return RFC 7591-conformant `201` responses.
 
 ```ts
-import { attachLoginCommand, createDcrProvider } from '@doist/cli-core/auth'
+import { attachLoginCommand, createDcrProvider } from '@todoist/cli-core/auth'
 
 const provider = createDcrProvider<Account>({
     registrationUrl: 'https://example.com/oauth/register',
@@ -427,7 +429,7 @@ import {
     attachRefreshTokenViewCommand,
     attachStatusCommand,
     attachTokenViewCommand,
-} from '@doist/cli-core/auth'
+} from '@todoist/cli-core/auth'
 
 attachLogoutCommand<Account>(auth, {
     store,
@@ -495,7 +497,7 @@ import {
     attachAccountListCommand,
     attachAccountRemoveCommand,
     attachAccountUseCommand,
-} from '@doist/cli-core/auth'
+} from '@todoist/cli-core/auth'
 
 const account = program.command('account')
 
@@ -555,8 +557,8 @@ Under `--json` / `--ndjson`, the always-printed authorize URL goes to stderr so 
 `TokenStore` is uniformly multi-user-shaped — single-user CLIs implement `list` / `setDefault` trivially against their one stored account. There is no separate single-user contract.
 
 ```ts
-import { CliError, getConfigPath, readConfig, updateConfig, writeConfig } from '@doist/cli-core'
-import type { AccountRef, TokenStore } from '@doist/cli-core/auth'
+import { CliError, getConfigPath, readConfig, updateConfig, writeConfig } from '@todoist/cli-core'
+import type { AccountRef, TokenStore } from '@todoist/cli-core/auth'
 
 type Account = { id: string; label?: string; email: string }
 type StoredAuth = { account: Account; token: string }
@@ -631,7 +633,7 @@ The PKCE provider (`createPkceProvider`) and the DCR provider (`createDcrProvide
 When the OS credential manager is the right place for your token, `createSecureStore` is a thin cross-platform wrapper around `@napi-rs/keyring`. It exposes a three-method handle (`getSecret` / `setSecret` / `deleteSecret`) for one slot identified by `serviceName` + `account`:
 
 ```ts
-import { createSecureStore, SecureStoreUnavailableError } from '@doist/cli-core/auth'
+import { createSecureStore, SecureStoreUnavailableError } from '@todoist/cli-core/auth'
 
 const slot = createSecureStore({ serviceName: 'todoist-cli', account: 'api-token' })
 
@@ -651,7 +653,7 @@ try {
 
 Every failure mode — `@napi-rs/keyring` failing to load on an arch without a prebuilt binary, libsecret not running on a headless Linux box, the Keychain prompting and the user denying — is normalised into `SecureStoreUnavailableError`. On Linux the store is pinned to the Secret Service: `@napi-rs/keyring` would otherwise fall back silently to the kernel keyutils keyring, which is in-memory and scoped to the login session, so a credential written there can't be read from another terminal, a cron job, or after a restart. A host with no Secret Service therefore reports `SecureStoreUnavailableError` and the token store's credential-store policy decides what happens next. The `@napi-rs/keyring` module is dynamic-imported so a missing native binary doesn't crash module load before the error can surface.
 
-`@napi-rs/keyring` is declared in cli-core's own `optionalDependencies`, so npm pulls it in transitively when you install `@doist/cli-core` — your consumer CLI does not need to add it explicitly. The library ships pre-built native binaries for Windows (Credential Manager), macOS (Keychain), and Linux glibc + musl (libsecret / Secret Service).
+`@napi-rs/keyring` is declared in cli-core's own `optionalDependencies`, so npm pulls it in transitively when you install `@todoist/cli-core` — your consumer CLI does not need to add it explicitly. The library ships pre-built native binaries for Windows (Credential Manager), macOS (Keychain), and Linux glibc + musl (libsecret / Secret Service).
 
 #### Multi-account keyring-backed `TokenStore`
 
@@ -662,7 +664,7 @@ import {
     createKeyringTokenStore,
     type CredentialStore,
     type UserRecordStore,
-} from '@doist/cli-core/auth'
+} from '@todoist/cli-core/auth'
 
 type Account = { id: string; label?: string; email: string }
 
@@ -729,8 +731,8 @@ For sync/lazy-decrypt or fully bespoke backends, implement `TokenStore` directly
 For one-time migration of a v1 single-user token into the v2 multi-user shape, use `migrateLegacyAuth` from a postinstall hook. The helper requires a durable **migration marker** the consumer owns — a boolean persisted in their config — so the migration is genuinely one-way: a later `logout` (which empties `userRecords`) followed by a reinstall won't re-migrate a stale legacy token.
 
 ```ts
-import { getConfigPath, readConfig, updateConfig } from '@doist/cli-core'
-import { migrateLegacyAuth } from '@doist/cli-core/auth'
+import { getConfigPath, readConfig, updateConfig } from '@todoist/cli-core'
+import { migrateLegacyAuth } from '@todoist/cli-core/auth'
 
 const configPath = getConfigPath('todoist-cli')
 
@@ -769,7 +771,7 @@ The account-touching attachers (`attachLogoutCommand` / `attachStatusCommand` / 
 For pre-subcommand `--user` (`<cli> --user alice some-cmd`) that should apply to non-auth commands too, parse it globally and strip from argv before handing to Commander:
 
 ```ts
-import { parseGlobalArgs, stripUserFlag } from '@doist/cli-core'
+import { parseGlobalArgs, stripUserFlag } from '@todoist/cli-core'
 
 const args = parseGlobalArgs(process.argv.slice(2))
 console.log(args.user) // 'alice' | undefined
@@ -801,7 +803,7 @@ Implement `AuthProvider` directly for device code, magic-link, username / passwo
 Skeleton:
 
 ```ts
-import type { AuthProvider } from '@doist/cli-core/auth'
+import type { AuthProvider } from '@todoist/cli-core/auth'
 
 const provider: AuthProvider<Account> = {
     async prepare({ redirectUri, flags }) {
@@ -851,7 +853,7 @@ The consumer's top-level error handler formats and exits.
 For custom Commander wiring (different command name, programmatic invocation, embedding in a non-Commander host) call `runOAuthFlow` directly with the same option set `attachLoginCommand` builds internally:
 
 ```ts
-import { runOAuthFlow } from '@doist/cli-core/auth'
+import { runOAuthFlow } from '@todoist/cli-core/auth'
 
 const result = await runOAuthFlow({
     provider,

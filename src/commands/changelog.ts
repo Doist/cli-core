@@ -165,7 +165,7 @@ export function parseChangelog(
  * ```ts
  * import { dirname, join } from 'node:path'
  * import { fileURLToPath } from 'node:url'
- * import { registerChangelogCommand } from '@doist/cli-core/commands'
+ * import { registerChangelogCommand } from '@todoist/cli-core/commands'
  * import packageJson from '../package.json' with { type: 'json' }
  *
  * registerChangelogCommand(program, {

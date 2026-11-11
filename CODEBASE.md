@@ -6,9 +6,9 @@
 
 ## What this project is
 
-`@doist/cli-core` is a **shared TypeScript library** for the Doist CLIs
-(`@doist/todoist-cli`, `@doist/twist-cli`, `@doist/outline-cli`,
-`@doist/comms-cli`). It is **not a binary** — it ships reusable building blocks
+`@todoist/cli-core` is a **shared TypeScript library** for the Doist CLIs
+(`@todoist/cli`, `@todoist/twist-cli`, `@todoist/outline-cli`,
+`@todoist/comms-cli`). It is **not a binary** — it ships reusable building blocks
 (error type, config I/O, output formatters, spinner, OAuth/keyring auth runtime,
 Commander "attachers", the extension system) that each CLI composes into its own
 `program`.
@@ -56,14 +56,14 @@ that needs them (`commander`, `marked`, `marked-terminal-renderer`,
 Each subpath is an independent entry point so JSON-only consumers don't pay for
 markdown/OAuth transitive installs.
 
-| Subpath                      | Provides                                                                                                                                                                                   | Optional peers needed                                   |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `.` (root)                   | `CliError`, config I/O, data/state dirs, JSON/NDJSON + `emitView`, `printEmpty`, spinner, stdin reader, terminal detection, global-args parser, command-token scan, usage-tracking headers | — (chalk/yocto bundled)                                 |
-| `@doist/cli-core/auth`       | OAuth runtime, the `attach*Command` registrars, providers, keyring `TokenStore`, refresh, the `TokenStore`/`AuthProvider` contracts                                                        | `commander`, `oauth4webapi`, `open`, `@napi-rs/keyring` |
-| `@doist/cli-core/commands`   | `registerChangelogCommand`, `registerUpdateCommand` + semver helpers                                                                                                                       | `commander`                                             |
-| `@doist/cli-core/extensions` | `createExtensionManager`, `registerExtension*` registrars, `createExtension` scaffolding, doctor helpers                                                                                   | `commander`, `zod`                                      |
-| `@doist/cli-core/markdown`   | `preloadMarkdown`, `renderMarkdown`                                                                                                                                                        | `marked`, `marked-terminal-renderer`                    |
-| `@doist/cli-core/testing`    | `describeEmptyMachineOutput`, `createTestProgram`, console captures, `mockStdin`, account fixtures, extension fixtures                                                                     | `vitest`, `commander`                                   |
+| Subpath                        | Provides                                                                                                                                                                                   | Optional peers needed                                   |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `.` (root)                     | `CliError`, config I/O, data/state dirs, JSON/NDJSON + `emitView`, `printEmpty`, spinner, stdin reader, terminal detection, global-args parser, command-token scan, usage-tracking headers | — (chalk/yocto bundled)                                 |
+| `@todoist/cli-core/auth`       | OAuth runtime, the `attach*Command` registrars, providers, keyring `TokenStore`, refresh, the `TokenStore`/`AuthProvider` contracts                                                        | `commander`, `oauth4webapi`, `open`, `@napi-rs/keyring` |
+| `@todoist/cli-core/commands`   | `registerChangelogCommand`, `registerUpdateCommand` + semver helpers                                                                                                                       | `commander`                                             |
+| `@todoist/cli-core/extensions` | `createExtensionManager`, `registerExtension*` registrars, `createExtension` scaffolding, doctor helpers                                                                                   | `commander`, `zod`                                      |
+| `@todoist/cli-core/markdown`   | `preloadMarkdown`, `renderMarkdown`                                                                                                                                                        | `marked`, `marked-terminal-renderer`                    |
+| `@todoist/cli-core/testing`    | `describeEmptyMachineOutput`, `createTestProgram`, console captures, `mockStdin`, account fixtures, extension fixtures                                                                     | `vitest`, `commander`                                   |
 
 The public surface = every re-export through these entry barrels. `tsc --noEmit`
 validates the re-exports; there is no separate runtime pinning test (per AGENTS.md).

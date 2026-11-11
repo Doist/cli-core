@@ -22,7 +22,7 @@ let markedInstance: Marked | null = null
  * never as a module-link crash on `import`.
  *
  * ```ts
- * import { preloadMarkdown, renderMarkdown } from '@doist/cli-core/markdown'
+ * import { preloadMarkdown, renderMarkdown } from '@todoist/cli-core/markdown'
  *
  * if (!options.json && !options.raw) {
  *     await preloadMarkdown()
@@ -34,7 +34,7 @@ let markedInstance: Marked | null = null
  * consumer already has installed as a peer-dep:
  *
  * ```ts
- * import { preloadMarkdown } from '@doist/cli-core/markdown'
+ * import { preloadMarkdown } from '@todoist/cli-core/markdown'
  * import { lightTheme } from 'marked-terminal-renderer'
  * await preloadMarkdown({ theme: lightTheme() })
  * ```
@@ -47,7 +47,7 @@ export async function preloadMarkdown(options?: PreloadMarkdownOptions): Promise
     } catch (err) {
         if (err instanceof Error && 'code' in err && err.code === 'ERR_MODULE_NOT_FOUND') {
             throw new Error(
-                "@doist/cli-core/markdown requires 'marked' and 'marked-terminal-renderer' as peer dependencies. " +
+                "@todoist/cli-core/markdown requires 'marked' and 'marked-terminal-renderer' as peer dependencies. " +
                     'Install them with: npm install marked marked-terminal-renderer',
                 { cause: err },
             )
@@ -69,7 +69,7 @@ export async function preloadMarkdown(options?: PreloadMarkdownOptions): Promise
  * `console.log` the result without a stray blank line.
  *
  * ```ts
- * import { preloadMarkdown, renderMarkdown } from '@doist/cli-core/markdown'
+ * import { preloadMarkdown, renderMarkdown } from '@todoist/cli-core/markdown'
  *
  * await preloadMarkdown()
  * console.log(await renderMarkdown('# Title\n\n- one\n- two'))

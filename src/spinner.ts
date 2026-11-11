@@ -58,7 +58,7 @@ export type SpinnerKit = {
  * step on each other.
  *
  * ```ts
- * import { createSpinner } from '@doist/cli-core'
+ * import { createSpinner } from '@todoist/cli-core'
  * import { shouldDisableSpinner } from './global-args.js'
  *
  * const { LoadingSpinner, withSpinner, startEarlySpinner, stopEarlySpinner } =

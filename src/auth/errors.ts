@@ -1,5 +1,5 @@
 /**
- * Error codes thrown by `@doist/cli-core/auth`. Folded into the `CliErrorCode`
+ * Error codes thrown by `@todoist/cli-core/auth`. Folded into the `CliErrorCode`
  * aggregator in `../errors.ts` so consumers don't have to redeclare them in
  * their own `TCode` union when catching.
  */

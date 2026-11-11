@@ -17,7 +17,7 @@ const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org'
 type WithSpinner = <T>(options: SpinnerOptions, op: () => Promise<T>) => Promise<T>
 
 export type UpdateCommandOptions = {
-    /** npm package name to query the registry for, e.g. `'@doist/todoist-cli'`. */
+    /** npm package name to query the registry for, e.g. `'@todoist/cli'`. */
     packageName: string
     /** Caller's current version (read from their package.json at startup). */
     currentVersion: string
@@ -552,13 +552,13 @@ async function runSwitch(
  * `--check` or `--channel` has no effect here.
  *
  * ```ts
- * import { getConfigPath, createSpinner } from '@doist/cli-core'
- * import { registerUpdateCommand } from '@doist/cli-core/commands'
+ * import { getConfigPath, createSpinner } from '@todoist/cli-core'
+ * import { registerUpdateCommand } from '@todoist/cli-core/commands'
  * import packageJson from '../package.json' with { type: 'json' }
  *
  * const { withSpinner } = createSpinner()
  * registerUpdateCommand(program, {
- *     packageName: '@doist/todoist-cli',
+ *     packageName: '@todoist/cli',
  *     currentVersion: packageJson.version,
  *     configPath: getConfigPath('todoist-cli'),
  *     changelogCommandName: 'td changelog',
@@ -570,7 +570,7 @@ async function runSwitch(
  * ```ts
  * // A CLI published under its own dist-tag rather than `latest`.
  * registerUpdateCommand(program, {
- *     packageName: '@doist/automations-cli',
+ *     packageName: '@todoist/automations-cli',
  *     currentVersion: packageJson.version,
  *     configPath: getConfigPath('tda'),
  *     distTag: 'internal',
